@@ -1,0 +1,4 @@
+// Application file icon. Compiled to a PE resource by build.rs (rc.exe) and
+// linked into the exe so Explorer / taskbar show the icon, not a blank file.
+// id 1 -> RT_GROUP_ICON derived from the .ico by the resource compiler.
+1 ICON "assets/icon.ico"
