@@ -6,7 +6,7 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, CreateIconFromResourceEx, DefWindowProcW, DestroyMenu, GetCursorPos,
     IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MF_CHECKED, MF_STRING, MF_UNCHECKED, PostQuitMessage,
     RegisterClassExW, SetForegroundWindow, TrackPopupMenu, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WM_APP, WM_DESTROY, WM_RBUTTONUP, WNDCLASSEXW,
@@ -22,12 +22,50 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Build an `HICON` from the ICO embedded at compile time (assets/icon.ico).
+/// Picks the largest image and lets Windows scale it. Falls back to the
+/// default application icon if the embedded data can't be parsed.
+fn load_embedded_icon() -> isize {
+    const DATA: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.ico"));
+    if DATA.len() >= 6 {
+        let count = u16::from_le_bytes([DATA[4], DATA[5]]) as usize;
+        let mut best: Option<(usize, usize)> = None; // (offset, len)
+        for i in 0..count {
+            let e = 6 + i * 16;
+            if e + 16 > DATA.len() {
+                break;
+            }
+            let bytes_in_res =
+                u32::from_le_bytes([DATA[e + 8], DATA[e + 9], DATA[e + 10], DATA[e + 11]]) as usize;
+            let offset =
+                u32::from_le_bytes([DATA[e + 12], DATA[e + 13], DATA[e + 14], DATA[e + 15]]) as usize;
+            match best {
+                Some((_, len)) if bytes_in_res <= len => {}
+                _ => best = Some((offset, bytes_in_res)),
+            }
+        }
+        if let Some((offset, len)) = best {
+            if offset + len <= DATA.len() {
+                let slice = &DATA[offset..offset + len];
+                let h = unsafe {
+                    CreateIconFromResourceEx(slice.as_ptr(), slice.len() as u32, 1, 0x0003_0000, 0, 0, 0)
+                };
+                if h != 0 {
+                    return h;
+                }
+            }
+        }
+    }
+    unsafe { LoadIconW(0, IDI_APPLICATION) }
+}
+
 /// Create a message-only window to host the tray icon and run the hook's
 /// message pump against it.
 pub fn create() -> Result<(), String> {
     unsafe {
         let hmod = GetModuleHandleW(null());
         let class_name = to_wide("WinMouseFixClass");
+        let hicon = load_embedded_icon();
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: 0,
@@ -35,12 +73,12 @@ pub fn create() -> Result<(), String> {
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: hmod,
-            hIcon: LoadIconW(0, IDI_APPLICATION),
+            hIcon: hicon,
             hCursor: LoadCursorW(0, IDC_ARROW),
             hbrBackground: 0,
             lpszMenuName: null(),
             lpszClassName: class_name.as_ptr(),
-            hIconSm: 0,
+            hIconSm: hicon,
         };
         RegisterClassExW(&wc);
 
@@ -68,7 +106,7 @@ pub fn create() -> Result<(), String> {
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = LoadIconW(0, IDI_APPLICATION);
+        nid.hIcon = hicon;
         let tip = to_wide("Win Mouse Fix");
         let len = tip.len().min(nid.szTip.len());
         std::ptr::copy_nonoverlapping(tip.as_ptr(), nid.szTip.as_mut_ptr(), len);
