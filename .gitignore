@@ -11,3 +11,7 @@
 .vscode/
 .idea/
 Thumbs.db
+
+# Python cache (icon generator)
+__pycache__/
+tools/__pycache__/
