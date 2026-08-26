@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use crate::remap::RemapEntry;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
@@ -36,7 +37,9 @@ pub struct ScrollConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ButtonsConfig {
     pub enabled: bool,
-    // Remap table is added in a later iteration.
+    /// Per-button remappings. See [`crate::remap`].
+    #[serde(default)]
+    pub remaps: Vec<RemapEntry>,
 }
 
 impl Default for Config {
@@ -55,7 +58,10 @@ impl Default for Config {
                 smooth_trend: 0.35,
                 friction: 0.88,
             },
-            buttons: ButtonsConfig { enabled: false },
+            buttons: ButtonsConfig {
+                enabled: false,
+                remaps: Vec::new(),
+            },
         }
     }
 }
@@ -121,6 +127,15 @@ friction = 0.88
 
 [buttons]
 enabled = true
+
+[[buttons.remaps]]
+source = "middle"
+action = "key"
+vk = 32
+
+[[buttons.remaps]]
+source = "x1"
+action = "disabled"
 "#;
         let cfg: Config = toml::from_str(doc).unwrap();
         assert!(!cfg.general.start_hidden);
@@ -132,5 +147,8 @@ enabled = true
         assert_eq!(cfg.scroll.smooth_trend, 0.35);
         assert_eq!(cfg.scroll.friction, 0.88);
         assert!(cfg.buttons.enabled);
+        assert_eq!(cfg.buttons.remaps.len(), 2);
+        assert_eq!(cfg.buttons.remaps[0].source, crate::remap::MouseButton::Middle);
+        assert_eq!(cfg.buttons.remaps[0].vk, Some(32));
     }
 }

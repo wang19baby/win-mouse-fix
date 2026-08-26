@@ -2,6 +2,7 @@ mod config;
 mod log;
 mod win;
 mod scroll;
+mod remap;
 
 use std::sync::OnceLock;
 
@@ -22,6 +23,12 @@ fn main() {
     if cfg.scroll.enabled {
         let tx = scroll::injector::start(cfg);
         win::hooks::init_scroll_sender(tx);
+    }
+
+    // Build the button-remap table and share it with the hook layer.
+    if cfg.buttons.enabled {
+        let table = remap::RemapTable::from_entries(&cfg.buttons.remaps);
+        win::hooks::init_remap_table(table);
     }
 
     if let Err(e) = win::tray::create() {

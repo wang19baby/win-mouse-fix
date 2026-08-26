@@ -1,12 +1,13 @@
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, MSLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_MOUSEWHEEL, WM_MOUSEHWHEEL,
+    CallNextHookEx, MSLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON2,
 };
 
 use crate::CONFIG;
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
 use crate::scroll::engine::WheelInput;
+use crate::remap::{MouseButton, RemapTable};
 
 /// Sender shared with the hook by `init_scroll_sender`; None when smooth scroll
 /// is disabled. Wrapped in a Mutex because the injector thread and the hook
@@ -20,6 +21,36 @@ const LLMHF_INJECTED: u32 = 0x01;
 /// Called from `main` to share the injector's sender with the hook procedure.
 pub fn init_scroll_sender(tx: Sender<WheelInput>) {
     let _ = SCROLL_TX.set(Mutex::new(tx));
+}
+
+/// Built once at startup from the button-remap config; None disables remapping.
+static REMAP_TABLE: OnceLock<RemapTable> = OnceLock::new();
+
+/// Called from `main` to share the remap table with the hook procedure.
+pub fn init_remap_table(table: RemapTable) {
+    let _ = REMAP_TABLE.set(table);
+}
+
+/// Map a low-level mouse hook event to a (button, is_down) pair, if it is a
+/// button event. For XBUTTONs the button id lives in the high word of `mouseData`.
+fn button_event(ev: u32, ms: &MSLLHOOKSTRUCT) -> Option<(MouseButton, bool)> {
+    match ev {
+        WM_LBUTTONDOWN => Some((MouseButton::Left, true)),
+        WM_LBUTTONUP => Some((MouseButton::Left, false)),
+        WM_RBUTTONDOWN => Some((MouseButton::Right, true)),
+        WM_RBUTTONUP => Some((MouseButton::Right, false)),
+        WM_MBUTTONDOWN => Some((MouseButton::Middle, true)),
+        WM_MBUTTONUP => Some((MouseButton::Middle, false)),
+        WM_XBUTTONDOWN => {
+            let xb = (ms.mouseData >> 16) as u16;
+            Some((if xb == XBUTTON2 { MouseButton::X2 } else { MouseButton::X1 }, true))
+        }
+        WM_XBUTTONUP => {
+            let xb = (ms.mouseData >> 16) as u16;
+            Some((if xb == XBUTTON2 { MouseButton::X2 } else { MouseButton::X1 }, false))
+        }
+        _ => None,
+    }
 }
 
 // Low-level hooks must be installed from a thread that runs a message loop
@@ -72,12 +103,14 @@ pub fn uninstall() {
 unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) -> isize {
     if code >= 0 {
         let ev = wparam as u32;
+        let ms = &*(lparam as *const MSLLHOOKSTRUCT);
+        // Ignore events we ourselves synthesized (feedback loop guard).
+        if (ms.flags & LLMHF_INJECTED) != 0 {
+            return CallNextHookEx(0, code, wparam, lparam);
+        }
+
+        // Smooth scrolling: swallow the raw wheel event; the injector replays it.
         if ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL {
-            let ms = &*(lparam as *const MSLLHOOKSTRUCT);
-            // Ignore events we ourselves synthesized (feedback loop guard).
-            if (ms.flags & LLMHF_INJECTED) != 0 {
-                return CallNextHookEx(0, code, wparam, lparam);
-            }
             if let Some(cfg) = CONFIG.get() {
                 if cfg.scroll.enabled && cfg.scroll.smooth {
                     let raw = (ms.mouseData >> 16) as i16;
@@ -89,6 +122,20 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         }
                     }
                     return 1; // swallow original; the injector replays it smoothly
+                }
+            }
+        }
+
+        // Button remapping: swallow the source button, synthesize the target.
+        if let Some((btn, down)) = button_event(ev, ms) {
+            if let Some(cfg) = CONFIG.get() {
+                if cfg.buttons.enabled {
+                    if let Some(table) = REMAP_TABLE.get() {
+                        if let Some(action) = table.lookup(btn) {
+                            crate::remap::execute(action, down);
+                            return 1; // swallow original; target is synthesized
+                        }
+                    }
                 }
             }
         }
