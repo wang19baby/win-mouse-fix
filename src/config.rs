@@ -30,12 +30,6 @@ pub struct ScrollConfig {
     pub speed: f64,
     /// Invert vertical scroll direction.
     pub invert: bool,
-    /// Double-exponential smoothing: level (data) factor in [0,1]. 1 = no smoothing.
-    pub smooth_level: f64,
-    /// Double-exponential smoothing: trend factor in [0,1]. Controls momentum smoothness.
-    pub smooth_trend: f64,
-    /// Inertia decay per ~16ms tick in [0,1]. Lower = shorter coast.
-    pub friction: f64,
     /// Max wheel units emitted per tick. The engine subdivides each wheel notch
     /// into steps of this size so motion blends (smooth) instead of jumping whole
     /// lines. Smaller = smoother but caps top scroll speed.
@@ -125,9 +119,6 @@ impl Default for Config {
                 smooth: true,
                 speed: 1.0,
                 invert: false,
-                smooth_level: 0.6,
-                smooth_trend: 0.35,
-                friction: 0.88,
                 step: 120.0,
                 drag_exponent: 1.05,
                 drag_coefficient: 15.0,
@@ -210,9 +201,6 @@ enabled = true
 smooth = true
 speed = 2.5
 invert = true
-smooth_level = 0.6
-smooth_trend = 0.35
-friction = 0.88
 shift_speedup = 1.0
 shift_horizontal = false
 
@@ -234,9 +222,6 @@ action = "disabled"
         assert!(cfg.scroll.enabled);
         assert_eq!(cfg.scroll.speed, 2.5);
         assert!(cfg.scroll.invert);
-        assert_eq!(cfg.scroll.smooth_level, 0.6);
-        assert_eq!(cfg.scroll.smooth_trend, 0.35);
-        assert_eq!(cfg.scroll.friction, 0.88);
         assert_eq!(cfg.scroll.shift_speedup, 1.0);
         assert!(!cfg.scroll.shift_horizontal);
         assert!(cfg.buttons.enabled);
