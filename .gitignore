@@ -1,0 +1,13 @@
+# Build output
+/target
+
+# Cargo.lock is COMMITTED for binary crates (reproducible builds).
+# This project is a binary (win-mouse-fix), so do not ignore it.
+
+# Runtime logs
+*.log
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
