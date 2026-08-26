@@ -63,14 +63,31 @@ def make_ico(sizes):
                 xor += bytes((b, g, r, a))  # BGRA
         mask_row = (s + 31) // 32 * 4
         and_mask = b"\x00" * (mask_row * s)
-        images.append((s, bytes(xor), and_mask))
+        # ICO image data must be a complete DIB: BITMAPINFOHEADER +
+        # XOR pixels (bottom-up BGRA) + 1bpp AND mask (bottom-up).
+        # biHeight is doubled because it spans both the XOR and AND planes.
+        bih = struct.pack(
+            "<IiiHHIIiiII",
+            40,            # biSize
+            s,            # biWidth
+            2 * s,        # biHeight (XOR + AND)
+            1,            # biPlanes
+            32,           # biBitCount
+            0,            # biCompression (BI_RGB)
+            0,            # biSizeImage
+            0,            # biXPelsPerMeter
+            0,            # biYPelsPerMeter
+            0,            # biClrUsed
+            0,            # biClrImportant
+        )
+        images.append((s, bih, bytes(xor), and_mask))
 
     count = len(images)
     out = bytearray()
     out += struct.pack("<HHH", 0, 1, count)  # ICONDIR
     offset = 6 + count * 16
-    for s, xor, and_mask in images:
-        img = xor + and_mask
+    for s, bih, xor, and_mask in images:
+        img = bih + xor + and_mask
         out += struct.pack(
             "<BBBBHHII",
             s if s < 256 else 0,
@@ -80,8 +97,8 @@ def make_ico(sizes):
             offset,
         )
         offset += len(img)
-    for s, xor, and_mask in images:
-        out += xor + and_mask
+    for s, bih, xor, and_mask in images:
+        out += bih + xor + and_mask
     return bytes(out)
 
 

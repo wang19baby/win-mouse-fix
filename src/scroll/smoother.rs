@@ -67,11 +67,13 @@ impl DoubleExponentialSmoother {
         self.l_prev + (steps as f64) * self.t_prev
     }
 
+    #[allow(dead_code)]
     /// Current level (smoothed value at the last input).
     pub fn level(&self) -> f64 {
         self.l_prev
     }
 
+    #[allow(dead_code)]
     /// Current trend (velocity estimate).
     pub fn trend(&self) -> f64 {
         self.t_prev
