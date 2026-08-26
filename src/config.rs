@@ -32,6 +32,10 @@ pub struct ScrollConfig {
     pub smooth_trend: f64,
     /// Inertia decay per ~16ms tick in [0,1]. Lower = shorter coast.
     pub friction: f64,
+    /// Scroll speed multiplier while Shift is held (MMF-style Shift-to-accelerate).
+    pub shift_speedup: f64,
+    /// While Shift is held, swap the scroll axis (vertical wheel -> horizontal).
+    pub shift_horizontal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -57,6 +61,8 @@ impl Default for Config {
                 smooth_level: 0.6,
                 smooth_trend: 0.35,
                 friction: 0.88,
+                shift_speedup: 1.0,
+                shift_horizontal: false,
             },
             buttons: ButtonsConfig {
                 enabled: false,
@@ -124,6 +130,8 @@ invert = true
 smooth_level = 0.6
 smooth_trend = 0.35
 friction = 0.88
+shift_speedup = 1.0
+shift_horizontal = false
 
 [buttons]
 enabled = true
@@ -146,6 +154,8 @@ action = "disabled"
         assert_eq!(cfg.scroll.smooth_level, 0.6);
         assert_eq!(cfg.scroll.smooth_trend, 0.35);
         assert_eq!(cfg.scroll.friction, 0.88);
+        assert_eq!(cfg.scroll.shift_speedup, 1.0);
+        assert!(!cfg.scroll.shift_horizontal);
         assert!(cfg.buttons.enabled);
         assert_eq!(cfg.buttons.remaps.len(), 2);
         assert_eq!(cfg.buttons.remaps[0].source, crate::remap::MouseButton::Middle);

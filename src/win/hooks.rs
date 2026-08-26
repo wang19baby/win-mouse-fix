@@ -1,6 +1,6 @@
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, MSLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON2,
+    CallNextHookEx, MSLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON2, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 use crate::CONFIG;
@@ -112,16 +112,26 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         // Smooth scrolling: swallow the raw wheel event; the injector replays it.
         if ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL {
             if let Some(cfg) = CONFIG.get() {
-                if cfg.scroll.enabled && cfg.scroll.smooth {
-                    let raw = (ms.mouseData >> 16) as i16;
-                    let delta = raw as i32;
-                    let horizontal = ev == WM_MOUSEHWHEEL;
-                    if let Some(tx) = SCROLL_TX.get() {
-                        if let Ok(g) = tx.lock() {
-                            let _ = g.send(WheelInput { delta, horizontal });
+                if cfg.scroll.enabled {
+                    let mut delta = (ms.mouseData >> 16) as i16 as i32;
+                    let mut horizontal = ev == WM_MOUSEHWHEEL;
+                    // Modifier behaviors (Shift to accelerate / swap axis).
+                    let shift = crate::modifiers::shift_held();
+                    (delta, horizontal) = crate::modifiers::apply_scroll_modifiers(
+                        delta,
+                        horizontal,
+                        shift,
+                        cfg.scroll.shift_speedup,
+                        cfg.scroll.shift_horizontal,
+                    );
+                    if cfg.scroll.smooth {
+                        if let Some(tx) = SCROLL_TX.get() {
+                            if let Ok(g) = tx.lock() {
+                                let _ = g.send(WheelInput { delta, horizontal });
+                            }
                         }
+                        return 1; // swallow original; the injector replays it smoothly
                     }
-                    return 1; // swallow original; the injector replays it smoothly
                 }
             }
         }
@@ -144,5 +154,13 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
 }
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize) -> isize {
+    if code >= 0 {
+        let ev = wparam as u32;
+        if ev == WM_KEYDOWN || ev == WM_SYSKEYDOWN || ev == WM_KEYUP || ev == WM_SYSKEYUP {
+            let ks = &*(lparam as *const KBDLLHOOKSTRUCT);
+            let down = ev == WM_KEYDOWN || ev == WM_SYSKEYDOWN;
+            crate::modifiers::set_vk(ks.vkCode as u32, down);
+        }
+    }
     CallNextHookEx(0, code, wparam, lparam)
 }

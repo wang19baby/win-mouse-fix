@@ -3,6 +3,7 @@ mod log;
 mod win;
 mod scroll;
 mod remap;
+mod modifiers;
 
 use std::sync::OnceLock;
 
