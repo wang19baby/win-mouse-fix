@@ -7,7 +7,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos,
-    IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MF_STRING, PostQuitMessage,
+    IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MF_CHECKED, MF_STRING, MF_UNCHECKED, PostQuitMessage,
     RegisterClassExW, SetForegroundWindow, TrackPopupMenu, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WM_APP, WM_DESTROY, WM_RBUTTONUP, WNDCLASSEXW,
 };
@@ -15,6 +15,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 const WM_TRAYICON: u32 = WM_APP + 1;
 const ID_EXIT: usize = 1001;
 const ID_ABOUT: usize = 1002;
+const ID_SMOOTH: usize = 1003;
+const ID_REMAP: usize = 1004;
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -100,6 +102,23 @@ unsafe fn show_menu(hwnd: isize) {
     if menu == 0 {
         return;
     }
+
+    // Checkable feature toggles, reflecting the current runtime state.
+    let smooth_flags = MF_STRING
+        | if crate::win::hooks::feature_enabled(crate::win::hooks::Feature::SmoothScroll) {
+            MF_CHECKED
+        } else {
+            MF_UNCHECKED
+        };
+    let remap_flags = MF_STRING
+        | if crate::win::hooks::feature_enabled(crate::win::hooks::Feature::ButtonRemap) {
+            MF_CHECKED
+        } else {
+            MF_UNCHECKED
+        };
+
+    AppendMenuW(menu, smooth_flags, ID_SMOOTH, to_wide("平滑滚动").as_ptr());
+    AppendMenuW(menu, remap_flags, ID_REMAP, to_wide("按键重映射").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_ABOUT, to_wide("关于").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_EXIT, to_wide("退出").as_ptr());
     SetForegroundWindow(hwnd);
@@ -117,12 +136,22 @@ unsafe fn show_menu(hwnd: isize) {
     );
     DestroyMenu(menu);
 
-    if cmd == ID_EXIT as i32 {
-        let mut nid: windows_sys::Win32::UI::Shell::NOTIFYICONDATAW = std::mem::zeroed();
-        nid.cbSize = std::mem::size_of::<windows_sys::Win32::UI::Shell::NOTIFYICONDATAW>() as u32;
-        nid.hWnd = hwnd;
-        nid.uID = 1;
-        Shell_NotifyIconW(NIM_DELETE, &nid);
-        PostQuitMessage(0);
+    match cmd as usize {
+        ID_SMOOTH => {
+            crate::win::hooks::toggle_feature(crate::win::hooks::Feature::SmoothScroll)
+        }
+        ID_REMAP => {
+            crate::win::hooks::toggle_feature(crate::win::hooks::Feature::ButtonRemap)
+        }
+        ID_EXIT => {
+            let mut nid: windows_sys::Win32::UI::Shell::NOTIFYICONDATAW = std::mem::zeroed();
+            nid.cbSize =
+                std::mem::size_of::<windows_sys::Win32::UI::Shell::NOTIFYICONDATAW>() as u32;
+            nid.hWnd = hwnd;
+            nid.uID = 1;
+            Shell_NotifyIconW(NIM_DELETE, &nid);
+            PostQuitMessage(0);
+        }
+        _ => {}
     }
 }

@@ -4,31 +4,76 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::CONFIG;
+use crate::config::Config;
 use std::sync::mpsc::Sender;
-use std::sync::{Mutex, OnceLock};
+use parking_lot::{Mutex, RwLock};
 use crate::scroll::engine::WheelInput;
 use crate::remap::{MouseButton, RemapTable};
 
-/// Sender shared with the hook by `init_scroll_sender`; None when smooth scroll
-/// is disabled. Wrapped in a Mutex because the injector thread and the hook
-/// thread both touch it (mpsc::Sender is Send but not Sync).
-static SCROLL_TX: OnceLock<Mutex<Sender<WheelInput>>> = OnceLock::new();
+/// Sender to the injector thread. `None` while smooth scroll is disabled.
+/// Wrapped in a Mutex only for shared access from the hook procedure
+/// (mpsc::Sender is Send but not Sync); the injector owns the receiving end.
+static SCROLL_TX: Mutex<Option<Sender<WheelInput>>> = Mutex::new(None);
 
 /// Low-level hook flag: the event was synthesized via `SendInput` (by us), so it
 /// must not be re-smoothed (would cause a feedback loop).
 const LLMHF_INJECTED: u32 = 0x01;
 
-/// Called from `main` to share the injector's sender with the hook procedure.
-pub fn init_scroll_sender(tx: Sender<WheelInput>) {
-    let _ = SCROLL_TX.set(Mutex::new(tx));
+/// Which top-level feature a tray-menu toggle acts on.
+#[derive(Clone, Copy)]
+pub enum Feature {
+    SmoothScroll,
+    ButtonRemap,
 }
 
-/// Built once at startup from the button-remap config; None disables remapping.
-static REMAP_TABLE: OnceLock<RemapTable> = OnceLock::new();
+/// Built from the button-remap config; `None` disables remapping.
+static REMAP_TABLE: RwLock<Option<RemapTable>> = RwLock::new(None);
 
-/// Called from `main` to share the remap table with the hook procedure.
-pub fn init_remap_table(table: RemapTable) {
-    let _ = REMAP_TABLE.set(table);
+/// Fully (re)initialize the runtime from `cfg`: tear down hooks + injector,
+/// swap in the new config, then bring hooks back up. Safe to call repeatedly
+/// (at startup, and on each tray-menu toggle).
+pub fn apply_config(cfg: Config) {
+    uninstall();
+    stop_scroll();
+    *REMAP_TABLE.write() = None;
+
+    *CONFIG.write() = cfg;
+    let cfg = CONFIG.read();
+
+    if cfg.scroll.enabled {
+        let tx = crate::scroll::injector::start(&*cfg);
+        *SCROLL_TX.lock() = Some(tx);
+    }
+    if cfg.buttons.enabled {
+        *REMAP_TABLE.write() = Some(RemapTable::from_entries(&cfg.buttons.remaps));
+    }
+    drop(cfg);
+
+    let _ = install();
+}
+
+/// Drop the injector sender so its thread disconnects and exits.
+pub fn stop_scroll() {
+    *SCROLL_TX.lock() = None;
+}
+
+/// Current on/off state of a feature (for the tray checkmarks).
+pub fn feature_enabled(f: Feature) -> bool {
+    match f {
+        Feature::SmoothScroll => CONFIG.read().scroll.enabled,
+        Feature::ButtonRemap => CONFIG.read().buttons.enabled,
+    }
+}
+
+/// Toggle a feature, persist to `config.toml`, and hot-reload.
+pub fn toggle_feature(f: Feature) {
+    let mut cfg = Config::load_or_default();
+    match f {
+        Feature::SmoothScroll => cfg.scroll.enabled = !cfg.scroll.enabled,
+        Feature::ButtonRemap => cfg.buttons.enabled = !cfg.buttons.enabled,
+    }
+    let _ = cfg.save();
+    apply_config(cfg);
 }
 
 /// Map a low-level mouse hook event to a (button, is_down) pair, if it is a
@@ -77,12 +122,11 @@ pub fn install() -> Result<(), String> {
         KEY_HOOK = kh;
     }
 
-    if let Some(cfg) = CONFIG.get() {
-        crate::log::write(&format!(
-            "hooks installed (scroll.enabled={}, buttons.enabled={})",
-            cfg.scroll.enabled, cfg.buttons.enabled
-        ));
-    }
+    let cfg = CONFIG.read();
+    crate::log::write(&format!(
+        "hooks installed (scroll.enabled={}, buttons.enabled={})",
+        cfg.scroll.enabled, cfg.buttons.enabled
+    ));
     Ok(())
 }
 
@@ -109,42 +153,36 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             return CallNextHookEx(0, code, wparam, lparam);
         }
 
+        let cfg = CONFIG.read();
+
         // Smooth scrolling: swallow the raw wheel event; the injector replays it.
-        if ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL {
-            if let Some(cfg) = CONFIG.get() {
-                if cfg.scroll.enabled {
-                    let mut delta = (ms.mouseData >> 16) as i16 as i32;
-                    let mut horizontal = ev == WM_MOUSEHWHEEL;
-                    // Modifier behaviors (Shift to accelerate / swap axis).
-                    let shift = crate::modifiers::shift_held();
-                    (delta, horizontal) = crate::modifiers::apply_scroll_modifiers(
-                        delta,
-                        horizontal,
-                        shift,
-                        cfg.scroll.shift_speedup,
-                        cfg.scroll.shift_horizontal,
-                    );
-                    if cfg.scroll.smooth {
-                        if let Some(tx) = SCROLL_TX.get() {
-                            if let Ok(g) = tx.lock() {
-                                let _ = g.send(WheelInput { delta, horizontal });
-                            }
-                        }
-                        return 1; // swallow original; the injector replays it smoothly
-                    }
+        if (ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL) && cfg.scroll.enabled {
+            let mut delta = (ms.mouseData >> 16) as i16 as i32;
+            let mut horizontal = ev == WM_MOUSEHWHEEL;
+            // Modifier behaviors (Shift to accelerate / swap axis).
+            let shift = crate::modifiers::shift_held();
+            (delta, horizontal) = crate::modifiers::apply_scroll_modifiers(
+                delta,
+                horizontal,
+                shift,
+                cfg.scroll.shift_speedup,
+                cfg.scroll.shift_horizontal,
+            );
+            if cfg.scroll.smooth {
+                if let Some(tx) = SCROLL_TX.lock().as_ref() {
+                    let _ = tx.send(WheelInput { delta, horizontal });
                 }
+                return 1; // swallow original; the injector replays it smoothly
             }
         }
 
         // Button remapping: swallow the source button, synthesize the target.
         if let Some((btn, down)) = button_event(ev, ms) {
-            if let Some(cfg) = CONFIG.get() {
-                if cfg.buttons.enabled {
-                    if let Some(table) = REMAP_TABLE.get() {
-                        if let Some(action) = table.lookup(btn) {
-                            crate::remap::execute(action, down);
-                            return 1; // swallow original; target is synthesized
-                        }
+            if cfg.buttons.enabled {
+                if let Some(table) = REMAP_TABLE.read().as_ref() {
+                    if let Some(action) = table.lookup(btn) {
+                        crate::remap::execute(action, down);
+                        return 1; // swallow original; target is synthesized
                     }
                 }
             }

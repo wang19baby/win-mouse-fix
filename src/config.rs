@@ -93,6 +93,13 @@ impl Config {
             }
         }
     }
+
+    /// Persist this config to the executable-directory `config.toml`.
+    pub fn save(&self) -> std::io::Result<()> {
+        let s = toml::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(config_path(), s)
+    }
 }
 
 pub fn config_path() -> PathBuf {
