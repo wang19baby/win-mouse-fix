@@ -41,13 +41,26 @@ pub struct ScrollConfig {
     /// lines. Smaller = smoother but caps top scroll speed.
     #[serde(default = "default_scroll_step")]
     pub step: f64,
+    /// MMF 3.x drag-momentum model parameters (curve.rs).
+    /// Drag exponent `b` in `v'(t) = -a·v(t)^b`. Higher = shorter coast.
+    #[serde(default = "default_drag_exponent")]
+    pub drag_exponent: f64,
+    /// Drag coefficient `a`. Higher = faster decay (shorter coast).
+    #[serde(default = "default_drag_coefficient")]
+    pub drag_coefficient: f64,
+    /// Speed (wheel units/sec) below which scrolling is considered finished.
+    #[serde(default = "default_stop_speed")]
+    pub stop_speed: f64,
     /// Scroll speed multiplier while Shift is held (MMF-style Shift-to-accelerate).
     pub shift_speedup: f64,
     /// While Shift is held, swap the scroll axis (vertical wheel -> horizontal).
     pub shift_horizontal: bool,
 }
 
-fn default_scroll_step() -> f64 { 30.0 }
+fn default_scroll_step() -> f64 { 120.0 }
+fn default_drag_exponent() -> f64 { 1.2 }
+fn default_drag_coefficient() -> f64 { 15.0 }
+fn default_stop_speed() -> f64 { 200.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ButtonsConfig {
@@ -115,7 +128,10 @@ impl Default for Config {
                 smooth_level: 0.6,
                 smooth_trend: 0.35,
                 friction: 0.88,
-                step: 30.0,
+                step: 120.0,
+                drag_exponent: 1.2,
+                drag_coefficient: 15.0,
+                stop_speed: 200.0,
                 shift_speedup: 1.0,
                 shift_horizontal: false,
             },

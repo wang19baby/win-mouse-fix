@@ -63,8 +63,8 @@ pub fn start(cfg: &Config) -> Sender<WheelInput> {
     let s = &cfg.scroll;
     let injector = ScrollInjector {
         rx,
-        vertical: ScrollAxis::new(s.smooth_level, s.smooth_trend, s.speed, s.friction, s.step),
-        horizontal: ScrollAxis::new(s.smooth_level, s.smooth_trend, s.speed, s.friction, s.step),
+        vertical: ScrollAxis::new(s.drag_exponent, s.drag_coefficient, s.stop_speed, s.speed, s.step),
+        horizontal: ScrollAxis::new(s.drag_exponent, s.drag_coefficient, s.stop_speed, s.speed, s.step),
     };
     thread::spawn(move || injector.run());
     tx

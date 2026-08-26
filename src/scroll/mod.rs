@@ -15,7 +15,7 @@
 //! raw wheel event and a dedicated injector thread replays the smoothed stream
 //! via `SendInput`.
 
+pub mod curve;
 pub mod engine;
 pub mod injector;
-pub mod smoother;
 pub mod subpixel;
