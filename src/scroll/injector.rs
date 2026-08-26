@@ -10,7 +10,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+    SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_MOVE, MOUSEEVENTF_WHEEL,
+    MOUSEINPUT,
 };
 
 use crate::config::Config;
@@ -88,4 +89,23 @@ unsafe fn send_wheel(delta: i32, horizontal: bool) {
         dwExtraInfo: 0,
     };
     SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+}
+
+/// Synthesize a relative mouse move via `SendInput` (used by pointer accel).
+pub fn send_mouse_move(dx: i32, dy: i32) {
+    unsafe {
+        let mut input = INPUT {
+            r#type: INPUT_MOUSE,
+            ..std::mem::zeroed()
+        };
+        input.Anonymous.mi = MOUSEINPUT {
+            dx,
+            dy,
+            mouseData: 0,
+            dwFlags: MOUSEEVENTF_MOVE,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+    }
 }

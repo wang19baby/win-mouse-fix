@@ -5,6 +5,7 @@ mod scroll;
 mod remap;
 mod modifiers;
 mod gesture;
+mod accel;
 
 use parking_lot::RwLock;
 use config::Config;

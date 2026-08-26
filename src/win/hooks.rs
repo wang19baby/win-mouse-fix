@@ -6,6 +6,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use crate::CONFIG;
 use crate::config::Config;
 use crate::gesture::DragController;
+use crate::accel::PointerAccel;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use std::sync::mpsc::Sender;
@@ -38,6 +39,9 @@ static SPACE_HELD: AtomicBool = AtomicBool::new(false);
 /// Active window-drag gesture controller; `None` disables gestures.
 static DRAG: RwLock<Option<DragController>> = RwLock::new(None);
 
+/// Pointer-acceleration controller; `None` disables acceleration.
+static ACCEL: RwLock<Option<PointerAccel>> = RwLock::new(None);
+
 /// Fully (re)initialize the runtime from `cfg`: tear down hooks + injector,
 /// swap in the new config, then bring hooks back up. Safe to call repeatedly
 /// (at startup, and on each tray-menu toggle).
@@ -62,6 +66,11 @@ pub fn apply_config(cfg: Config) {
         )));
     } else {
         *DRAG.write() = None;
+    }
+    if cfg.accel.enabled {
+        *ACCEL.write() = Some(PointerAccel::new());
+    } else {
+        *ACCEL.write() = None;
     }
     drop(cfg);
 
@@ -195,9 +204,24 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         // Drag gesture: move the window under the cursor while the trigger
         // button is held. Runs on cursor moves (which carry no button event).
         if ev == WM_MOUSEMOVE {
+            let mut dragging = false;
             if let Some(ctrl) = DRAG.read().as_ref() {
                 if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
                     crate::win::window::move_window(ctrl.hwnd(), x, y);
+                    dragging = true;
+                }
+            }
+            // Pointer acceleration: amplify the cursor move and swallow the
+            // original (skipped while a window is being dragged).
+            if !dragging {
+                let mut accel = ACCEL.write();
+                if let Some(ctrl) = accel.as_mut() {
+                    if let Some((dx, dy)) = ctrl.on_move(ms.pt.x, ms.pt.y, &cfg.accel) {
+                        if dx != 0 || dy != 0 {
+                            crate::scroll::injector::send_mouse_move(dx, dy);
+                            return 1; // swallow original; injected move is replayed
+                        }
+                    }
                 }
             }
         } else if let Some((btn, down)) = button_event(ev, ms) {

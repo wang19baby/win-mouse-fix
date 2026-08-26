@@ -9,6 +9,8 @@ pub struct Config {
     pub buttons: ButtonsConfig,
     #[serde(default)]
     pub drag: DragConfig,
+    #[serde(default)]
+    pub accel: AccelConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -67,6 +69,30 @@ impl Default for DragConfig {
     }
 }
 
+/// Pointer-acceleration settings (macOS / mouse-precision style).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AccelConfig {
+    /// Enable pointer acceleration.
+    pub enabled: bool,
+    /// Curve knee: higher = acceleration engages at higher speeds.
+    pub sensitivity: f64,
+    /// Multiplier at low speed (<=1 for finer slow control).
+    pub min_factor: f64,
+    /// Multiplier at high speed.
+    pub max_factor: f64,
+}
+
+impl Default for AccelConfig {
+    fn default() -> Self {
+        AccelConfig {
+            enabled: false,
+            sensitivity: 1000.0,
+            min_factor: 1.0,
+            max_factor: 2.0,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -93,6 +119,7 @@ impl Default for Config {
                 enabled: false,
                 button: "left".to_string(),
             },
+            accel: AccelConfig::default(),
         }
     }
 }
