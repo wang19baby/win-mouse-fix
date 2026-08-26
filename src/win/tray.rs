@@ -1,4 +1,5 @@
 use std::ptr::{null, null_mut};
+use std::process::Command;
 
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, Shell_NotifyIconW,
@@ -6,10 +7,11 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, CreateIconFromResourceEx, DefWindowProcW, DestroyMenu, GetCursorPos,
-    IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MessageBoxW, MF_CHECKED, MF_STRING, MF_UNCHECKED, PostQuitMessage,
-    RegisterClassExW, SetForegroundWindow, TrackPopupMenu, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_APP, WM_DESTROY, WM_RBUTTONUP, WNDCLASSEXW,
+    AppendMenuW, BN_CLICKED, CreatePopupMenu, CreateWindowExW, CreateIconFromResourceEx, DefWindowProcW,
+    DestroyMenu, DestroyWindow, GetCursorPos, IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MF_CHECKED,
+    MF_STRING, MF_UNCHECKED, PostQuitMessage, RegisterClassExW, SetForegroundWindow, ShowWindow, SW_SHOW,
+    TrackPopupMenu, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_RBUTTONUP, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_SYSMENU, WS_VISIBLE,
 };
 
 const WM_TRAYICON: u32 = WM_APP + 1;
@@ -17,6 +19,11 @@ const ID_EXIT: usize = 1001;
 const ID_ABOUT: usize = 1002;
 const ID_SMOOTH: usize = 1003;
 const ID_REMAP: usize = 1004;
+
+const ABOUT_CLASS: &str = "WinMouseFixAboutClass";
+const ABOUT_LINK_ID: usize = 2001;
+const ABOUT_OK_ID: usize = 2002;
+const REPO_URL: &str = "https://github.com/wang19baby/win-mouse-fix";
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -191,12 +198,120 @@ unsafe fn show_menu(hwnd: isize) {
             PostQuitMessage(0);
         }
         ID_ABOUT => {
-            let text = to_wide(
-                "Win Mouse Fix v0.1.0\n\n平滑滚动 · 按键重映射\n右键托盘图标进行控制",
-            );
-            let caption = to_wide("关于 Win Mouse Fix");
-            MessageBoxW(0, text.as_ptr(), caption.as_ptr(), 0);
+            show_about();
         }
         _ => {}
+    }
+}
+
+/// Interactive About box: app name, version, description, and a clickable
+/// link that opens the project page in the default browser. Modeless
+/// top-level window so the tray keeps working while it is open. Closing it
+/// does NOT quit the app (no `PostQuitMessage`).
+fn show_about() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| unsafe {
+        let hmod = GetModuleHandleW(null());
+        let class_name = to_wide(ABOUT_CLASS);
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: 0,
+            lpfnWndProc: Some(about_wnd_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hmod,
+            hIcon: 0,
+            hCursor: LoadCursorW(0, IDC_ARROW),
+            hbrBackground: 0,
+            lpszMenuName: null(),
+            lpszClassName: class_name.as_ptr(),
+            hIconSm: 0,
+        };
+        RegisterClassExW(&wc);
+    });
+
+    unsafe {
+        let hwnd = CreateWindowExW(
+            0,
+            to_wide(ABOUT_CLASS).as_ptr(),
+            to_wide("关于 Win Mouse Fix").as_ptr(),
+            WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+            200,
+            200,
+            380,
+            200,
+            0,
+            0,
+            GetModuleHandleW(null()),
+            null_mut(),
+        );
+        if hwnd != 0 {
+            ShowWindow(hwnd, SW_SHOW);
+        }
+    }
+}
+
+unsafe extern "system" fn about_wnd_proc(
+    hwnd: isize,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    match msg {
+        WM_CREATE => {
+            let hmod = GetModuleHandleW(null());
+            CreateWindowExW(
+                0,
+                to_wide("Static").as_ptr(),
+                to_wide("Win Mouse Fix").as_ptr(),
+                WS_CHILD | WS_VISIBLE,
+                20, 16, 320, 24, hwnd, 0, hmod, null_mut(),
+            );
+            let ver = format!("版本 {}", env!("CARGO_PKG_VERSION"));
+            CreateWindowExW(
+                0,
+                to_wide("Static").as_ptr(),
+                to_wide(&ver).as_ptr(),
+                WS_CHILD | WS_VISIBLE,
+                20, 44, 320, 20, hwnd, 0, hmod, null_mut(),
+            );
+            CreateWindowExW(
+                0,
+                to_wide("Static").as_ptr(),
+                to_wide("Windows 鼠标增强工具 · 平滑滚动 / 按键重映射").as_ptr(),
+                WS_CHILD | WS_VISIBLE,
+                20, 70, 340, 20, hwnd, 0, hmod, null_mut(),
+            );
+            CreateWindowExW(
+                0,
+                to_wide("Static").as_ptr(),
+                to_wide(REPO_URL).as_ptr(),
+                WS_CHILD | WS_VISIBLE | 0x40u32, // SS_NOTIFY: clickable link
+                20, 98, 340, 20, hwnd, ABOUT_LINK_ID as isize, hmod, null_mut(),
+            );
+            CreateWindowExW(
+                0,
+                to_wide("Button").as_ptr(),
+                to_wide("确定").as_ptr(),
+                WS_CHILD | WS_VISIBLE | 0x1u32, // BS_DEFPUSHBUTTON
+                280, 150, 80, 28, hwnd, ABOUT_OK_ID as isize, hmod, null_mut(),
+            );
+            0
+        }
+        WM_COMMAND => {
+            let id = (wparam & 0xFFFF) as usize;
+            let code = (wparam >> 16) as u16;
+            if code == BN_CLICKED as u16 {
+                if id == ABOUT_LINK_ID {
+                    // Open the project page in the default browser.
+                    let _ = Command::new("cmd").args(["/c", "start", "", REPO_URL]).spawn();
+                } else if id == ABOUT_OK_ID {
+                    DestroyWindow(hwnd);
+                }
+            }
+            0
+        }
+        WM_DESTROY => 0,
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
