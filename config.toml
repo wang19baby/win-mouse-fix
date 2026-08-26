@@ -4,10 +4,13 @@ start_hidden = true
 # log_path = "win-mouse-fix.log"
 
 [scroll]
-enabled = false
+enabled = true
 smooth = true
 speed = 1.0
 invert = false
+smooth_level = 0.6
+smooth_trend = 0.35
+friction = 0.88
 
 [buttons]
 enabled = false

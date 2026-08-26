@@ -1,6 +1,7 @@
 mod config;
 mod log;
 mod win;
+mod scroll;
 
 use std::sync::OnceLock;
 
@@ -16,6 +17,12 @@ fn main() {
 
     log::init(cfg.general.log_path.as_deref());
     log::write("Win Mouse Fix starting...");
+
+    // Start the smooth-scroll injector thread and hand its sender to the hooks.
+    if cfg.scroll.enabled {
+        let tx = scroll::injector::start(cfg);
+        win::hooks::init_scroll_sender(tx);
+    }
 
     if let Err(e) = win::tray::create() {
         log::write(&format!("tray init failed: {e}"));

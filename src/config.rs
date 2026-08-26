@@ -25,6 +25,12 @@ pub struct ScrollConfig {
     pub speed: f64,
     /// Invert vertical scroll direction.
     pub invert: bool,
+    /// Double-exponential smoothing: level (data) factor in [0,1]. 1 = no smoothing.
+    pub smooth_level: f64,
+    /// Double-exponential smoothing: trend factor in [0,1]. Controls momentum smoothness.
+    pub smooth_trend: f64,
+    /// Inertia decay per ~16ms tick in [0,1]. Lower = shorter coast.
+    pub friction: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,6 +51,9 @@ impl Default for Config {
                 smooth: true,
                 speed: 1.0,
                 invert: false,
+                smooth_level: 0.6,
+                smooth_trend: 0.35,
+                friction: 0.88,
             },
             buttons: ButtonsConfig { enabled: false },
         }
@@ -106,6 +115,9 @@ enabled = true
 smooth = true
 speed = 2.5
 invert = true
+smooth_level = 0.6
+smooth_trend = 0.35
+friction = 0.88
 
 [buttons]
 enabled = true
@@ -116,6 +128,9 @@ enabled = true
         assert!(cfg.scroll.enabled);
         assert_eq!(cfg.scroll.speed, 2.5);
         assert!(cfg.scroll.invert);
+        assert_eq!(cfg.scroll.smooth_level, 0.6);
+        assert_eq!(cfg.scroll.smooth_trend, 0.35);
+        assert_eq!(cfg.scroll.friction, 0.88);
         assert!(cfg.buttons.enabled);
     }
 }
