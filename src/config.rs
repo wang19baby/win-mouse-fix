@@ -58,9 +58,9 @@ pub struct ScrollConfig {
 }
 
 fn default_scroll_step() -> f64 { 120.0 }
-fn default_drag_exponent() -> f64 { 1.2 }
+fn default_drag_exponent() -> f64 { 1.05 }
 fn default_drag_coefficient() -> f64 { 15.0 }
-fn default_stop_speed() -> f64 { 200.0 }
+fn default_stop_speed() -> f64 { 30.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ButtonsConfig {
@@ -129,9 +129,9 @@ impl Default for Config {
                 smooth_trend: 0.35,
                 friction: 0.88,
                 step: 120.0,
-                drag_exponent: 1.2,
+                drag_exponent: 1.05,
                 drag_coefficient: 15.0,
-                stop_speed: 200.0,
+                stop_speed: 30.0,
                 shift_speedup: 1.0,
                 shift_horizontal: false,
             },

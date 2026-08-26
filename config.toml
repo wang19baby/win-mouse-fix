@@ -12,9 +12,10 @@ smooth_level = 0.6
 smooth_trend = 0.35
 friction = 0.88
 # MMF 3.x drag-momentum model (curve.rs): v'(t) = -a*v(t)^b
-drag_exponent = 1.2      # higher = shorter coast
+# Values match mac-mouse-fix's shipped LowInertia profile.
+drag_exponent = 1.05     # higher = shorter coast
 drag_coefficient = 15.0  # higher = faster decay
-stop_speed = 200.0       # units/sec; below this scrolling stops
+stop_speed = 30.0        # units/sec; below this scrolling stops
 step = 120               # max wheel units per tick (smoothness safety cap)
 
 [buttons]
