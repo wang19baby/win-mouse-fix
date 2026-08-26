@@ -7,6 +7,8 @@ pub struct Config {
     pub general: GeneralConfig,
     pub scroll: ScrollConfig,
     pub buttons: ButtonsConfig,
+    #[serde(default)]
+    pub drag: DragConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -46,6 +48,25 @@ pub struct ButtonsConfig {
     pub remaps: Vec<RemapEntry>,
 }
 
+/// Window-drag gesture settings (MMF-style Space-drag, or a chosen button).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DragConfig {
+    /// Enable window-drag gestures.
+    pub enabled: bool,
+    /// Button that initiates a drag: "left" (Space-armed, MMF-style),
+    /// "middle", "x1", or "x2" (three-finger-style, no Space needed).
+    pub button: String,
+}
+
+impl Default for DragConfig {
+    fn default() -> Self {
+        DragConfig {
+            enabled: false,
+            button: "left".to_string(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -67,6 +88,10 @@ impl Default for Config {
             buttons: ButtonsConfig {
                 enabled: false,
                 remaps: Vec::new(),
+            },
+            drag: DragConfig {
+                enabled: false,
+                button: "left".to_string(),
             },
         }
     }

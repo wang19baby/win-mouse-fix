@@ -1,10 +1,13 @@
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, MSLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON2, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, MSLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON2, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 use crate::CONFIG;
 use crate::config::Config;
+use crate::gesture::DragController;
+use std::sync::atomic::{AtomicBool, Ordering};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use std::sync::mpsc::Sender;
 use parking_lot::{Mutex, RwLock};
 use crate::scroll::engine::WheelInput;
@@ -29,6 +32,12 @@ pub enum Feature {
 /// Built from the button-remap config; `None` disables remapping.
 static REMAP_TABLE: RwLock<Option<RemapTable>> = RwLock::new(None);
 
+/// Space key state, tracked by the keyboard hook for Space-drag gestures.
+static SPACE_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Active window-drag gesture controller; `None` disables gestures.
+static DRAG: RwLock<Option<DragController>> = RwLock::new(None);
+
 /// Fully (re)initialize the runtime from `cfg`: tear down hooks + injector,
 /// swap in the new config, then bring hooks back up. Safe to call repeatedly
 /// (at startup, and on each tray-menu toggle).
@@ -46,6 +55,13 @@ pub fn apply_config(cfg: Config) {
     }
     if cfg.buttons.enabled {
         *REMAP_TABLE.write() = Some(RemapTable::from_entries(&cfg.buttons.remaps));
+    }
+    if cfg.drag.enabled {
+        *DRAG.write() = Some(DragController::new(crate::gesture::parse_button(
+            &cfg.drag.button,
+        )));
+    } else {
+        *DRAG.write() = None;
     }
     drop(cfg);
 
@@ -176,8 +192,36 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             }
         }
 
-        // Button remapping: swallow the source button, synthesize the target.
-        if let Some((btn, down)) = button_event(ev, ms) {
+        // Drag gesture: move the window under the cursor while the trigger
+        // button is held. Runs on cursor moves (which carry no button event).
+        if ev == WM_MOUSEMOVE {
+            if let Some(ctrl) = DRAG.read().as_ref() {
+                if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
+                    crate::win::window::move_window(ctrl.hwnd(), x, y);
+                }
+            }
+        } else if let Some((btn, down)) = button_event(ev, ms) {
+            // Drag start/end takes precedence over remap for the trigger button.
+            {
+                let mut drag = DRAG.write();
+                if let Some(ctrl) = drag.as_mut() {
+                    if down
+                        && ctrl.matches_trigger(btn, down, SPACE_HELD.load(Ordering::Relaxed))
+                        && !ctrl.is_active()
+                    {
+                        if let Some(hwnd) = crate::win::window::window_at_cursor(&ms.pt) {
+                            if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                                ctrl.begin(hwnd, ms.pt.x - rect.left, ms.pt.y - rect.top);
+                                return 1; // swallow the initiating button-down
+                            }
+                        }
+                    } else if !down && ctrl.is_active() && ctrl.matches_release(btn) {
+                        ctrl.end();
+                        return 1; // swallow the terminating button-up
+                    }
+                }
+            }
+            // Button remapping: swallow the source button, synthesize the target.
             if cfg.buttons.enabled {
                 if let Some(table) = REMAP_TABLE.read().as_ref() {
                     if let Some(action) = table.lookup(btn) {
@@ -198,6 +242,9 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize)
             let ks = &*(lparam as *const KBDLLHOOKSTRUCT);
             let down = ev == WM_KEYDOWN || ev == WM_SYSKEYDOWN;
             crate::modifiers::set_vk(ks.vkCode as u32, down);
+            if ks.vkCode == VK_SPACE as u32 {
+                SPACE_HELD.store(down, Ordering::Relaxed);
+            }
         }
     }
     CallNextHookEx(0, code, wparam, lparam)
