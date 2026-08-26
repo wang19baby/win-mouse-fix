@@ -11,6 +11,7 @@ invert = false
 smooth_level = 0.6
 smooth_trend = 0.35
 friction = 0.88
+step = 30
 
 [buttons]
 enabled = false

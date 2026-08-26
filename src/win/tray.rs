@@ -7,7 +7,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, CreateIconFromResourceEx, DefWindowProcW, DestroyMenu, GetCursorPos,
-    IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MF_CHECKED, MF_STRING, MF_UNCHECKED, PostQuitMessage,
+    IDC_ARROW, IDI_APPLICATION, LoadCursorW, LoadIconW, MessageBoxW, MF_CHECKED, MF_STRING, MF_UNCHECKED, PostQuitMessage,
     RegisterClassExW, SetForegroundWindow, TrackPopupMenu, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WM_APP, WM_DESTROY, WM_RBUTTONUP, WNDCLASSEXW,
 };
@@ -189,6 +189,13 @@ unsafe fn show_menu(hwnd: isize) {
             nid.uID = 1;
             Shell_NotifyIconW(NIM_DELETE, &nid);
             PostQuitMessage(0);
+        }
+        ID_ABOUT => {
+            let text = to_wide(
+                "Win Mouse Fix v0.1.0\n\n平滑滚动 · 按键重映射\n右键托盘图标进行控制",
+            );
+            let caption = to_wide("关于 Win Mouse Fix");
+            MessageBoxW(0, text.as_ptr(), caption.as_ptr(), 0);
         }
         _ => {}
     }

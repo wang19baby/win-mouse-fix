@@ -38,11 +38,11 @@ pub struct ScrollAxis {
 }
 
 impl ScrollAxis {
-    pub fn new(level: f64, trend: f64, gain: f64, friction: f64) -> Self {
+    pub fn new(level: f64, trend: f64, gain: f64, friction: f64, step: f64) -> Self {
         assert!((0.0..=1.0).contains(&friction), "friction must be in [0,1]");
         Self {
             smoother: DoubleExponentialSmoother::new(level, trend),
-            subpixel: SubPixelAccumulator::new(1.0),
+            subpixel: SubPixelAccumulator::new(1.0, step),
             velocity: 0.0,
             last_dir: 0,
             last_event: None,
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn emits_positive_when_scrolling_down() {
-        let mut ax = ScrollAxis::new(0.6, 0.35, 1.0, 0.88);
+        let mut ax = ScrollAxis::new(0.6, 0.35, 1.0, 0.88, 30.0);
         let t0 = Instant::now();
         ax.on_wheel(120, at(t0, 0));
         let mut total = 0;
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn opposite_tick_stops_scroll() {
-        let mut ax = ScrollAxis::new(0.6, 0.35, 1.0, 0.88);
+        let mut ax = ScrollAxis::new(0.6, 0.35, 1.0, 0.88, 30.0);
         let t0 = Instant::now();
         ax.on_wheel(120, at(t0, 0));
         ax.on_wheel(-120, at(t0, 20)); // opposite direction -> stop
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn inertia_fully_decays() {
-        let mut ax = ScrollAxis::new(0.6, 0.35, 1.0, 0.88);
+        let mut ax = ScrollAxis::new(0.6, 0.35, 1.0, 0.88, 30.0);
         let t0 = Instant::now();
         ax.on_wheel(120, at(t0, 0));
         let mut t = t0;

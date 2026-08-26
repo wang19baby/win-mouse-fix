@@ -17,8 +17,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use crate::config::Config;
 use crate::scroll::engine::{ScrollAxis, WheelInput};
 
-/// Tick cadence (~60 Hz). Fine enough for smooth scroll, cheap enough to idle.
-const TICK_MS: u64 = 16;
+/// Tick cadence (~125 Hz). Fine enough for smooth scroll, cheap enough to idle.
+const TICK_MS: u64 = 8;
 
 /// Owns the two scroll axes and the channel from the hook layer.
 pub struct ScrollInjector {
@@ -63,8 +63,8 @@ pub fn start(cfg: &Config) -> Sender<WheelInput> {
     let s = &cfg.scroll;
     let injector = ScrollInjector {
         rx,
-        vertical: ScrollAxis::new(s.smooth_level, s.smooth_trend, s.speed, s.friction),
-        horizontal: ScrollAxis::new(s.smooth_level, s.smooth_trend, s.speed, s.friction),
+        vertical: ScrollAxis::new(s.smooth_level, s.smooth_trend, s.speed, s.friction, s.step),
+        horizontal: ScrollAxis::new(s.smooth_level, s.smooth_trend, s.speed, s.friction, s.step),
     };
     thread::spawn(move || injector.run());
     tx
