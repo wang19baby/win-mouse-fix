@@ -15,3 +15,6 @@ Thumbs.db
 # Python cache (icon generator)
 __pycache__/
 tools/__pycache__/
+
+# Standalone probe binary built from src/bin/dpi-probe.rs (build artifact, not source)
+/dpi-probe.exe
