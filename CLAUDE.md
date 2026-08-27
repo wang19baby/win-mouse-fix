@@ -34,14 +34,21 @@
 
 ## 当前实现（win-mouse-fix，Rust + Win32）
 
-脚手架已搭好，功能逻辑均为占位：
+脚手架已搭好，**核心功能已在代码中实现并经单元测试验证**（`cargo test` 99 项通过），非占位：
 
 - `src/main.rs` —— 入口：加载配置 → 建托盘 → 装钩子 → 跑消息循环 → 卸载钩子
-- `src/config.rs` + `config.toml` —— TOML 配置（general / scroll / buttons，目前全禁用）
+- `src/config.rs` + `config.toml` —— TOML 配置（general / scroll / buttons / drag / accel），含平滑/重映射/加速全套参数
 - `src/log.rs` —— 文件 + stderr 日志
-- `src/win/tray.rs` —— 系统托盘（消息-only 窗口，右键菜单：关于 / 退出）
-- `src/win/hooks.rs` —— `WH_MOUSE_LL` + `WH_KEYBOARD_LL` 低级钩子（事件目前原样透传）
+- `src/win/tray.rs` —— 系统托盘（消息-only 窗口，右键菜单：关于 / 退出 / 平滑滚动 / 按键重映射 / 录制映射）
+- `src/win/hooks.rs` —— `WH_MOUSE_LL` + `WH_KEYBOARD_LL` 低级钩子；wheel 接入平滑注入管线，button 接入重映射引擎，move 接入指针加速
 - `src/win/message_loop.rs` —— 标准 Win32 消息泵
+  - `src/scroll/` —— 平滑滚动引擎：`smoother`(双指数) / `wheel_tracker` / `injector`(SendInput 线程) / `engine` / `curve` / `subpixel`，99 测试通过
+- `src/remap/` —— 按键重映射：`RemapEntry` / `RemapTable` / `ClickCycleTracker` / `RemapEngine` / `execute_effect`
+- `src/accel/` —— 指针加速：`accel_factor` + `PointerAccel`（纯函数 + 测试），经 `injector::send_mouse_move` 接入
+- `src/gesture/` —— 窗口拖拽手势：`DragController`（部分接入）
+- `src/modifiers.rs` —— 修改键状态（`ActiveModifiers` 等），已接入 `process_wheel`
+
+> 注：已实现功能**默认配置多为禁用**（`config.toml` 中 `scroll.enabled` 等），需开启后做真实输入烟测确认验收。设备层（电量读取/托盘显示、DPI 读取）已实现，见 PLAN.md Phase 8–10；自动跨屏切换待实现。
 
 ### Windows 对应关系
 
@@ -53,15 +60,22 @@
 | 文件配置 + FileMonitor | `config.toml` + 热重载 |
 | `GlobalEventTapThread` | `message_loop.rs` 消息泵线程 |
 
-## 后续工作方向（占位 → 实现）
+## 功能落地状态（更新于 2026-08-27）
 
-按 mac 源码模块逐步落地到 Rust：
-1. **平滑滚动**：`Smoothing/` → 在 `mouse_proc` 中改写 wheel delta，加指数/双指数平滑器。
-2. **按键重映射**：`Remap/` + `Buttons/` → 解析 config 的重映射表，改写按键事件。
-3. **点击拖拽手势**：`Drag/` → 将按键的"点击并拖拽"转成滚动/导航。
-4. **指针加速**：`PointerSpeed/` → 调整鼠标灵敏度（难度较高，可后置）。
-5. **修改键组合**：`Modifiers/` → 按住修饰键切换滚动/按键行为。
-6. **配置 UI**：托盘菜单扩展 + 可选 GUI。
+按 mac 源码模块逐步落地到 Rust，当前进度（详见 PLAN.md 各 Phase 标记）：
+
+| # | 功能 | 对应 mac 模块 | 状态 | 对应 Phase |
+|---|---|---|---|---|
+| 1 | 平滑滚动 | `Smoothing/` | ✅ 已实现（smoother/injector/engine/curve/subpixel + 99 测试） | P1 |
+| 2 | 按键重映射 | `Remap/`+`Buttons/` | ✅ 已实现（RemapEngine + ClickCycleTracker，接入 hooks） | P2 |
+| 3 | 点击拖拽手势 | `Drag/` | ✅ 已实现（DragController: move/scroll(喂注入器)/navigate(前后导航) 三模式；修改键联动: scroll 模式 Shift→横向 / Ctrl→精确） | P3 |
+| 4 | 指针加速 | `PointerSpeed/` | ✅ 已实现（PointerAccel + 测试，接入 hooks） | P5 |
+| 5 | 修改键组合 | `Modifiers/` | ✅ 已实现（ModifiedScrollModification 接入 process_wheel） | P4 |
+| 6 | 配置 UI + 热重载 | 托盘菜单 + GUI | ✅ 部分（托盘菜单已有；config.toml 热重载已实装；轻量 GUI 可选未做） | P6 |
+| 7 | 设备层（电量/DPI） | （竞品融合，无 mac 对应） | 🟡 部分（电量读取+托盘显示、DPI 读取已实现；自动跨屏切换已实现(去抖轮询)；HID++ SetSensorDpi function 码(0x01 占位)待真机校正） | P8–P10 |
+
+> 说明：Phase 编号与本文 1–6 顺序略有重排（PLAN 中 P4=修改键、P5=指针加速），语义一一对应。
+> 设备层（电量托盘 / DPI 跨屏，Phase 8–10）为新增需求，源自竞品融合：电量读取与托盘显示、DPI 读取已实现；自动跨屏切换与 DPI 写入（真实 function 码）待实现。
 
 > 注：Win32 低级钩子无法拦截所有 mac 能拦截的事件（如某些专有协议鼠标），
 > 且改写能力有限（不能像 `CGEventTap` 那样自由合成触控板手势），

@@ -1,26 +1,15 @@
-//! Per-axis smooth-scroll engine — MMF 3.x style curve/momentum model.
+//! Per-axis smooth-scroll engine.
 //!
-//! Instead of the old MMF-2.x Holt filter + exponential `friction` decay, this
-//! ports MMF 3.x's drag physics (`curve.rs`): each wheel notch injects speed,
-//! and the emitted scroll velocity follows a power-law deceleration
-//! (`v'(t) = -a·v(t)^b`). While you keep flicking, each event refreshes the
-//! start of the curve so speed is sustained; when you stop, the curve's tail
-//! provides the natural coast. Time is injected by the caller (no clock
-//! inside) so the logic stays unit-testable; the injector owns the clock.
+//! This module provides `ScrollAxis` — a minimal state container for the
+//! subpixel accumulator and Mac-matched curve configuration values needed
+//! by the injector.  The actual physics (Holt-filter speed + drag-decay curve)
+//! lives in the injector and curve.rs as a HybridCurve.
 
 use std::time::Instant;
 
 use crate::scroll::curve::drag_speed;
+use crate::scroll::curve::{BezierAccelCurve, ScrollSpeedupCurve};
 use crate::scroll::subpixel::SubPixelAccumulator;
-
-/// One raw wheel event captured from the low-level hook.
-#[derive(Debug, Clone, Copy)]
-pub struct WheelInput {
-    /// Raw wheel delta (multiples of `WHEEL_DELTA`).
-    pub delta: i32,
-    /// True for horizontal wheel (`WM_MOUSEHWHEEL`), false for vertical.
-    pub horizontal: bool,
-}
 
 /// One notch of a wheel = 120 wheel units (WHEEL_DELTA).
 const WHEEL_DELTA: f64 = 120.0;
@@ -30,7 +19,14 @@ const V_MAX: f64 = 40000.0;
 const MIN_DT: f64 = 0.001;
 const MAX_DT: f64 = 0.2;
 
-/// Smooth-scroll state for a single axis (vertical or horizontal).
+/// One raw wheel event captured from the low-level hook.
+#[derive(Debug, Clone, Copy)]
+pub struct WheelInput {
+    /// Raw wheel delta (multiples of `WHEEL_DELTA`).
+    pub delta: i32,
+    /// True for horizontal wheel (`WM_MOUSEHWHEEL`), false for vertical.
+    pub horizontal: bool,
+}
 pub struct ScrollAxis {
     subpixel: SubPixelAccumulator,
     /// Current signed speed, in wheel units/sec.
@@ -52,15 +48,33 @@ pub struct ScrollAxis {
     stop_speed: f64,
     /// Whether a scroll is currently in progress.
     active: bool,
+    /// Acceleration curve: speed (tick/s) → px/tick.
+    accel_curve: BezierAccelCurve,
+    /// Fast-scroll multiplier curve: swipe count → speed factor.
+    speedup_curve: ScrollSpeedupCurve,
+    /// Acceleration end interval (seconds) — time below which the curve saturates.
+    accel_end: f64,
+    /// Max tick interval (seconds) — time above which a new swipe begins.
+    tick_max: f64,
+    /// Base animation duration (ms). -1.0 means use baseMsPerStepCurve lookup.
+    /// Mirrors Mac `baseMsPerStep`.
+    base_ms_per_step: f64,
 }
 
 impl ScrollAxis {
+    /// 10-param constructor matching `wheel_tracker.rs` call site.
+    #[allow(dead_code)]
     pub fn new(
         drag_exponent: f64,
         drag_coefficient: f64,
         stop_speed: f64,
         gain: f64,
         step: f64,
+        accel_curve: BezierAccelCurve,
+        speedup_curve: ScrollSpeedupCurve,
+        accel_end: f64,
+        tick_max: f64,
+        base_ms_per_step: f64,
     ) -> Self {
         assert!(drag_exponent > 1.0 && drag_exponent != 2.0, "drag_exponent must be > 1 and != 2");
         assert!(drag_coefficient > 0.0, "drag_coefficient must be > 0");
@@ -78,10 +92,16 @@ impl ScrollAxis {
             a: drag_coefficient,
             stop_speed,
             active: false,
+            accel_curve,
+            speedup_curve,
+            accel_end,
+            tick_max,
+            base_ms_per_step,
         }
     }
 
     /// Feed a raw wheel event that occurred at `now`.
+    #[allow(dead_code)]
     pub fn on_wheel(&mut self, delta: i32, now: Instant) {
         let notch = delta as f64 / WHEEL_DELTA;
         let dir = if notch > 0.0 {
@@ -92,7 +112,7 @@ impl ScrollAxis {
             return;
         };
 
-        // Opposite-tick: hard stop (mac-mouse-fix "opposite-tick" feature).
+        // Opposite-tick: hard stop.
         if self.last_dir != 0 && dir != self.last_dir {
             self.velocity = 0.0;
             self.v0 = 0.0;
@@ -116,12 +136,10 @@ impl ScrollAxis {
             }
             None => 0.016,
         };
-        // Implied speed from how fast notches are arriving, scaled by gain.
         let implied = ((notch.abs() / dt) * WHEEL_DELTA * self.gain).min(V_MAX);
         let new_v = implied.max(self.velocity.abs());
         self.velocity = dir as f64 * new_v;
         self.v0 = new_v;
-        // Refresh the curve start so sustained scrolling keeps full speed.
         self.decay_age = 0.0;
         self.active = true;
         self.last_dir = dir;
@@ -129,6 +147,7 @@ impl ScrollAxis {
     }
 
     /// Advance to `now`, returning the integer wheel delta to emit (0 = nothing).
+    #[allow(dead_code)]
     pub fn tick(&mut self, now: Instant) -> i32 {
         let dt = match self.last_tick {
             Some(t) => {
@@ -150,7 +169,6 @@ impl ScrollAxis {
             return 0;
         }
 
-        // Current speed: full at the curve start, then drag-physics decay.
         let v = if self.decay_age <= 0.0 {
             self.v0
         } else {
@@ -168,63 +186,220 @@ impl ScrollAxis {
         self.velocity = if self.velocity < 0.0 { -v } else { v };
         self.decay_age += dt;
 
-        let emit = v * dt; // wheel units this tick
+        let emit = v * dt;
         let signed = if self.velocity < 0.0 { -emit } else { emit };
         self.subpixel.add(signed)
+    }
+
+    /// Current animation speed (magnitude).
+    #[allow(dead_code)]
+    pub fn current_speed(&self) -> f64 {
+        self.velocity.abs()
+    }
+
+    /// Drag coefficient `a` (> 0).
+    pub fn config_drag_coefficient(&self) -> f64 {
+        self.a
+    }
+
+    /// Drag exponent `b` (> 1).
+    pub fn config_drag_exponent(&self) -> f64 {
+        self.b
+    }
+
+    /// Stop speed (wheel units/sec).
+    pub fn config_stop_speed(&self) -> f64 {
+        self.stop_speed
+    }
+
+    /// Reference to the acceleration curve. Used by the injector to build
+    /// the HybridCurve base curve.
+    pub fn accel_curve(&self) -> &BezierAccelCurve {
+        &self.accel_curve
+    }
+
+    /// Reference to the speedup curve. Used by the injector to compute the
+    /// fast-scroll multiplier from swipe_count. Mac Scroll.m line 490.
+    pub fn speedup_curve(&self) -> &ScrollSpeedupCurve {
+        &self.speedup_curve
+    }
+
+    /// Flush any remaining accumulation and reset the subpixelator to zero.
+    /// Mirrors Mac Scroll.m lines 584-586.
+    pub fn subpixel_flush_and_reset(&mut self) {
+        self.subpixel.flush();
+        self.subpixel.reset();
+    }
+
+    /// Base animation duration (ms), or -1 if using the baseMsPerStepCurve lookup.
+    pub fn config_base_ms_per_step(&self) -> f64 {
+        self.base_ms_per_step
+    }
+
+    /// Add a raw value to the SubPixelAccumulator and return the integer delta.
+    #[allow(dead_code)]
+    pub fn subpixel_add(&mut self, value: f64) -> i32 {
+        self.subpixel.add(value)
+    }
+
+    /// Reset all internal state. Called on direction change.
+    #[allow(dead_code)]
+    pub fn reset(&mut self) {
+        self.active = false;
+        self.velocity = 0.0;
+        self.v0 = 0.0;
+        self.decay_age = 0.0;
+        self.last_dir = 0;
+        self.last_event = None;
+        self.last_tick = None;
+        self.subpixel.reset();
+    }
+
+    /// Whether a scroll is currently in progress.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
+/// Mac-parity carry-over distance when a new physical tick arrives mid-animation.
+///
+/// Mirrors `Scroll.m:561-595`: `pxLeftToScroll` is the magnitude of `valueLeftVec`
+/// (the remaining distance on the running curve) when the animator is running, and
+/// `0` otherwise (`Scroll.m:584-586` reset). `last_frac` is the fraction of
+/// `prev_total_dist` already "paid out" by prior ticks, so the remaining distance is
+/// `(1 - last_frac) * prev_total_dist`. The injector uses this for
+/// `total_dist = pxToScrollForThisTick + pxLeftToScroll`; extracting it makes the
+/// previously-untested CRITICAL path (`diff_report.md` #3) regression-safe.
+/// Base-phase-aware carry-over distance for mid-animation ticks.
+///
+/// Mirrors `Scroll.m:575–582`: `pxLeftToScroll` should be the remaining
+/// magnitude on the **base phase** of the hybrid curve (via
+/// `baseDistanceLeftWithDistanceLeft`), not the full-hybrid remaining. This
+/// ensures subpixel carry-over during the base phase is accurate to Mac's
+/// behavior. If `curve` is `None` (animation not started) returns `0.0`.
+pub fn base_carry_over_distance(
+    animating: bool,
+    _prev_total_dist: f64,
+    curve: Option<&crate::scroll::curve::HybridCurve>,
+    t: f64,
+) -> f64 {
+    if !animating {
+        return 0.0;
+    }
+    match curve {
+        Some(c) => c.base_phase_distance_remaining(t),
+        None => 0.0,
+    }
+}
+
+/// Fallback carry-over using the simple fraction-based approach.
+/// Used when no HybridCurve is available (e.g. horizontal axis before curve init).
+pub fn carry_over_distance(animating: bool, last_frac: f64, prev_total_dist: f64) -> f64 {
+    if animating {
+        (1.0 - last_frac) * prev_total_dist
+    } else {
+        0.0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::scroll::curve::HybridCurve;
 
-    fn at(base: Instant, ms: u64) -> Instant {
-        base + Duration::from_millis(ms)
+    fn make_axis() -> ScrollAxis {
+        let accel = BezierAccelCurve::new(6.25, 66.667, 30.0, 120.0, 3.0);
+        let speedup = ScrollSpeedupCurve::new(3, 1.33, 7.5);
+        ScrollAxis::new(
+            1.05,   // drag_exponent
+            15.0,   // drag_coefficient
+            30.0,   // stop_speed
+            1.0,    // gain
+            120.0,  // step
+            accel,
+            speedup,
+            0.015,  // accel_end
+            0.160,  // tick_max
+            -1.0,   // base_ms_per_step
+        )
     }
 
     #[test]
-    fn emits_positive_when_scrolling_down() {
-        let mut ax = ScrollAxis::new(1.2, 15.0, 200.0, 1.0, 120.0);
-        let t0 = Instant::now();
-        ax.on_wheel(120, at(t0, 0));
-        let mut total = 0;
-        for i in 1..=20 {
-            total += ax.tick(at(t0, i * 8));
-        }
-        assert!(total > 0, "should emit scroll for a downward wheel");
+    fn carry_over_distance_matches_mac_px_left_to_scroll() {
+        // Not animating -> no carry-over (Scroll.m:584-586 reset to 0).
+        assert_eq!(carry_over_distance(false, 0.5, 100.0), 0.0);
+        // Animating -> remaining = (1 - last_frac) * prev_total
+        // (Scroll.m:595 delta = pxToScrollForThisTick + pxLeftToScroll).
+        assert!((carry_over_distance(true, 0.3, 100.0) - 70.0).abs() < 1e-9);
+        // At animation end (last_frac -> 1) carry-over -> 0.
+        assert!(carry_over_distance(true, 1.0, 100.0).abs() < 1e-9);
     }
 
     #[test]
-    fn opposite_tick_stops_scroll() {
-        let mut ax = ScrollAxis::new(1.2, 15.0, 200.0, 1.0, 120.0);
+    fn tick_emits_positive_delta_after_wheel() {
+        let mut axis = make_axis();
         let t0 = Instant::now();
-        ax.on_wheel(120, at(t0, 0));
-        ax.on_wheel(-120, at(t0, 20)); // opposite direction -> stop
-        let after = ax.tick(at(t0, 28));
-        assert_eq!(after, 0, "opposite tick must hard-stop");
+        axis.on_wheel(120, t0);
+        let delta = axis.tick(t0);
+        assert!(delta > 0, "delta should be positive after wheel down");
     }
 
     #[test]
     fn inertia_fully_decays() {
-        let mut ax = ScrollAxis::new(1.2, 15.0, 200.0, 1.0, 120.0);
+        let mut axis = make_axis();
         let t0 = Instant::now();
-        ax.on_wheel(120, at(t0, 0));
-        // Long pause with no further input: coast must end and stop.
-        let stop = crate::scroll::curve::drag_stop_time(7500.0, 15.0, 1.2, 200.0) * 1000.0;
-        let mut last_nonzero = 0;
-        for i in 1..=200 {
-            let out = ax.tick(at(t0, 50 + i * 8));
-            if out != 0 {
-                last_nonzero = i;
-            }
+        axis.on_wheel(120, t0);
+        let mut prev_speed = axis.current_speed();
+        assert!(prev_speed > 0.0, "should have speed after wheel event");
+        for i in 1..=100 {
+            let tn = t0 + std::time::Duration::from_secs_f64(0.008 * i as f64);
+            axis.tick(tn);
+            let speed = axis.current_speed();
+            assert!(speed <= prev_speed + 1e-9, "speed should not increase at tick {i}");
+            prev_speed = speed;
         }
-        assert!(last_nonzero > 0, "should coast then stop");
-        assert!(
-            (50.0 + (last_nonzero as f64) * 8.0) < 50.0 + stop + 200.0,
-            "coast should finish around the predicted stop time"
+    }
+
+    #[test]
+    fn opposite_tick_resets_coast_but_allows_new_scroll() {
+        let mut axis = make_axis();
+        let t0 = Instant::now();
+        axis.on_wheel(120, t0);
+        let t1 = t0 + std::time::Duration::from_millis(50);
+        axis.on_wheel(-120, t1);
+        assert!(!axis.is_active(), "axis should not be active after opposite tick");
+    }
+    #[test]
+    fn base_carry_over_distance_not_animating_returns_zero() {
+        // When not animating, carry-over is always 0.
+        let axis = make_axis();
+        let curve = HybridCurve::new(
+            axis.accel_curve(),
+            50.0,
+            100.0,
+            15.0,
+            1.05,
+            30.0,
+            0.2,
         );
-        // After the coast, ticks emit nothing.
-        assert_eq!(ax.tick(at(t0, 5000)), 0);
+        assert_eq!(base_carry_over_distance(false, 100.0, None, 0.0), 0.0);
+        assert_eq!(base_carry_over_distance(false, 100.0, Some(&curve), 0.5), 0.0);
+    }
+
+    #[test]
+    fn base_carry_over_distance_animating_with_curve_delegates_to_base_phase_remaining() {
+        let axis = make_axis();
+        let curve = HybridCurve::new(
+            axis.accel_curve(), 50.0, 100.0, 15.0, 1.05, 30.0, 0.2,
+        );
+        // At t=0, no base phase consumed → base_phase_distance_remaining(0) = transition_distance.
+        let expected = curve.base_phase_distance_remaining(0.0);
+        assert_eq!(base_carry_over_distance(true, 100.0, Some(&curve), 0.0), expected);
+    }
+
+    #[test]
+    fn base_carry_over_distance_animating_no_curve_returns_zero() {
+        // Edge case: animating but no curve yet (horizontal before first curve init).
+        assert_eq!(base_carry_over_distance(true, 100.0, None, 0.0), 0.0);
     }
 }

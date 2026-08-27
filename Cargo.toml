@@ -13,7 +13,14 @@ windows-sys = { version = "0.52", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_System_LibraryLoader",
+    "Win32_System_Com",
     "Win32_Graphics_Gdi",
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_IO",
+    "Win32_System_Registry",
 ] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
@@ -23,3 +30,7 @@ parking_lot = "0.12"
 opt-level = 3
 lto = true
 panic = "abort"
+
+[[bin]]
+name = "dpi-probe"
+path = "src/bin/dpi-probe.rs"

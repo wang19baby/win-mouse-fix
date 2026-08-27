@@ -36,6 +36,11 @@ pub fn shift_held() -> bool {
     STATE.load(Ordering::SeqCst) & SHIFT != 0
 }
 
+/// Returns current modifier bitmask (Shift=bit0, Ctrl=bit1, Alt=bit2).
+pub fn state() -> u8 {
+    STATE.load(Ordering::SeqCst)
+}
+
 /// Apply modifier-based scroll transforms. Pure: `shift_held` is passed in so
 /// this is unit-testable without touching global state.
 pub fn apply_scroll_modifiers(

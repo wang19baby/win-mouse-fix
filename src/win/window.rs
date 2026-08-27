@@ -7,9 +7,19 @@
 
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetAncestor, GetClassNameW, GetDesktopWindow, GetWindowRect, IsIconic, IsZoomed,
-    SetWindowPos, WindowFromPoint, GA_ROOT, HWND_TOP, SWP_NOSIZE, SWP_NOACTIVATE, SWP_NOZORDER,
+    GetAncestor, GetClassNameW, GetCursorPos, GetDesktopWindow, GetForegroundWindow,
+    GetWindowModuleFileNameW, GetWindowRect, IsIconic, IsZoomed, SetWindowPos, WindowFromPoint,
+    GA_ROOT, HWND_TOP, SWP_NOSIZE, SWP_NOACTIVATE, SWP_NOZORDER,
 };
+
+/// Returns the current cursor position as (x, y).
+pub fn cursor_pos() -> (i32, i32) {
+    unsafe {
+        let mut pt: POINT = std::mem::zeroed();
+        GetCursorPos(&mut pt);
+        (pt.x, pt.y)
+    }
+}
 
 /// The movable top-level window under `pt`, or `None` if no suitable target
 /// (desktop, taskbar, iconic/zoomed window).
@@ -78,5 +88,24 @@ fn is_movable(hwnd: isize) -> bool {
             }
         }
         true
+    }
+}
+
+/// Basename of the foreground window's owning executable, or `None` if it
+/// can't be determined. Used to select a per-app config profile.
+pub fn foreground_exe() -> Option<String> {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd == 0 {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let n = GetWindowModuleFileNameW(hwnd, buf.as_mut_ptr(), buf.len() as u32);
+        if n == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..n as usize]);
+        let name = std::path::Path::new(&path).file_name()?.to_string_lossy().into_owned();
+        Some(name)
     }
 }
