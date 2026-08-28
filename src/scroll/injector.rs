@@ -12,37 +12,40 @@ use crate::scroll::engine::{base_carry_over_distance, carry_over_distance, Wheel
 use crate::scroll::wheel_tracker::{ScrollAnalysis, WheelTracker, TIME_BETWEEN_TICKS_NONE, TICK_INTERVAL_MAX};
 /// Tick cadence (~125 Hz = 8 ms).
 const TICK_MS: u64 = 8;
-
-/// Max animation duration (1.5 seconds) — mirrors MMF `maxAnimationDuration`.
+/// Milliseconds after last tick before coast begins.
+const COAST_DELAY_MS: f64 = 80.0;
 const MAX_ANIMATION_SECS: f64 = 1.5;
-/// Owns the two scroll axes (via WheelTracker) and the channel from the hook layer.
 pub struct ScrollInjector {
     rx: Receiver<WheelInput>,
     vertical: WheelTracker,
     horizontal: WheelTracker,
 
-    // ── Per-axis animation state ───────────────────────────────────────────────
-
-    /// Whether vertical axis has an active animation.
+    // ── Vertical animation state ────────────────────────────────────────────────
+    /// Whether vertical axis is coasting (post-wheel-stop deceleration).
     vert_animating: bool,
-    /// Normalized time accumulator for vertical animation (0.0–1.0).
-    vert_t: f64,
-    /// Instant when vertical animation started.
+    /// Time when vertical coast animation started.
     vert_anim_start: Option<Instant>,
-    /// Accumulated scroll distance for vertical animation (wheel units).
+    /// Accumulated scroll distance from current animation frame.
     vert_accum: f64,
-    /// HybridCurve for vertical axis.
+    /// HybridCurve for vertical coast deceleration.
     vert_curve: Option<HybridCurve>,
-    /// Total distance for vertical animation.
+    /// Total distance for vertical coast animation.
     vert_total_dist: f64,
-    /// Last evaluated fraction of the vertical animation (for leftover computation).
+    /// Last evaluated fraction for vertical curve.
     vert_last_frac: f64,
-
-    /// Whether horizontal axis has an active animation.
+    /// Timestamp of last physical vertical tick (for coast trigger).
+    vert_last_tick: Option<Instant>,
+    /// Accumulated scroll distance during active scroll (for coast distance).
+    vert_scroll_dist: f64,
+    /// Swipe count at last tick (for coast threshold).
+    vert_swipe_count: f64,
+    /// Current normalized time of vertical animation.
+    vert_t: f64,
+    /// Whether horizontal axis is coasting.
     horiz_animating: bool,
-    /// Normalized time accumulator for horizontal animation.
+    /// Normalized time for horizontal animation.
     horiz_t: f64,
-    /// Instant when horizontal animation started.
+    /// Time when horizontal animation started.
     horiz_anim_start: Option<Instant>,
     /// Accumulated scroll distance for horizontal animation.
     horiz_accum: f64,
@@ -50,38 +53,48 @@ pub struct ScrollInjector {
     horiz_curve: Option<HybridCurve>,
     /// Total distance for horizontal animation.
     horiz_total_dist: f64,
-    /// Last evaluated fraction of the horizontal animation (for leftover computation).
+    /// Last evaluated fraction for horizontal curve.
     horiz_last_frac: f64,
+    /// Timestamp of last physical horizontal tick.
+    horiz_last_tick: Option<Instant>,
+    /// Accumulated scroll distance for horizontal scroll.
+    horiz_scroll_dist: f64,
 }
-
 impl ScrollInjector {
     /// Main loop: receive raw wheel events, drive trackers, emit smoothed deltas.
     fn run(mut self) {
         loop {
-            let now = Instant::now();
+            let t0 = Instant::now();
 
             // ── 1. Receive pending wheel events (physical ticks) ─────────────────
             while let Ok(ev) = self.rx.try_recv() {
-                let t = Instant::now();
+                crate::log::write(&format!(
+                    "[wheel] rx_event delta={} horiz={}",
+                    ev.delta, ev.horizontal
+                ));
                 if ev.horizontal {
-                    let analysis = self.horizontal.on_tick(ev.delta, t);
-                    self.handle_physical_tick_horizontal(&analysis, t);
+                    let analysis = self.horizontal.on_tick(ev.delta, t0);
+                    self.handle_physical_tick_horizontal(&analysis, ev.delta, t0);
                 } else {
-                    let analysis = self.vertical.on_tick(ev.delta, t);
-                    self.handle_physical_tick_vertical(&analysis, t);
+                    let analysis = self.vertical.on_tick(ev.delta, t0);
+                    self.handle_physical_tick_vertical(&analysis, ev.delta, t0);
                 }
             }
 
             // ── 2. Animation tick: advance both axes ───────────────────────────
+            let now = Instant::now();
             let dv = self.advance_animation_vertical(now);
             if dv != 0 {
-                unsafe { send_wheel(dv, false); }
+                crate::log::write(&format!(
+                    "[wheel] coast_vert dv={} scroll_dist={:.0}",
+                    dv, self.vert_scroll_dist
+                ));
+                unsafe { send_wheel(dv, false) };
             }
             let dh = self.advance_animation_horizontal(now);
             if dh != 0 {
-                unsafe { send_wheel(dh, true); }
+                unsafe { send_wheel(dh, true) };
             }
-
             thread::sleep(Duration::from_millis(TICK_MS));
         }
     }
@@ -89,115 +102,130 @@ impl ScrollInjector {
     // ── Physical tick handlers ────────────────────────────────────────────────
 
     /// Handle a physical tick on the vertical axis.
-    /// `analysis` is consumed here; we use it directly instead of re-querying.
-    fn handle_physical_tick_vertical(&mut self, analysis: &ScrollAnalysis, now: Instant) {
-        // Direction change: cancel any in-progress animation.
-        // Mac Scroll.m lines 505-510: also requires currentAnimationSpeed > 0.
-        // Since cancel_vertical() zeros speed, checking self.vert_animating
-        // is equivalent (and correct: only cancel if animation was running).
-        if analysis.direction_changed && self.vert_animating {
+    /// Each physical notch sends 120px immediately, multiplied by the speedup
+    /// factor for consecutive notches in the same swipe. No per-tick animation.
+    fn handle_physical_tick_vertical(&mut self, analysis: &ScrollAnalysis, delta: i32, now: Instant) {
+        // Cancel coast if wheel starts again.
+        if self.vert_animating {
             self.cancel_vertical();
-            // Mac Scroll.m line 509: When direction changes mid-swipe
-            // (is_new_swipe=false), return without starting a new animation.
-            // This "swallows" the direction-change tick and stops momentum cold.
-            if !analysis.is_new_swipe {
-                return;
-            }
         }
-        // New swipe: start fresh animation.
+
+        // Flush subpixelator at the start of a new swipe.
         if analysis.is_new_swipe {
-            // cancel_vertical() already clears the animation state.
-            // axis velocity/state is preserved across swipes per Mac behavior.
-            self.start_vertical_animation(analysis, now);
+            self.vertical.axis_mut().subpixel_flush_and_reset();
+            self.vert_scroll_dist = 0.0;
         }
-        // Consecutive tick: animation continues via advance_animation_vertical
+
+        // Cap multiplier at 5.0x so speed doesn't grow unboundedly.
+        let multiplier = (self.vertical.axis().speedup_curve().evaluate(analysis.swipe_count)).min(5.0);
+        let tick_dist = (delta.abs() as f64) * multiplier;
+        self.vert_scroll_dist += tick_dist;
+
+        crate::log::write(&format!(
+            "[wheel] TICK dv={} swipe_count={:.1} multiplier={:.2} tick_dist={:.0}",
+            delta, analysis.swipe_count, multiplier, tick_dist
+        ));
+
+        // ── Send immediately (each physical notch = 120px) ─────────────────────
+        if delta != 0 {
+            unsafe { send_wheel(delta, false) };
+        }
+
+        // Record tick time and swipe_count for coast detection.
+        self.vert_last_tick = Some(now);
+        self.vert_swipe_count = analysis.swipe_count;
     }
 
     /// Handle a physical tick on the horizontal axis.
-    fn handle_physical_tick_horizontal(&mut self, analysis: &ScrollAnalysis, now: Instant) {
-        if analysis.direction_changed && self.horiz_animating {
+    fn handle_physical_tick_horizontal(&mut self, analysis: &ScrollAnalysis, delta: i32, now: Instant) {
+        if self.horiz_animating {
             self.cancel_horizontal();
-            if !analysis.is_new_swipe {
-                return;
-            }
         }
+
         if analysis.is_new_swipe {
-            // cancel_horizontal() already clears animation state.
-            self.start_horizontal_animation(analysis, now);
+            self.horizontal.axis_mut().subpixel_flush_and_reset();
+            self.horiz_scroll_dist = 0.0;
         }
+
+        let multiplier = (self.horizontal.axis().speedup_curve().evaluate(analysis.swipe_count)).min(5.0);
+        let tick_dist = (delta.abs() as f64) * multiplier;
+        self.horiz_scroll_dist += tick_dist;
+
+        if delta != 0 {
+            unsafe { send_wheel(delta, true) };
+        }
+
+        self.horiz_last_tick = Some(now);
     }
 
-    // ── Animation tick ────────────────────────────────────────────────────────
-
-    /// Advance vertical animation by one tick. Returns the i32 delta to emit.
+    /// Advance vertical coast. Triggered when no physical ticks arrive for
+    /// COAST_DELAY_MS. Sends the remaining coast distance with deceleration.
     fn advance_animation_vertical(&mut self, now: Instant) -> i32 {
+        // ── Coast trigger: only start coast if wheel was scrolled enough ────────
+        // Require at least 2 consecutive notches (swipe_count >= 2) AND a meaningful
+        // scroll distance (>= 240px ≈ 2 notches) before coasting kicks in.
         if !self.vert_animating {
-            // Mac Scroll.m lines 584-586: When animator is not running,
-            // flush remaining accumulation and reset subpixelator so the next
-            // physical tick starts clean. Also reset accum so leftover distance
-            // from the old animation doesn't leak into the new swipe.
+            if let Some(last) = self.vert_last_tick {
+                let elapsed = now.duration_since(last).as_secs_f64() * 1000.0;
+                let enough_for_coast = self.vert_scroll_dist >= 240.0 && self.vert_swipe_count >= 2.0;
+                if elapsed >= COAST_DELAY_MS && enough_for_coast {
+                    self.start_vertical_coast(now);
+                }
+            }
             self.vertical.axis_mut().subpixel_flush_and_reset();
             self.vert_accum = 0.0;
             return 0;
         }
 
-        // Current scroll speed from the axis (for direction sign).
-        let speed = self.vertical.axis().current_speed();
-        if speed <= 0.0 {
-            self.cancel_vertical();
-            return 0;
-        }
-
-        // Compute elapsed time since animation start.
+        // ── Advance the coast curve ─────────────────────────────────────────
         let dt = self
             .vert_anim_start
             .map(|s| now.duration_since(s).as_secs_f64())
             .unwrap_or(0.0)
             .min(MAX_ANIMATION_SECS);
 
-        // Normalized time (0..1).
-        let total_dur = self.vert_curve.as_ref().map(|c| c.total_duration()).unwrap_or(0.140);
+        let total_dur = self.vert_curve.as_ref().map(|c| c.total_duration()).unwrap_or(0.5);
         let t_norm = (dt / total_dur).min(1.0);
 
         if let Some(ref curve) = self.vert_curve {
-            // Evaluate the curve to get accumulated distance fraction.
             let new_frac = curve.evaluate(t_norm);
             let new_accum = new_frac * self.vert_total_dist;
             let remaining = new_accum - self.vert_accum;
+
             self.vert_accum = new_accum;
             self.vert_last_frac = new_frac;
-            self.vert_t = t_norm;
 
-            if t_norm >= 1.0 {
+            if t_norm >= 1.0 || remaining.abs() < 0.5 {
                 self.vert_animating = false;
                 self.vert_curve = None;
+                self.vert_scroll_dist = 0.0;
+                return 0;
             }
 
-            // Sign: negative speed means scroll up (negative delta).
-            let signed_delta = if speed < 0.0 {
+            let signed_speed = self.vertical.axis().signed_speed();
+            let signed_delta = if signed_speed < 0.0 {
                 -(remaining.abs() as f64)
             } else {
                 remaining.abs() as f64
             };
 
-            return self.vertical.subpixel_add(signed_delta);
+            return signed_delta as i32;
         }
 
         0
     }
 
-    /// Advance horizontal animation by one tick. Returns the i32 delta to emit.
+    /// Advance horizontal coast.
     fn advance_animation_horizontal(&mut self, now: Instant) -> i32 {
         if !self.horiz_animating {
-            // Mac Scroll.m lines 584-586: flush+reset subpixelator, reset accum.
+            if let Some(last) = self.horiz_last_tick {
+                let elapsed = now.duration_since(last).as_secs_f64() * 1000.0;
+                if elapsed >= COAST_DELAY_MS && self.horiz_scroll_dist > 0.0 {
+                    self.start_horizontal_coast(now);
+                }
+            }
             self.horizontal.axis_mut().subpixel_flush_and_reset();
             self.horiz_accum = 0.0;
-            return 0;
-        }
-
-        let speed = self.horizontal.axis().current_speed();
-        if speed <= 0.0 {
-            self.cancel_horizontal();
             return 0;
         }
 
@@ -207,23 +235,26 @@ impl ScrollInjector {
             .unwrap_or(0.0)
             .min(MAX_ANIMATION_SECS);
 
-        let total_dur = self.horiz_curve.as_ref().map(|c| c.total_duration()).unwrap_or(0.140);
+        let total_dur = self.horiz_curve.as_ref().map(|c| c.total_duration()).unwrap_or(0.5);
         let t_norm = (dt / total_dur).min(1.0);
 
         if let Some(ref curve) = self.horiz_curve {
             let new_frac = curve.evaluate(t_norm);
             let new_accum = new_frac * self.horiz_total_dist;
             let remaining = new_accum - self.horiz_accum;
+
             self.horiz_accum = new_accum;
             self.horiz_last_frac = new_frac;
-            self.horiz_t = t_norm;
 
-            if t_norm >= 1.0 {
+            if t_norm >= 1.0 || remaining.abs() < 0.5 {
                 self.horiz_animating = false;
                 self.horiz_curve = None;
+                self.horiz_scroll_dist = 0.0;
+                return 0;
             }
 
-            let signed_delta = if speed < 0.0 {
+            let signed_speed = self.horizontal.axis().signed_speed();
+            let signed_delta = if signed_speed < 0.0 {
                 -(remaining.abs() as f64)
             } else {
                 remaining.abs() as f64
@@ -235,135 +266,64 @@ impl ScrollInjector {
         0
     }
 
-    // ── Animation lifecycle ───────────────────────────────────────────────────
+    /// Start vertical coast deceleration from the accumulated scroll distance.
+    fn start_vertical_coast(&mut self, now: Instant) {
+        let signed_speed = self.vertical.axis().signed_speed();
+        let direction = if signed_speed < 0.0 { -1.0 } else { 1.0 };
+        let total_dist = self.vert_scroll_dist * direction;
 
-    fn start_vertical_animation(&mut self, analysis: &ScrollAnalysis, now: Instant) {
-        let _speed = self.vertical.axis().current_speed();
+        crate::log::write(&format!(
+            "[wheel] START_COAST vert_scroll_dist={:.0} total_dist={:.0}",
+            self.vert_scroll_dist, total_dist
+        ));
 
-        // ── isSwipeSequenceStart: Mac lines 567-569 ─────────────────────────────
-        // When a new swipe begins (tick_count==0 && swipe_count==0 after reset),
-        // reset subpixelator so no stale accumulation carries into the new swipe.
-        if analysis.tick_count == 0 && analysis.swipe_count == 0.0 {
-            self.vertical.axis_mut().subpixel_flush_and_reset();
-        }
-
-        // ── baseMsPerStepCurve lookup: Mac lines 604-685 ───────────────────────
-        // When base_ms_per_step == -1, the curve replaces the fixed base duration.
-        // The curve maps tick interval to animation duration: fast wheel (8ms) →
-        // max duration (180ms), slow wheel (160ms) → min duration (110ms).
-        // This "speedup curve" makes fast swipes more responsive.
-        let base_ms = if self.vertical.axis().config_base_ms_per_step() < 0.0 {
-            let tbt = analysis.time_between_ticks;
-            let t = (tbt - 0.008) / (0.160 - 0.008); // normalized [0,1]
-            let t = t.clamp(0.0, 1.0);
-            // Exponential curve matching Mac's baseMsPerStepCurve for LowInertia:
-            // e1(x) = exp(x * 4.0) - 1, normalized, then scaled [180, 110]
-            let exp_val = (t * 4.0_f64).exp() - 1.0;
-            let norm = exp_val / ((4.0_f64).exp() - 1.0); // ~1.0 at t=0, ~0.437 at t=1
-            180.0 - 70.0 * norm // 180ms at fast wheel, 110ms at slow wheel
-        } else {
-            self.vertical.axis().config_base_ms_per_step()
-        };
-        // New tick's contribution to total distance.
-        // Mac Scroll.m line 454-460: Evaluate acceleration curve from speed (ticks/s)
-        // to get pxToScrollForThisTick (wheel units). The BezierAccelCurve maps
-        // tick interval → scroll distance.
-        // Mac Scroll.m lines 443-445: When timeBetweenTicks == DBL_MAX (first tick
-        // after gap), substitute consecutiveScrollTickIntervalMax.
-        let dt = if analysis.time_between_ticks == TIME_BETWEEN_TICKS_NONE {
-            TICK_INTERVAL_MAX
-        } else {
-            analysis.time_between_ticks
-        };
-        let scroll_speed = 1.0 / dt;
-        let tick_dist = self.vertical.axis().accel_curve().evaluate(scroll_speed);
-        // Mac Scroll.m line 475-491: Apply fastScrollFactor when swipe_count > 0.
-        let speedup_factor = self.vertical.axis().speedup_curve().evaluate(analysis.swipe_count);
-        let tick_dist = tick_dist * speedup_factor;
-        let remaining = base_carry_over_distance(
-            self.vert_animating,
-            self.vert_total_dist,
-            self.vert_curve.as_ref(),
-            self.vert_t,
-        );
-        let total_dist = tick_dist + remaining;
-
+        // Use a moderate base_ms for coast — not too fast, not too slow.
+        let base_ms = 250.0;
         let curve = HybridCurve::new(
             self.vertical.axis().accel_curve(),
             base_ms,
-            total_dist,
+            total_dist.abs(),
             self.vertical.config_drag_coefficient(),
             self.vertical.config_drag_exponent(),
             self.vertical.config_stop_speed(),
-            0.2, // distance_epsilon
+            0.2,
         );
 
         self.vert_animating = true;
-        self.vert_t = 0.0;
         self.vert_anim_start = Some(now);
+        self.vert_accum = 0.0;
         self.vert_curve = Some(curve);
-        self.vert_total_dist = total_dist;
+        self.vert_total_dist = total_dist.abs();
+        self.vert_last_frac = 0.0;
+        self.vert_scroll_dist = 0.0;
     }
-    fn start_horizontal_animation(&mut self, analysis: &ScrollAnalysis, now: Instant) {
-        let _speed = self.horizontal.axis().current_speed();
 
-        // ── isSwipeSequenceStart: Mac lines 567-569 ─────────────────────────────
-        if analysis.tick_count == 0 && analysis.swipe_count == 0.0 {
-            self.horizontal.axis_mut().subpixel_flush_and_reset();
-        }
+    /// Start horizontal coast deceleration.
+    fn start_horizontal_coast(&mut self, now: Instant) {
+        let signed_speed = self.horizontal.axis().signed_speed();
+        let direction = if signed_speed < 0.0 { -1.0 } else { 1.0 };
+        let total_dist = self.horiz_scroll_dist * direction;
 
-        // ── baseMsPerStepCurve lookup: Mac lines 604-685 ───────────────────────
-        let base_ms = if self.horizontal.axis().config_base_ms_per_step() < 0.0 {
-            let tbt = analysis.time_between_ticks;
-            let t = (tbt - 0.008) / (0.160 - 0.008);
-            let t = t.clamp(0.0, 1.0);
-            let exp_val = (t * 4.0_f64).exp() - 1.0;
-            let norm = exp_val / ((4.0_f64).exp() - 1.0);
-            180.0 - 70.0 * norm
-        } else {
-            self.horizontal.axis().config_base_ms_per_step()
-        };
-
-        // New tick's contribution to total distance.
-        // Mac Scroll.m line 454-460: Evaluate acceleration curve from speed (ticks/s)
-        // to get pxToScrollForThisTick (wheel units). The BezierAccelCurve maps
-        // tick interval → scroll distance.
-        // Mac Scroll.m lines 443-445: When timeBetweenTicks == DBL_MAX (first tick
-        // after gap), substitute consecutiveScrollTickIntervalMax.
-        let dt = if analysis.time_between_ticks == TIME_BETWEEN_TICKS_NONE {
-            TICK_INTERVAL_MAX
-        } else {
-            analysis.time_between_ticks
-        };
-        let scroll_speed = 1.0 / dt;
-        let tick_dist = self.horizontal.axis().accel_curve().evaluate(scroll_speed);
-        // Mac Scroll.m line 475-491: Apply fastScrollFactor when swipe_count > 0.
-        let speedup_factor = self.horizontal.axis().speedup_curve().evaluate(analysis.swipe_count);
-        let tick_dist = tick_dist * speedup_factor;
-        let remaining = base_carry_over_distance(
-            self.horiz_animating,
-            self.horiz_total_dist,
-            self.horiz_curve.as_ref(),
-            self.horiz_t,
-        );
-        let total_dist = tick_dist + remaining;
-
+        let base_ms = 250.0;
         let curve = HybridCurve::new(
             self.horizontal.axis().accel_curve(),
             base_ms,
-            total_dist,
+            total_dist.abs(),
             self.horizontal.config_drag_coefficient(),
             self.horizontal.config_drag_exponent(),
             self.horizontal.config_stop_speed(),
-            0.2, // distance_epsilon
+            0.2,
         );
 
         self.horiz_animating = true;
-        self.horiz_t = 0.0;
         self.horiz_anim_start = Some(now);
+        self.horiz_accum = 0.0;
         self.horiz_curve = Some(curve);
-        self.horiz_total_dist = total_dist;
+        self.horiz_total_dist = total_dist.abs();
+        self.horiz_last_frac = 0.0;
+        self.horiz_scroll_dist = 0.0;
     }
+
     fn cancel_vertical(&mut self) {
         self.vert_animating = false;
         self.vert_curve = None;
@@ -371,6 +331,7 @@ impl ScrollInjector {
         self.vert_t = 0.0;
         self.vert_last_frac = 0.0;
         self.vert_anim_start = None;
+        self.vert_scroll_dist = 0.0;
     }
 
     fn cancel_horizontal(&mut self) {
@@ -380,6 +341,7 @@ impl ScrollInjector {
         self.horiz_t = 0.0;
         self.horiz_last_frac = 0.0;
         self.horiz_anim_start = None;
+        self.horiz_scroll_dist = 0.0;
     }
 }
 
@@ -387,12 +349,15 @@ impl ScrollInjector {
 ///
 /// Returns `None` if smooth scrolling is disabled in `cfg`.
 pub fn start(cfg: &Config) -> Option<Sender<WheelInput>> {
+    eprintln!("[DEBUG] start() called: scroll.enabled={}, scroll.smooth={}", cfg.scroll.enabled, cfg.scroll.smooth);
     if !cfg.scroll.enabled || !cfg.scroll.smooth {
+        eprintln!("[DEBUG] start() early return: enabled={}, smooth={}", cfg.scroll.enabled, cfg.scroll.smooth);
         return None;
     }
     let s = &cfg.scroll;
     let (tx, rx) = mpsc::channel();
-    let _injector = ScrollInjector {
+    eprintln!("[DEBUG] start(): channel created, about to construct injector");
+    let injector = ScrollInjector {
         rx,
         vertical: WheelTracker::new(
             s.drag_exponent, s.drag_coefficient, s.stop_speed, s.speed, s.step,
@@ -421,6 +386,9 @@ pub fn start(cfg: &Config) -> Option<Sender<WheelInput>> {
         vert_curve: None,
         vert_total_dist: 0.0,
         vert_last_frac: 0.0,
+        vert_last_tick: None,
+        vert_scroll_dist: 0.0,
+        vert_swipe_count: 0.0,
         horiz_animating: false,
         horiz_t: 0.0,
         horiz_anim_start: None,
@@ -428,7 +396,12 @@ pub fn start(cfg: &Config) -> Option<Sender<WheelInput>> {
         horiz_curve: None,
         horiz_total_dist: 0.0,
         horiz_last_frac: 0.0,
+        horiz_last_tick: None,
+        horiz_scroll_dist: 0.0,
     };
+    eprintln!("[DEBUG] start(): injector constructed, spawning thread");
+    std::thread::spawn(move || { eprintln!("[DEBUG] injector thread started"); injector.run(); });
+    eprintln!("[DEBUG] start(): thread spawned, returning tx");
     Some(tx)
 }
 
@@ -448,7 +421,7 @@ unsafe fn send_wheel(delta: i32, horizontal: bool) {
             MOUSEEVENTF_WHEEL
         },
         time: 0,
-        dwExtraInfo: 0,
+        dwExtraInfo: 0xFA57_0000,
     };
     SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
 }
@@ -471,3 +444,4 @@ pub fn send_mouse_move(dx: i32, dy: i32) {
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
 }
+
