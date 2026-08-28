@@ -4,6 +4,53 @@ use std::time::SystemTime;
 use toml::{Table, Value};
 use crate::remap::{LegacyRemapEntry, RemapEntry};
 
+/// Four control points of a 1-D Bezier curve (degree 3).
+///
+/// Stored as a flat `[x0, y0, x1, y1, x2, y2, x3, y3]` array in TOML so users
+/// can edit values without dealing with nested tables. The x-coordinates must
+/// be monotonically increasing in [0, 1]; the y-coordinates form the curve's
+/// output range. The construction helpers in
+/// [`crate::scroll::curve::BezierAccelCurve::from_points`] validate these
+/// invariants.
+///
+/// Used by PR-B for the Shift-hold-to-scroll-speed curve: x = normalised
+/// hold time, y = scroll-speed multiplier.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BezierControlPoints {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub x2: f64,
+    pub y2: f64,
+    pub x3: f64,
+    pub y3: f64,
+}
+
+impl BezierControlPoints {
+    /// Borrow the points as a `[(f64, f64); 4]` slice in (x, y) order, suitable
+    /// for `BezierAccelCurve::from_points`.
+    pub fn as_point_pairs(&self) -> [(f64, f64); 4] {
+        [
+            (self.x0, self.y0),
+            (self.x1, self.y1),
+            (self.x2, self.y2),
+            (self.x3, self.y3),
+        ]
+    }
+
+    /// Default Shift accelerator curve: light press → 1.0×, mid press → 1.8×,
+    /// heavy press → 6.0×. Designed so casual Shift-tap behaves normally while
+    /// sustained Shift accelerates aggressively.
+    pub fn default_shift_speedup() -> Self {
+        Self {
+            x0: 0.0, y0: 1.0,
+            x1: 0.25, y1: 1.8,
+            x2: 0.7, y2: 4.0,
+            x3: 1.0, y3: 6.0,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -53,6 +100,21 @@ pub struct ScrollConfig {
     pub stop_speed: f64,
     pub shift_speedup: f64,
     pub shift_horizontal: bool,
+    // ── Shift nonlinear accelerator (PR-B) ──────────────────────────────────
+    /// Hold-time Bezier curve: 4 control points (x0,y0,x1,y1,x2,y2,x3,y3).
+    /// x ∈ [0, 1] is normalized hold time (0 = just pressed, 1 = max hold);
+    /// y is the scroll speed multiplier. Ignored when `shift_speedup_linear = true`.
+    /// `None` ⇒ use the default curve.
+    #[serde(default = "default_shift_speedup_curve")]
+    pub shift_speedup_curve: Option<BezierControlPoints>,
+    /// Seconds of holding Shift before the curve reaches its right endpoint (x = 1).
+    /// Beyond this, the curve extends linearly (flat extrapolation).
+    #[serde(default = "default_shift_speedup_max_hold")]
+    pub shift_speedup_max_hold: f64,
+    /// When true, `shift_speedup` (a scalar) is used as a flat multiplier and the
+    /// curve is ignored. Preserves the old single-value behaviour.
+    #[serde(default)]
+    pub shift_speedup_linear: bool,
     // ── Smoothing params ──────────────────────────────────────────────────────
     #[serde(default = "default_time_smoothing_weight")]
     pub time_smoothing_weight: f64,
@@ -107,6 +169,10 @@ fn default_scroll_step() -> f64 { 120.0 }
 fn default_drag_exponent() -> f64 { 1.05 }
 fn default_drag_coefficient() -> f64 { 15.0 }
 fn default_stop_speed() -> f64 { 30.0 }
+fn default_shift_speedup_curve() -> Option<BezierControlPoints> {
+    Some(BezierControlPoints::default_shift_speedup())
+}
+fn default_shift_speedup_max_hold() -> f64 { 0.6 }
 fn default_time_smoothing_weight() -> f64 { 0.5 }
 fn default_velocity_a() -> f64 { 1.0 }
 fn default_velocity_y() -> f64 { 1.0 }
@@ -275,6 +341,8 @@ impl Default for Config {
                 enabled: false, smooth: true, speed: 1.0, invert: false,
                 step: 120.0, drag_exponent: 1.05, drag_coefficient: 15.0,
                 stop_speed: 30.0, shift_speedup: 1.0, shift_horizontal: false,
+                shift_speedup_curve: Some(BezierControlPoints::default_shift_speedup()),
+                shift_speedup_max_hold: 0.6, shift_speedup_linear: false,
                 time_smoothing_weight: 0.5, velocity_a: 1.0, velocity_y: 1.0,
                 tick_interval_min: 0.001, tick_interval_max: 0.160,
                 tick_interval_accel_end: 0.015, swipe_max_interval: 0.375,
@@ -514,6 +582,111 @@ max_dpi = 3200
     }
 
     #[test]
+    fn shift_curve_default_roundtrips_through_toml() {
+        // Default Config has the shift curve baked in; verify it survives
+        // a TOML → Config round-trip without explicit user input.
+        let toml = toml::to_string_pretty(&Config::default()).unwrap();
+        let parsed: Config = toml::from_str(&toml).unwrap();
+        let pts = parsed.scroll.shift_speedup_curve.as_ref()
+            .expect("default curve must be Some");
+        assert_eq!(pts.x0, 0.0);
+        assert_eq!(pts.y0, 1.0);
+        assert_eq!(pts.x3, 1.0);
+        assert_eq!(pts.y3, 6.0);
+        assert!(!parsed.scroll.shift_speedup_linear);
+        assert!((parsed.scroll.shift_speedup_max_hold - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shift_curve_accepts_flat_array_form() {
+        // The curve must be deserializable from a flat 8-element array
+        // (user-facing TOML form), not just a nested table.
+        let doc = r#"
+[general]
+start_hidden = false
+
+[scroll]
+enabled = true
+smooth = true
+speed = 1.0
+invert = false
+shift_speedup = 1.0
+shift_horizontal = false
+shift_speedup_curve = [0.0, 1.0, 0.5, 2.0, 0.8, 5.0, 1.0, 8.0]
+shift_speedup_max_hold = 0.4
+shift_speedup_linear = true
+
+[buttons]
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(doc).unwrap();
+        let pts = cfg.scroll.shift_speedup_curve.as_ref().unwrap();
+        assert_eq!(pts.x1, 0.5);
+        assert_eq!(pts.y1, 2.0);
+        assert_eq!(pts.y3, 8.0);
+        assert!(cfg.scroll.shift_speedup_linear);
+        assert!((cfg.scroll.shift_speedup_max_hold - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shift_curve_missing_uses_default() {
+        // A user with an old config.toml that predates PR-B must still parse
+        // successfully — new fields fall back to defaults.
+        let doc = r#"
+[general]
+start_hidden = false
+
+[scroll]
+enabled = true
+smooth = true
+speed = 1.0
+invert = false
+shift_speedup = 2.0
+shift_horizontal = false
+
+[buttons]
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(doc).unwrap();
+        assert!(cfg.scroll.shift_speedup_curve.is_some(),
+            "missing curve must default to Some(default_shift_speedup)");
+        assert!(!cfg.scroll.shift_speedup_linear,
+            "missing linear flag must default to false");
+        assert!((cfg.scroll.shift_speedup_max_hold - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bezier_control_points_as_point_pairs() {
+        // as_point_pairs must return the four (x, y) tuples in declared order
+        // so that BezierAccelCurve::from_points receives a valid input.
+        let pts = BezierControlPoints {
+            x0: 0.0, y0: 1.0,
+            x1: 0.25, y1: 1.8,
+            x2: 0.7, y2: 4.0,
+            x3: 1.0, y3: 6.0,
+        };
+        let pairs = pts.as_point_pairs();
+        assert_eq!(pairs.len(), 4);
+        assert_eq!(pairs[0], (0.0, 1.0));
+        assert_eq!(pairs[1], (0.25, 1.8));
+        assert_eq!(pairs[2], (0.7, 4.0));
+        assert_eq!(pairs[3], (1.0, 6.0));
+    }
+
+    #[test]
+    fn bezier_default_shift_speedup_matches_promised_shape() {
+        // The default curve must be monotonic in x and reach y=1.0 at x=0
+        // (so casual Shift-tap behaves like a normal scroll).
+        let pts = BezierControlPoints::default_shift_speedup();
+        assert_eq!(pts.x0, 0.0);
+        assert_eq!(pts.y0, 1.0);
+        assert!(pts.x0 < pts.x1 && pts.x1 < pts.x2 && pts.x2 < pts.x3,
+            "x coords must be strictly increasing: {:?}", pts);
+        assert!(pts.y0 < pts.y1 && pts.y1 < pts.y2 && pts.y2 < pts.y3,
+            "y coords must be strictly increasing: {:?}", pts);
+    }
+
+    #[test]
     fn dpi_config_defaults() {
         let d = DpiConfig::default();
         assert!(d.auto_switch);
@@ -521,4 +694,5 @@ max_dpi = 3200
         assert_eq!(d.min_dpi, 200);
         assert_eq!(d.max_dpi, 4000);
     }
+
 }

@@ -225,6 +225,29 @@ impl BezierAccelCurve {
     }
 }
 
+/// Evaluate the Shift accelerator curve at a given hold duration.
+///
+/// `curve` is a [`BezierAccelCurve`] over normalised hold time x ∈ [0, 1]
+/// (where x = 1 corresponds to `max_hold` seconds). Returns the curve's
+/// y-value at `clamp(hold_secs / max_hold, 0, 1)`.
+///
+/// When `hold_secs == 0` the curve returns its y_min (typically 1.0 — a casual
+/// Shift-tap behaves like a normal scroll). When `hold_secs >= max_hold` the
+/// curve extends linearly beyond the last control point using its post-exit
+/// slope, so sustained Shift keeps accelerating rather than capping flat.
+///
+/// PR-B throttle semantics: a short Shift tap barely speeds up; a sustained
+/// Shift press accelerates aggressively.
+pub fn evaluate_shift_speedup(
+    curve: &BezierAccelCurve,
+    hold_secs: f64,
+    max_hold: f64,
+) -> f64 {
+    assert!(max_hold > 0.0, "max_hold must be positive");
+    let x = if max_hold > 0.0 { hold_secs / max_hold } else { 0.0 };
+    curve.eval(x)
+}
+
 // ─── De Casteljau helpers ────────────────────────────────────────────────────
 
 /// De Casteljau's algorithm for 1D Bezier evaluation.
@@ -1181,5 +1204,71 @@ mod tests {
         let rem = curve.distance_remaining(0.0);
         assert!((rem - curve.total_distance).abs() < 1e-9,
             "at t=0 remaining should equal total_distance");
+    }
+    // ── PR-B: evaluate_shift_speedup tests ───────────────────────────────
+
+    fn shift_curve_default() -> BezierAccelCurve {
+        BezierAccelCurve::from_points(&[
+            (0.0, 1.0),
+            (0.25, 1.8),
+            (0.7, 4.0),
+            (1.0, 6.0),
+        ])
+    }
+
+    #[test]
+    fn shift_speedup_zero_hold_returns_y_min() {
+        let curve = shift_curve_default();
+        let v = evaluate_shift_speedup(&curve, 0.0, 0.6);
+        assert!((v - 1.0).abs() < 1e-9, "hold=0 should yield 1.0; got {v}");
+    }
+
+    #[test]
+    fn shift_speedup_max_hold_returns_y_max() {
+        let curve = shift_curve_default();
+        let v = evaluate_shift_speedup(&curve, 0.6, 0.6);
+        assert!((v - 6.0).abs() < 1e-6, "hold=max_hold should yield 6.0; got {v}");
+    }
+
+    #[test]
+    fn shift_speedup_mid_hold_is_between_endpoints() {
+        let curve = shift_curve_default();
+        let v_q = evaluate_shift_speedup(&curve, 0.15, 0.6);
+        let v_h = evaluate_shift_speedup(&curve, 0.30, 0.6);
+        let v_t = evaluate_shift_speedup(&curve, 0.45, 0.6);
+        assert!(v_q > 1.0 && v_q < 6.0);
+        assert!(v_h > v_q);
+        assert!(v_t > v_h);
+    }
+
+    #[test]
+    fn shift_speedup_beyond_max_hold_does_not_crash() {
+        let curve = shift_curve_default();
+        let v_at = evaluate_shift_speedup(&curve, 0.6, 0.6);
+        let v_be = evaluate_shift_speedup(&curve, 1.2, 0.6);
+        assert!(v_be.is_finite());
+        assert!(v_be >= v_at);
+    }
+
+    #[test]
+    fn shift_speedup_negative_hold_returns_y_min() {
+        let curve = shift_curve_default();
+        let v = evaluate_shift_speedup(&curve, -1.0, 0.6);
+        assert!((v - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shift_speedup_respects_max_hold_scaling() {
+        let curve = shift_curve_default();
+        let v_s = evaluate_shift_speedup(&curve, 0.3, 0.6);
+        let v_l = evaluate_shift_speedup(&curve, 0.3, 1.2);
+        assert!(v_l < v_s);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_hold must be positive")]
+    fn shift_speedup_panics_on_zero_max_hold() {
+        let curve = shift_curve_default();
+        let _ = evaluate_shift_speedup(&curve, 0.1, 0.0);
     }
 }

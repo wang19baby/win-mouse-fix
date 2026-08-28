@@ -17,7 +17,15 @@ stop_speed = 30.0     # units/sec; below this scrolling stops (inertia end)
 step = 120            # Max wheel units per tick (subdivision cap for smoothness)
 # Shift-to-accelerate: hold Shift to scroll faster (MMF-style).
 shift_speedup = 1.0    # Speed multiplier when Shift is held; 1.0 = no change.
-shift_horizontal = false # When true, Shift swaps vertical ↔ horizontal scroll.
+
+# ── Shift nonlinear accelerator (PR-B) ──────────────────────────────────────
+# When shift_speedup_linear = false (default), Shift becomes a "throttle":
+# light tap → ~1× speed; sustained hold → up to the curve's y_max.
+# 8-element flat array = [x0,y0, x1,y1, x2,y2, x3,y3]. x in [0,1] is normalised
+# hold time; y is the scroll speed multiplier. x must be monotonically increasing.
+shift_speedup_curve = [0.0, 1.0, 0.25, 1.8, 0.7, 4.0, 1.0, 6.0]
+shift_speedup_max_hold = 0.6   # seconds to reach the curve's right endpoint (x=1)
+shift_speedup_linear = false   # true ⇒ ignore curve; use scalar `shift_speedup` above
 
 # ── Tick interval clamping ─────────────────────────────────────────────────
 # Ticks faster than tick_interval_min or slower than tick_interval_max
