@@ -285,6 +285,25 @@ pub fn uninstall() {
     stop_click_timer();
 }
 
+/// Cursor pixels moved per wheel notch (WHEEL_DELTA = 120 units) in precision
+/// mode. Small by design: a single notch is a fine, controllable nudge rather
+/// than the 120px jump you'd get from passing the raw delta straight through.
+const PRECISION_PIXELS_PER_NOTCH: f64 = 8.0;
+
+/// Map a wheel delta to cursor pixels for precision (pointer-move) mode.
+///
+/// `horizontal` selects which axis the cursor moves on; the other axis is 0.
+/// Pure function — easy to unit test without the hook globals.
+fn precision_cursor_delta(delta: i32, horizontal: bool) -> (i32, i32) {
+    let notches = delta as f64 / 120.0;
+    let px = (notches * PRECISION_PIXELS_PER_NOTCH).round() as i32;
+    if horizontal {
+        (px, 0)
+    } else {
+        (0, px)
+    }
+}
+
 /// Process a raw wheel event: apply invert, modifiers, and either inject
 /// into the smooth-scroll pipeline or pass through to the system unchanged.
 unsafe fn process_wheel(delta: i32, horizontal: bool, cfg: &Config) -> Option<WheelInput> {
@@ -318,18 +337,21 @@ unsafe fn process_wheel(delta: i32, horizontal: bool, cfg: &Config) -> Option<Wh
         return None; // pass through
     }
 
+    // Set when a ModifiedScroll::Precision effect matches. Handled after the loop
+    // so it can never fall through into the smooth-inject path (which would scroll
+    // *and* move the cursor — a double fire).
+    let mut precision_mode = false;
     if let Some(engine) = REMAP_ENGINE.read().as_ref() {
         let effects = engine.resolve_scroll_effects(&active_mods);
         for effect in &effects {
             if let Effect::ModifiedScroll { modification } = effect {
                 match modification {
                     ModifiedScrollModification::Precision => {
-                        // Precision mode: convert wheel delta to cursor movement
-                        // instead of scrolling. 1 WHEEL_DELTA (120) = 1 cursor pixel.
-                        let dx = if horizontal { delta } else { 0 };
-                        let dy = if !horizontal { delta } else { 0 };
-                        crate::scroll::injector::send_mouse_move(dx, dy);
-                        return Some(WheelInput { delta, horizontal }); // swallow original
+                        // Precision mode: wheel becomes pointer movement instead of
+                        // scrolling. Flag it and handle after the loop (see below) so
+                        // the code cannot accidentally fall through into the smooth
+                        // inject path, which would scroll *and* move — a double fire.
+                        precision_mode = true;
                     }
                     ModifiedScrollModification::Horizontal => {
                         // Force horizontal scroll.
@@ -348,6 +370,16 @@ unsafe fn process_wheel(delta: i32, horizontal: bool, cfg: &Config) -> Option<Wh
                 }
             }
         }
+    }
+
+    // 3b. Precision mode: swallow the wheel and move the cursor only. This must
+    //     run *before* step 4 so the original scroll is never injected into the
+    //     smooth pipeline (which would scroll *and* move — double fire). One wheel
+    //     notch moves the cursor a small, controllable number of pixels.
+    if precision_mode {
+        let (dx, dy) = precision_cursor_delta(delta, horizontal);
+        crate::scroll::injector::send_mouse_move(dx, dy);
+        return Some(WheelInput { delta, horizontal }); // swallowed: cursor moved, no scroll
     }
 
     // 4. If smooth mode is enabled, inject into the injector pipeline.
@@ -772,5 +804,33 @@ fn send_fake_drag_button_down(btn: MouseButton) {
             dx: 0, dy: 0, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: 0,
         };
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn precision_cursor_delta_vertical_notch() {
+        assert_eq!(precision_cursor_delta(120, false), (0, 8));
+        assert_eq!(precision_cursor_delta(-120, false), (0, -8));
+    }
+
+    #[test]
+    fn precision_cursor_delta_horizontal_notch() {
+        assert_eq!(precision_cursor_delta(120, true), (8, 0));
+        assert_eq!(precision_cursor_delta(240, true), (16, 0));
+    }
+
+    #[test]
+    fn precision_cursor_delta_zero_is_noop() {
+        assert_eq!(precision_cursor_delta(0, false), (0, 0));
+        assert_eq!(precision_cursor_delta(0, true), (0, 0));
+    }
+
+    #[test]
+    fn precision_cursor_delta_half_notch_rounds() {
+        assert_eq!(precision_cursor_delta(60, false), (0, 4));
     }
 }
