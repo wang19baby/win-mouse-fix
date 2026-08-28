@@ -190,6 +190,16 @@ impl BezierAccelCurve {
         decasteljau_1d(&self.pts_x, t)
     }
 
+    /// Returns the minimum y value (domain lower bound).
+    pub fn y_min(&self) -> f64 {
+        self.y_min
+    }
+
+    /// Returns the maximum y value (domain upper bound).
+    pub fn y_max(&self) -> f64 {
+        self.y_max
+    }
+
     /// Compute dy/dx at parameter t using the chain rule:
     /// B_x'(t) and B_y'(t) are computed via De Casteljau on the derivative control points.
     /// mac: `baseCurve.derivativeDyOverDx(atT: t)`
@@ -513,6 +523,20 @@ impl HybridCurve {
         self.total_distance
     }
 
+    /// Transition time in seconds.
+    pub fn transition_time(&self) -> f64 {
+        self.transition_time
+    }
+
+    /// Base end fraction (transition_time / total_duration).
+    pub fn base_end(&self) -> f64 {
+        if self.total_duration > 0.0 {
+            self.transition_time / self.total_duration
+        } else {
+            1.0
+        }
+    }
+
     /// Distance remaining in the base phase at normalized time `t`.
     ///
     /// Mirrors `Scroll.m:575–582` (`baseDistanceLeftWithDistanceLeft`): during
@@ -529,7 +553,16 @@ impl HybridCurve {
             return 0.0;
         }
         let scaled_t = if base_end_t > 1e-12 { (t / base_end_t).min(1.0) } else { 0.0 };
-        let mut frac = self.base_curve.sample_y_at_t(scaled_t).clamp(0.0, 1.0);
+        // Normalize sample_y_at_t result from [y_min, y_max] to [0, 1]
+        let raw_y = self.base_curve.sample_y_at_t(scaled_t);
+        let y_min = self.base_curve.y_min();
+        let y_max = self.base_curve.y_max();
+        let y_range = y_max - y_min;
+        let mut frac = if y_range > 1e-12 {
+            ((raw_y - y_min) / y_range).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         if frac > 1.0 { frac = 1.0; }
         self.transition_distance * (1.0 - frac)
     }
@@ -555,26 +588,27 @@ impl HybridCurve {
             1.0
         };
 
-        if t <= base_end_t {
+        let is_base = t <= base_end_t;
+        if is_base {
             // BASE PHASE: evaluate Bezier at scaled t, then scale to base distance interval.
-            // mac: baseCurve.evaluate(at: scale(x, baseTimeIntervalUnit, .unitInterval))
-            // The base_curve maps [0,1]→[0,1] in normalized space.
-            // We need to scale t from [0, base_end_t] to [0, 1].
             let scaled_t = if base_end_t > 0.0 {
                 (t / base_end_t).min(1.0)
             } else {
                 0.0
             };
-            // Bezier.sample_y_at_t gives normalized accumulated distance (0..1).
-            let mut base_result = self.base_curve.sample_y_at_t(scaled_t);
-            if base_result > 1.0 {
-                base_result = 1.0; // mac: if baseCurveResult > 1 { baseCurveResult = 1 }
-            }
-            if base_result < 0.0 {
-                base_result = 0.0;
-            }
-            // mac: scale from unitInterval to baseDistanceIntervalUnit
-            // base_dist_end = transitionDistance / totalDistance
+            // Bezier.sample_y_at_t gives raw y values in [y_min, y_max].
+            // We need to normalize to [0, 1]: (y - y_min) / (y_max - y_min)
+            let raw_y = self.base_curve.sample_y_at_t(scaled_t);
+            let y_min = self.base_curve.y_min();
+            let y_max = self.base_curve.y_max();
+            let y_range = y_max - y_min;
+            let mut base_result = if y_range > 1e-12 {
+                (raw_y - y_min) / y_range
+            } else {
+                0.0
+            };
+            if base_result > 1.0 { base_result = 1.0; }
+            if base_result < 0.0 { base_result = 0.0; }
             base_result * self.base_dist_end
         } else {
             // DRAG PHASE.
@@ -871,6 +905,8 @@ fn drag_time_for_distance(a: f64, b: f64, distance: f64, stop_speed: f64) -> f64
 
 #[cfg(test)]
 mod tests {
+
+
     use super::*;
 
     const A: f64 = 15.0;

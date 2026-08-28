@@ -1,7 +1,7 @@
 [general]
 start_hidden = true
 # Optional rolling log file. Uncomment to capture output when run headless.
-# log_path = "win-mouse-fix.log"
+log_path = "D:/work_space/personal_workspace/win-mouse-fix/win-mouse-fix.log"
 
 [scroll]
 enabled = true

@@ -5,14 +5,11 @@ use std::ptr::null_mut;
 
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-    SetupDiEnumDeviceInterfaces, SetupDiGetDeviceInterfaceDetailW,
-    SetupDiGetDeviceRegistryPropertyW,
-    DIGCF_ALLCLASSES, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
-    SPDRP_HARDWAREID,
+    SetupDiEnumDeviceInterfaces, SetupDiGetDeviceInterfaceDetailW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
     SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA,
 };
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
-    GUID_DEVINTERFACE_HID, HIDD_ATTRIBUTES, HidD_GetAttributes, HidD_GetSerialNumberString,
+    HIDD_ATTRIBUTES, HidD_GetAttributes, HidD_GetSerialNumberString,
 };
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -33,6 +30,22 @@ const HID_INTERFACE_GUID: windows_sys::core::GUID = windows_sys::core::GUID {
     data2: 0xE325,
     data3: 0x11CE,
     data4: [0xBF, 0xC1, 0x08, 0x00, 0x2B, 0xE1, 0x03, 0x18],
+};
+
+// Keyboard Device Interface GUID — Logitech receivers register here on some systems
+const KEYBOARD_INTERFACE_GUID: windows_sys::core::GUID = windows_sys::core::GUID {
+    data1: 0x4D1E55B2,
+    data2: 0xF16F,
+    data3: 0x11CF,
+    data4: [0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x03, 0x00],
+};
+
+// Mouse Device Interface GUID — Logitech receivers register here on most systems
+const MOUSE_INTERFACE_GUID: windows_sys::core::GUID = windows_sys::core::GUID {
+    data1: 0x745A17A0,
+    data2: 0x74D3,
+    data3: 0x11D0,
+    data4: [0xB6, 0xFE, 0x00, 0xA0, 0xC9, 0x0F, 0x57, 0xDA],
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -84,24 +97,25 @@ unsafe fn wide_to_string(p: *const u16) -> String {
     String::from_utf16_lossy(std::slice::from_raw_parts(p, len))
 }
 
-/// Main entry: try SetupDi interface paths first, then registry fallback.
+/// Main entry: try SetupDi with all three relevant GUIDs, then registry fallback.
+/// On most Windows systems Logitech receivers only appear in Keyboard/Mouse GUIDs,
+/// not the standard HID GUID, so we try all three.
 unsafe fn enumerate_all_hid() -> Vec<HidDevice> {
-    let hid_guid_ptr = &HID_INTERFACE_GUID as *const _;
-
-    // Try SetupDi with DIGCF_DEVICEINTERFACE | DIGCF_PRESENT
-    let set = SetupDiGetClassDevsW(
-        hid_guid_ptr,
-        null_mut(),
-        0isize,
-        DIGCF_DEVICEINTERFACE | DIGCF_PRESENT,
-    );
-
-    if set != INVALID_HANDLE_VALUE {
-        let devices = enumerate_via_interface_paths(set);
-        SetupDiDestroyDeviceInfoList(set);
-        if !devices.is_empty() {
-            println!("  [DBG] SetupDi DIGCF_DEVICEINTERFACE found {} devices", devices.len());
-            return devices;
+    // Try all three Device Interface GUIDs
+    for guid in [&HID_INTERFACE_GUID, &KEYBOARD_INTERFACE_GUID, &MOUSE_INTERFACE_GUID] {
+        let set = SetupDiGetClassDevsW(
+            guid as *const _,
+            null_mut(),
+            0isize,
+            DIGCF_DEVICEINTERFACE | DIGCF_PRESENT,
+        );
+        if set != INVALID_HANDLE_VALUE {
+            let devices = enumerate_via_interface_paths(set, guid);
+            SetupDiDestroyDeviceInfoList(set);
+            if !devices.is_empty() {
+                println!("  [DBG] SetupDi found {} devices (GUID {:08X})", devices.len(), guid.data1);
+                return devices;
+            }
         }
     }
 
@@ -122,97 +136,60 @@ unsafe fn enumerate_all_hid() -> Vec<HidDevice> {
     Vec::new()
 }
 
-/// Enumerate Device Classes registry for HID device interface symbolic names.
-/// Device classes store symlinks like ##?#HID#VID_046D&PID_C539...#{guid}.
-/// Convert ##?# to \\?\ to get a CreateFileW-compatible path.
-unsafe fn enumerate_device_classes(target_vid: u16) -> Vec<HidDevice> {
+/// Enumerate Device Classes registry for the 3 relevant device interface GUIDs.
+/// This is a targeted scan (not all 170+ GUIDs) so it completes in milliseconds.
+unsafe fn enumerate_device_classes(_target_vid: u16) -> Vec<HidDevice> {
     let mut devices = Vec::new();
-    println!("  [DBG] Trying DeviceClasses registry...");
-    let key_path = windows_sys::core::w!("SYSTEM\\CurrentControlSet\\Control\\DeviceClasses");
-    let mut hkey = 0isize;
-    if RegOpenKeyExW(HKEY_LOCAL_MACHINE, key_path, 0, KEY_READ | KEY_ENUMERATE_SUB_KEYS, &mut hkey) != 0 || hkey == 0 {
-        println!("  [DBG] Could not open DeviceClasses key");
-        return Vec::new();
-    }
-    println!("  [DBG] DeviceClasses key opened successfully");
+    println!("  [DBG] Trying DeviceClasses (targeted 3-GUID scan)...");
 
-    let mut subkey_buf: [u16; 512] = [0; 512];
-    let mut dev_idx = 0u32;
+    let paths = [
+        (r"SYSTEM\CurrentControlSet\Control\DeviceClasses\{4D36E96B-E325-11CE-BFC1-08002BE10318}", "HID"),
+        (r"SYSTEM\CurrentControlSet\Control\DeviceClasses\{4D1E55B2-F16F-11CF-88CB-001111000030}", "Keyboard"),
+        (r"SYSTEM\CurrentControlSet\Control\DeviceClasses\{745A17A0-74D3-11D0-B6FE-00A0C90F57DA}", "Mouse"),
+    ];
 
-    loop {
-        let mut name_len = subkey_buf.len() as u32;
-        let ret = RegEnumKeyExW(hkey, dev_idx, subkey_buf.as_mut_ptr(), &mut name_len,
-            null_mut(), null_mut(), null_mut(), null_mut());
-        if ret != 0 { break; }
-
-        let class_name = wide_to_string(subkey_buf.as_ptr());
-        let class_upper = class_name.to_uppercase();
-        // Print all subkeys found for debugging
-        println!("  [DBG] Class subkey: {}", &class_name[..class_name.len().min(120)]);
-
-        // Check if this is a HID device class (contains HID#VID_046D)
-        if !class_upper.contains("HID") && !class_upper.contains("MOUSE") && !class_upper.contains("KBD") {
-            dev_idx += 1;
-            continue;
-        }
-
-        // Open the class subkey
-        let full_path = format!("SYSTEM\\CurrentControlSet\\Control\\DeviceClasses\\{}", class_name);
-        let full_wide: Vec<u16> = full_path.encode_utf16().chain(std::iter::once(0)).collect();
-
+    for (path_str, name) in paths {
+        let path_ws: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
         let mut class_key = 0isize;
-        if RegOpenKeyExW(HKEY_LOCAL_MACHINE, full_wide.as_ptr(), 0, KEY_READ | KEY_ENUMERATE_SUB_KEYS, &mut class_key) != 0 || class_key == 0 {
-            println!("  [DBG] Could not open class: {}", &class_name[..class_name.len().min(80)]);
-            dev_idx += 1;
+        if RegOpenKeyExW(HKEY_LOCAL_MACHINE, path_ws.as_ptr(), 0, KEY_READ | KEY_ENUMERATE_SUB_KEYS, &mut class_key) != 0 || class_key == 0 {
+            println!("  [DBG] Could not open DeviceClasses key for {}", name);
             continue;
         }
-
-        // Count instances
-        let mut inst_buf: [u16; 512] = [0; 512];
-        let mut inst_idx = 0u32;
-        let mut instance_count = 0u32;
-        loop {
-            let mut name_len = inst_buf.len() as u32;
-            let ret = RegEnumKeyExW(class_key, inst_idx, inst_buf.as_mut_ptr(), &mut name_len,
-                null_mut(), null_mut(), null_mut(), null_mut());
-            if ret != 0 { break; }
-            instance_count += 1;
-            inst_idx += 1;
-        }
-        println!("  [DBG] Class {} has {} instances", &class_name[..class_name.len().min(60)], instance_count);
-
-        // Enumerate device instances in this class
+        println!("  [DBG] Scanning DeviceClasses {}", name);
         enumerate_device_class_instances(class_key, &mut devices);
-        dev_idx += 1;
-    }
-    RegCloseKey(hkey);
+        RegCloseKey(class_key);
 
-    // Filter to our VID
-    devices.retain(|d| d.vid == target_vid);
+        if !devices.is_empty() {
+            println!("  [DBG] DeviceClasses {} found {} devices", name, devices.len());
+            break;
+        }
+    }
+
     devices
 }
 
+
 /// Enumerate all interface symlinks in a DeviceClass subkey.
 unsafe fn enumerate_device_class_instances(class_key: isize, devices: &mut Vec<HidDevice>) {
-    let mut symlink_buf: [u16; 512] = [0; 512];
+    let mut symlink_buf: [u16; 4096] = [0; 4096];
     let mut inst_idx = 0u32;
 
     loop {
         let mut name_len = symlink_buf.len() as u32;
         let ret = RegEnumKeyExW(class_key, inst_idx, symlink_buf.as_mut_ptr(), &mut name_len,
             null_mut(), null_mut(), null_mut(), null_mut());
+        // ERROR_MORE_DATA (0xEA) means buffer too small — skip this entry and try next
+        if ret == 0xEA { inst_idx += 1; continue; }
         if ret != 0 { break; }
 
         let symlink = wide_to_string(symlink_buf.as_ptr());
 
-        // Symlink format: ##?#HID#VID_046D&PID_C539&MI_01&COL01#...#{guid}
-        if !symlink.starts_with("##?#") {
-            inst_idx += 1;
-            continue;
-        }
-
-        // Convert ##?# to \\?\ for CreateFileW
-        let path = format!("\\\\?\\{}", &symlink[4..]);
+        let path = if symlink.starts_with("##?#") {
+            format!("\\\\?\\{}", &symlink[4..])
+        } else {
+            // HID#...#{guid} — already a device path format
+            format!("\\\\?\\{}", symlink)
+        };
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
 
         let handle = CreateFileW(wide.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -240,7 +217,7 @@ unsafe fn enumerate_device_class_instances(class_key: isize, devices: &mut Vec<H
 }
 
 /// Enumerate HID interface paths via SetupDi.
-unsafe fn enumerate_via_interface_paths(set: isize) -> Vec<HidDevice> {
+unsafe fn enumerate_via_interface_paths(set: isize, guid: &windows_sys::core::GUID) -> Vec<HidDevice> {
     let mut devices = Vec::new();
     let mut dev_info: SP_DEVINFO_DATA = std::mem::zeroed();
     dev_info.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
@@ -251,7 +228,7 @@ unsafe fn enumerate_via_interface_paths(set: isize) -> Vec<HidDevice> {
         iface.cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32;
         let mut iface_idx = 0u32;
 
-        let guid_ptr = &HID_INTERFACE_GUID as *const _;
+        let guid_ptr = guid as *const _;
         while SetupDiEnumDeviceInterfaces(set, &mut dev_info, guid_ptr, iface_idx, &mut iface) != 0 {
             let mut needed = 0u32;
             let _ = SetupDiGetDeviceInterfaceDetailW(
@@ -318,6 +295,8 @@ unsafe fn enumerate_usb_registry(target_vid: u16) -> Vec<HidDevice> {
         let mut name_len = subkey_buf.len() as u32;
         let ret = RegEnumKeyExW(hkey, dev_idx, subkey_buf.as_mut_ptr(), &mut name_len,
             null_mut(), null_mut(), null_mut(), null_mut());
+        // ERROR_MORE_DATA (0xEA) means buffer too small — skip this entry and try next
+        if ret == 0xEA { dev_idx += 1; continue; }
         if ret != 0 { break; }
 
         let vid_pid = wide_to_string(subkey_buf.as_ptr());
@@ -378,7 +357,7 @@ unsafe fn enumerate_usb_registry(target_vid: u16) -> Vec<HidDevice> {
 
 /// Enumerate HID registry (HKLM\SYSTEM\CurrentControlSet\Enum\HID) for devices by VID.
 unsafe fn enumerate_hid_registry(target_vid: u16) -> Vec<HidDevice> {
-    let mut devices = Vec::new();
+    let devices = Vec::new();
     let vid_hex = format!("{:04X}", target_vid);
 
     let key_path = windows_sys::core::w!("SYSTEM\\CurrentControlSet\\Enum\\HID");
@@ -394,6 +373,8 @@ unsafe fn enumerate_hid_registry(target_vid: u16) -> Vec<HidDevice> {
         let mut name_len = subkey_buf.len() as u32;
         let ret = RegEnumKeyExW(hkey, dev_idx, subkey_buf.as_mut_ptr(), &mut name_len,
             null_mut(), null_mut(), null_mut(), null_mut());
+        // ERROR_MORE_DATA (0xEA) means buffer too small — skip this entry and try next
+        if ret == 0xEA { dev_idx += 1; continue; }
         if ret != 0 { break; }
 
         let vid_subkey = wide_to_string(subkey_buf.as_ptr());

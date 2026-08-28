@@ -109,10 +109,17 @@ pub fn apply_config(cfg: Config) {
 
     // Start the injector only when scroll is enabled AND smooth mode is enabled.
     // When smooth is off, wheel events pass through unmodified (with modifiers applied).
+    eprintln!("[DEBUG] apply_config: scroll.enabled={}, scroll.smooth={}", cfg.scroll.enabled, cfg.scroll.smooth);
     if cfg.scroll.enabled && cfg.scroll.smooth {
+        eprintln!("[DEBUG] apply_config: calling start()");
         if let Some(tx) = crate::scroll::injector::start(&*cfg) {
+            eprintln!("[DEBUG] apply_config: start() returned Some, setting SCROLL_TX");
             *SCROLL_TX.lock() = Some(tx);
+        } else {
+            eprintln!("[DEBUG] apply_config: start() returned None");
         }
+    } else {
+        eprintln!("[DEBUG] apply_config: not calling start (enabled={}, smooth={})", cfg.scroll.enabled, cfg.scroll.smooth);
     }
     if cfg.buttons.enabled {
         let entries: Vec<(crate::remap::MouseButton, crate::remap::ButtonAction)> = cfg
@@ -347,6 +354,7 @@ unsafe fn process_wheel(delta: i32, horizontal: bool, cfg: &Config) -> Option<Wh
     //    The hook swallows the original event; the injector replays it smoothly.
     //    If smooth mode is off, return None so the original event passes through.
     if cfg.scroll.smooth {
+        crate::log::write(&format!("[wheel] process_wheel smooth=true delta={} horiz={}", delta, horizontal));
         if let Some(tx) = SCROLL_TX.lock().as_ref() {
             let _ = tx.send(WheelInput { delta, horizontal });
         }
@@ -360,8 +368,10 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
     if code >= 0 {
         let ev = wparam as u32;
         let ms = &*(lparam as *const MSLLHOOKSTRUCT);
-        // Ignore events we ourselves synthesized (feedback loop guard).
-        if (ms.flags & LLMHF_INJECTED) != 0 {
+        // Ignore events we synthesized (check LLMHF_INJECTED + our dwExtraInfo marker).
+        let is_our_injection = (ms.flags & LLMHF_INJECTED) != 0
+            || ms.dwExtraInfo == 0xFA57_0000;
+        if is_our_injection {
             return CallNextHookEx(0, code, wparam, lparam);
         }
 

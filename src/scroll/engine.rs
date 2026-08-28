@@ -197,6 +197,11 @@ impl ScrollAxis {
         self.velocity.abs()
     }
 
+    /// Signed velocity (positive = forward/down, negative = backward/up).
+    pub fn signed_speed(&self) -> f64 {
+        self.velocity
+    }
+
     /// Drag coefficient `a` (> 0).
     pub fn config_drag_coefficient(&self) -> f64 {
         self.a
@@ -401,5 +406,16 @@ mod tests {
     fn base_carry_over_distance_animating_no_curve_returns_zero() {
         // Edge case: animating but no curve yet (horizontal before first curve init).
         assert_eq!(base_carry_over_distance(true, 100.0, None, 0.0), 0.0);
+    }
+
+    #[test]
+    fn hybrid_curve_evaluate_at_t_zero_is_near_zero() {
+        let axis = make_axis();
+        let curve = HybridCurve::new(
+            axis.accel_curve(), 50.0, 100.0, 15.0, 1.05, 30.0, 0.2,
+        );
+        // At t=0 (animation just starting), accumulated fraction should be ~0
+        let frac = curve.evaluate(0.0);
+        assert!(frac < 0.1, "evaluate(0) should be near 0, got {}", frac);
     }
 }

@@ -30,8 +30,8 @@ fn main() {
 
     // Bring up hooks + injector (or remap table) per the loaded config, and
     // reinstall on every later toggle from the tray menu.
-    win::hooks::apply_config(cfg);
-
+    win::hooks::apply_config(cfg.clone());
+    eprintln!("[DEBUG] main: called apply_config");
     // Blocks until WM_QUIT (tray "Exit" or window destroy).
     win::message_loop::run();
 
