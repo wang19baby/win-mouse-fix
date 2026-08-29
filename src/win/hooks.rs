@@ -2,10 +2,9 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, KillTimer, MSLLHOOKSTRUCT, MSG, SetTimer,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOUSEHWHEEL,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_TIMER,
-    WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2, KBDLLHOOKSTRUCT,
-    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
+    XBUTTON2, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_HWHEEL,
@@ -273,6 +272,15 @@ pub fn send_remote_click(right: bool) {
 ///   "snap_up"     -> Win+Up       (maximize)
 ///   "snap_down"   -> Win+Down     (restore/minimize)
 pub fn send_remote_gesture(g: &str) {
+    // 4-finger diagonal corner snaps = two sequential Win+Arrow chords
+    // (e.g. up-left = Win+Left then Win+Up -> quarter window at top-left).
+    match g {
+        "snap_up_l"   => { send_remote_gesture("snap_l"); send_remote_gesture("snap_up"); return; }
+        "snap_up_r"   => { send_remote_gesture("snap_r"); send_remote_gesture("snap_up"); return; }
+        "snap_down_l" => { send_remote_gesture("snap_l"); send_remote_gesture("snap_down"); return; }
+        "snap_down_r" => { send_remote_gesture("snap_r"); send_remote_gesture("snap_down"); return; }
+        _ => {}
+    }
     unsafe {
         let keys: &[u16] = match g {
             "taskview" => &[0x5B, 0x09], // LWIN, TAB
@@ -283,6 +291,12 @@ pub fn send_remote_gesture(g: &str) {
             "snap_r" => &[0x5B, 0x27],      // LWIN, RIGHT
             "snap_up" => &[0x5B, 0x26],     // LWIN, UP
             "snap_down" => &[0x5B, 0x28],   // LWIN, DOWN
+            // 3-finger diagonals: top pair = Alt+Tab app switching,
+            // bottom pair = move window between monitors (multi-monitor).
+            "up_l" => &[0x10, 0x12, 0x09],  // SHIFT, ALT, TAB -> previous app (Shift+Alt+Tab)
+            "up_r" => &[0x12, 0x09],        // ALT, TAB        -> next app (Alt+Tab)
+            "down_l" => &[0x5B, 0x10, 0x25], // LWIN, SHIFT, LEFT -> window to left monitor
+            "down_r" => &[0x5B, 0x10, 0x27], // LWIN, SHIFT, RIGHT -> window to right monitor
             _ => return,
         };
         let mut events: Vec<INPUT> = Vec::with_capacity(keys.len() * 2);

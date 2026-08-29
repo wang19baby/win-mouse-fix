@@ -1101,6 +1101,14 @@ mod integration {
             "{\"t\":\"gesture\",\"g\":\"taskview\"}",
             "{\"t\":\"gesture\",\"g\":\"desk_l\"}",
             "{\"t\":\"gesture\",\"g\":\"desk_r\"}",
+            "{\"t\":\"gesture\",\"g\":\"up_l\"}",
+            "{\"t\":\"gesture\",\"g\":\"up_r\"}",
+            "{\"t\":\"gesture\",\"g\":\"down_l\"}",
+            "{\"t\":\"gesture\",\"g\":\"down_r\"}",
+            "{\"t\":\"gesture\",\"g\":\"snap_up_l\"}",
+            "{\"t\":\"gesture\",\"g\":\"snap_up_r\"}",
+            "{\"t\":\"gesture\",\"g\":\"snap_down_l\"}",
+            "{\"t\":\"gesture\",\"g\":\"snap_down_r\"}",
             // unknown type must be ignored, not drop
             "{\"t\":\"frobnicate\"}",
         ];

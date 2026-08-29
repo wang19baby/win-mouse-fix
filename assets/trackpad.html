@@ -42,10 +42,17 @@
 <script>
 (function(){
   "use strict";
-  var SENS = 2.2;           // 指针增益：手指px -> PC px
-  var SCROLL_GAIN = 3.6;    // 滚动像素 -> 轮子单位（调高 = 更快、更跟手）
+  var SENS = 6.7;           // 指针基准增益：手指px -> PC px（当前速度的 2/3）
+  // 距离加速：慢移保持基准(精准)，快甩按移动距离额外加速，上限 ACCEL_MAX_MULT。
+  var ACCEL_REF = 10;       // 每帧位移低于此值不加速(px/帧)
+  var ACCEL_SLOPE = 10;     // 超过 ACCEL_REF 后，每多这么多 px/帧 加速 +1 倍
+  var ACCEL_MAX_MULT = 2.0; // 最大加速倍数
+  var MOVE_EMA = 0.35;      // 速度平滑系数(越小越平滑, 抑制颤动)
+  var SCROLL_GAIN = 5.5;    // 滚动像素 -> 轮子单位（调高 = 更快、更跟手）
   var TAP_MS = 220, TAP_PX = 10;
   var SWIPE_PX = 45;        // 三/四指滑动触发距离（质心位移）
+  var DIAG_MIN = 22;        // 判定斜向时，两个方向都需超过此位移
+  var DIAG_RATIO = 1.8;     // 某方向超过另一方向 DIAG_RATIO 倍则视为正方向（非斜向）
   var SETTLE_MS = 120;      // 手指落下后等待稳定，再锁定指数量
   var COMMIT_EARLY_PX = 10; // 或位移超过此值立即锁定（更跟手）
   var ZOOM_STEP_PX = 30;    // 捏合每变化这么多 px 触发一档缩放（更大=更不易误触）
@@ -82,9 +89,9 @@
 
   // pointerId -> {x,y,startX,startY,startT,moved}
   var pointers = new Map();
-  // pending relative move (batched via rAF)
-  var pending = {dx:0, dy:0};
-  var scheduled = false;
+  // Smoothed speed estimate (EMA) used to drive pointer acceleration without
+  // frame-to-frame gain jitter.
+  var moveSpeedEma = 0;
 
   // Live multi-touch gesture state. The finger COUNT is locked ("committed")
   // once the fingers have settled (or movement forces an early commit), so a
@@ -126,15 +133,18 @@
 
   function send(obj){ if(ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
-  function flush(){
-    scheduled = false;
-    if(!authed || locked){ pending.dx = 0; pending.dy = 0; return; }
-    if(pending.dx !== 0 || pending.dy !== 0){
-      send({t:'move', dx:Math.round(pending.dx*SENS), dy:Math.round(pending.dy*SENS)});
-      pending.dx = 0; pending.dy = 0;
-    }
+  // Drive one relative move from a single pointer delta. The acceleration gain is
+  // derived from a *smoothed* speed (EMA of per-event magnitude) so it changes
+  // gradually instead of jittering frame-to-frame (which read as "trembling").
+  function emitMove(dx, dy){
+    if(!authed || locked) return;
+    var mag = Math.hypot(dx, dy);
+    moveSpeedEma = moveSpeedEma * MOVE_EMA + mag * (1 - MOVE_EMA);
+    var factor = moveSpeedEma <= ACCEL_REF ? 1 : 1 + (moveSpeedEma - ACCEL_REF) / ACCEL_SLOPE;
+    if(factor > ACCEL_MAX_MULT) factor = ACCEL_MAX_MULT;
+    var g = SENS * factor;
+    send({t:'move', dx:Math.round(dx*g), dy:Math.round(dy*g)});
   }
-  function scheduleFlush(){ if(!scheduled){ scheduled = true; requestAnimationFrame(flush); } }
 
   function ripple(x,y){
     var r = document.createElement('div'); r.className = 'ripple';
@@ -169,6 +179,7 @@
 
   function newGesture(list){
     var c = centroid(list);
+    moveSpeedEma = 0; // fresh speed estimate each gesture, no stale boost
     g = {
       startT: performance.now(),
       settleUntil: performance.now() + SETTLE_MS,
@@ -235,7 +246,10 @@
     }
 
     if(g.committedCount === 1){
-      if(authed && !locked){ pending.dx += dx; pending.dy += dy; scheduleFlush(); }
+      // Defer until it's a drag (past the tap threshold); a pure tap teleports on
+      // release instead. Once dragging, emit every pointer event at full sample
+      // rate (no rAF batching) and let emitMove smooth the acceleration gain.
+      if(authed && !locked && g.anyMoved){ emitMove(dx, dy); }
     } else if(g.committedCount === 2){
       var c = centroid(list);
       var sdx = c.x - g.lastC.x, sdy = c.y - g.lastC.y;
@@ -274,16 +288,20 @@
       g.lastC = c2;
       if(!g.swipeFired && (Math.abs(adx) > SWIPE_PX || Math.abs(ady) > SWIPE_PX)){
         g.swipeFired = true;
-        var horiz = Math.abs(adx) >= Math.abs(ady);
+        var ax = Math.abs(adx), ay = Math.abs(ady);
+        // Diagonal when both axes travelled far and neither clearly dominates.
+        var diag = ax > DIAG_MIN && ay > DIAG_MIN && ax < ay*DIAG_RATIO && ay < ax*DIAG_RATIO;
         var name;
         if(g.committedCount >= 4){
-          // 四指：窗口吸附
-          name = !horiz ? (ady < 0 ? 'snap_up' : 'snap_down')
-                         : (adx < 0 ? 'snap_l'  : 'snap_r');
+          // 四指：窗口吸附（含四角吸附）
+          if(diag){ name = (ady < 0 ? 'snap_up' : 'snap_down') + (adx < 0 ? '_l' : '_r'); }
+          else if(ax >= ay){ name = adx < 0 ? 'snap_l' : 'snap_r'; }
+          else { name = ady < 0 ? 'snap_up' : 'snap_down'; }
         } else {
-          // 三指：导航
-          name = !horiz ? (ady < 0 ? 'taskview' : 'showdesktop')
-                         : (adx < 0 ? 'desk_l'   : 'desk_r');
+          // 三指：导航 / 桌面管理（含四角斜向）
+          if(diag){ name = (ady < 0 ? 'up' : 'down') + (adx < 0 ? '_l' : '_r'); }
+          else if(ax >= ay){ name = adx < 0 ? 'desk_l' : 'desk_r'; }
+          else { name = ady < 0 ? 'taskview' : 'showdesktop'; }
         }
         g.lastGesture = name;
         if(authed && !locked) send({t:'gesture', g:name});
