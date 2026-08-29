@@ -21,10 +21,16 @@ windows-sys = { version = "0.52", features = [
     "Win32_Security",
     "Win32_System_IO",
     "Win32_System_Registry",
+
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
 ] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 parking_lot = "0.12"
+qrcode = "0.14.1"
+serde_json = "1.0.151"
 
 [profile.release]
 opt-level = 3

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手机妙控板 — 扫码连接</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0f1115; color: #e8eaed; margin: 0; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 28px 18px;
+  }
+  h1 { font-size: 19px; font-weight: 600; margin: 4px 0 0; }
+  #qr { background: #fff; padding: 14px; border-radius: 14px; image-rendering: pixelated; }
+  .row { display: flex; gap: 8px; align-items: center; width: 100%; max-width: 420px; }
+  input {
+    flex: 1; min-width: 0; background: #1c1f26; border: 1px solid #2c3038; color: #e8eaed;
+    padding: 10px 12px; border-radius: 8px; font-size: 13px;
+  }
+  button {
+    background: #3b82f6; border: 0; color: #fff; padding: 10px 16px; border-radius: 8px;
+    font-size: 14px; cursor: pointer; white-space: nowrap;
+  }
+  button:active { transform: scale(.97); }
+  a.link { color: #9ecbff; text-decoration: none; font-size: 14px; margin-top: 4px; }
+  .hint { color: #9aa0a6; font-size: 13px; text-align: center; max-width: 360px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <h1>手机妙控板 — 扫码连接</h1>
+  <canvas id="qr" width="320" height="320"></canvas>
+  <div class="row">
+    <input id="url" readonly>
+    <button onclick="copyUrl()">复制地址</button>
+  </div>
+  <a class="link" id="openLink" href="#">打开妙控板 →</a>
+  <p class="hint">用手机相机或扫码 App 扫描上方二维码,即可在手机浏览器中打开妙控板并开始控制鼠标。</p>
+
+<script>
+window.QR = __QR_DATA__;
+(function () {
+  var q = window.QR, n = q.size, m = q.modules;
+  var cv = document.getElementById('qr'), ctx = cv.getContext('2d');
+  var px = Math.max(1, Math.floor(320 / n));
+  cv.width = cv.height = n * px;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = '#000';
+  for (var r = 0; r < n; r++) {
+    for (var c = 0; c < n; c++) {
+      if (m[r * n + c]) ctx.fillRect(c * px, r * px, px, px);
+    }
+  }
+  document.getElementById('url').value = q.url;
+  document.getElementById('openLink').href = q.url;
+})();
+function copyUrl() {
+  var u = document.getElementById('url');
+  u.select();
+  if (navigator.clipboard) { navigator.clipboard.writeText(u.value); }
+  else { document.execCommand('copy'); }
+}
+</script>
+</body>
+</html>

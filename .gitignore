@@ -18,3 +18,9 @@ tools/__pycache__/
 
 # Standalone probe binary built from src/bin/dpi-probe.rs (build artifact, not source)
 /dpi-probe.exe
+
+# Persisted pairing token (minted at first run, must stay stable across restarts)
+token.txt
+
+# Backup / artifact files dropped during development
+*.old

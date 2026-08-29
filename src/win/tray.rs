@@ -1,26 +1,41 @@
 use std::ptr::{null, null_mut};
 
+
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
-    Shell_NotifyIconW,
+    Shell_NotifyIconW, ShellExecuteW,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
-    DeleteObject, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, FillRect, GetDC,
-    ReleaseDC, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+    BeginPaint, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
+    DeleteDC, DeleteObject, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DrawTextW, EndPaint, FillRect,
+    GetDC, GetStockObject, HBRUSH, PAINTSTRUCT, ReleaseDC, SelectObject, SetBkMode,
+    SetTextColor, TRANSPARENT, WHITE_BRUSH, BLACK_BRUSH,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, CreateIconFromResourceEx,
-    CreateIconIndirect, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow,
+    CreateIconIndirect, DefWindowProcW, DestroyIcon,     DestroyMenu, DestroyWindow, GetClientRect,
     DrawIcon, GetCursorPos, GetSystemMetrics, ICONINFO, IDC_ARROW,
     IDI_APPLICATION, KillTimer, LoadCursorW, LoadIconW, MB_ICONINFORMATION, MB_OK,
-    MessageBoxW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, PostQuitMessage,
+
+
+
+    MessageBoxW, IDYES, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, PostQuitMessage,
     RegisterClassExW, SetForegroundWindow, SetTimer, ShowWindow, SM_CXICON, SW_SHOW,
     TrackPopupMenu, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CREATE,
     WM_DESTROY, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_SYSMENU,
-    WS_VISIBLE,
+
+
+
+    WS_VISIBLE, MB_YESNO, MB_ICONQUESTION,
+};
+
+use windows_sys::Win32::System::DataExchange::{
+    OpenClipboard, EmptyClipboard, CloseClipboard, SetClipboardData,
+};
+use windows_sys::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
 };
 
 const WM_TRAYICON: u32 = WM_APP + 1;
@@ -31,6 +46,10 @@ const ID_REMAP: usize = 1004;
 const ID_ADDMODE: usize = 1005;
 const ID_BATTERY: usize = 1006;
 const ID_DPI: usize = 1007;
+
+const ID_REMOTE: usize = 1008;
+static FW_DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 const ID_TIMER_ADDMODE: usize = 3001;
 const ID_TIMER_CONFIG: usize = 3002;
 const CONFIG_RELOAD_MS: u32 = 1000;
@@ -307,6 +326,7 @@ unsafe extern "system" fn wnd_proc(
             KillTimer(hwnd, ID_TIMER_PROFILE);
             KillTimer(hwnd, ID_TIMER_BATTERY);
             KillTimer(hwnd, ID_TIMER_DPI);
+
             let ov = *CUR_OVERLAY.lock();
             if ov != 0 {
                 DestroyIcon(ov);
@@ -366,6 +386,7 @@ unsafe fn show_menu(hwnd: isize) {
 
     AppendMenuW(menu, MF_STRING, ID_BATTERY, to_wide("电池状态").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_DPI, to_wide("DPI 同步当前屏").as_ptr());
+    AppendMenuW(menu, MF_STRING, ID_REMOTE, to_wide("手机妙控板").as_ptr());
 
     AppendMenuW(menu, MF_STRING, ID_ABOUT, to_wide("关于").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_EXIT, to_wide("退出").as_ptr());
@@ -452,6 +473,9 @@ unsafe fn show_menu(hwnd: isize) {
                     );
                 }
             }
+        }
+        ID_REMOTE => {
+            show_remote_qr(hwnd);
         }
         _ => {}
     }
@@ -609,3 +633,181 @@ unsafe extern "system" fn about_wnd_proc(
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
+
+
+
+
+
+
+/// Phase 11 — on first use, ask the user to open the firewall port for LAN access.
+/// Windows blocks unsolicited inbound by default; adding the allow rule needs a
+/// one-time admin grant (UAC). We prompt for consent, then elevate `netsh`.
+fn parse_port(url: &str) -> u16 {
+    if let Some(auth) = url.split("://").nth(1) {
+        if let Some(colon) = auth.find(':') {
+            let after = &auth[colon + 1..];
+            let port_str = match after.find('/') {
+                Some(s) => &after[..s],
+                None => after,
+            };
+            if let Ok(p) = port_str.parse::<u16>() {
+                return p;
+            }
+        }
+    }
+    18765
+}
+
+fn firewall_rule_exists(port: u16) -> bool {
+    let name = format!("WinMouseFix-Trackpad-{port}");
+    let out = std::process::Command::new("netsh")
+        .args(["advfirewall", "firewall", "show", "rule", &format!("name={name}")])
+        .output();
+    match out {
+        Ok(o) => o.status.success() && String::from_utf8_lossy(&o.stdout).contains(&name),
+        Err(_) => false,
+    }
+}
+
+
+fn add_firewall_rule_now(owner: isize, port: u16) {
+    let name = format!("WinMouseFix-Trackpad-{port}");
+    // Elevate once via UAC; netsh then adds the persistent inbound allow rule.
+    // (runas is a no-op prompt when the process is already elevated.)
+    let args = format!(
+        "advfirewall firewall add rule name={name} dir=in action=allow protocol=TCP localport={port}"
+    );
+    unsafe {
+        ShellExecuteW(
+            owner,
+            to_wide("runas").as_ptr(),
+            to_wide("netsh").as_ptr(),
+            to_wide(&args).as_ptr(),
+            null_mut(),
+            SW_SHOW,
+        );
+    }
+}
+
+/// Prompt once for consent, then ensure the inbound allow rule exists.
+fn ensure_firewall_rule(owner: isize, port: u16) {
+    if firewall_rule_exists(port) {
+        return;
+    }
+    if FW_DECLINED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let r = unsafe {
+        MessageBoxW(
+            owner,
+            to_wide(
+                "手机妙控板需要开放防火墙端口,才能让您手机通过局域网连接。\n是否允许?(将弹出一次 Windows 用户账户控制确认)",
+            )
+            .as_ptr(),
+            to_wide("手机妙控板").as_ptr(),
+            MB_YESNO | MB_ICONQUESTION,
+        )
+    };
+    if r == IDYES {
+        add_firewall_rule_now(owner, port);
+    } else {
+        FW_DECLINED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn show_remote_qr(_owner: isize) {
+    match crate::remote::info() {
+
+        Some(info) => {
+            // Open the in-service QR page in the default browser. The page itself
+            // renders the QR + copyable address, so no Win32 window is needed.
+            let port = parse_port(&info.url);
+            ensure_firewall_rule(_owner, port);
+
+            let base = info
+                .url
+                .split('?')
+                .next()
+                .unwrap_or(&info.url)
+                .trim_end_matches('/');
+            let qr_url = format!("{}/qr", base);
+            copy_text_to_clipboard(&info.url);
+            let opened = unsafe {
+                let r = ShellExecuteW(
+                    0,
+                    to_wide("open").as_ptr(),
+                    to_wide(&qr_url).as_ptr(),
+                    null_mut(),
+                    null_mut(),
+                    SW_SHOW,
+                );
+                r > 32
+            };
+            if !opened {
+                unsafe {
+                    MessageBoxW(
+                        _owner,
+                        to_wide(&format!(
+                            "无法打开浏览器。连接地址已复制到剪贴板:\n{}",
+                            info.url
+                        ))
+                        .as_ptr(),
+                        to_wide("手机妙控板").as_ptr(),
+                        MB_OK | MB_ICONINFORMATION,
+                    );
+                }
+            }
+        }
+        None => unsafe {
+            MessageBoxW(
+                _owner,
+
+                to_wide("手机妙控板服务尚未启动,请重启程序后重试。").as_ptr(),
+                to_wide("手机妙控板").as_ptr(),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        },
+    }
+}
+
+#[cfg(test)]
+mod firewall_tests {
+    use super::parse_port;
+
+    #[test]
+    fn parses_port_from_trackpad_url() {
+        assert_eq!(parse_port("http://192.168.0.167:18765/?t=abc123"), 18765);
+        assert_eq!(parse_port("http://10.0.0.5:18770/?t=xyz"), 18770);
+    }
+
+    #[test]
+    fn falls_back_without_port() {
+        assert_eq!(parse_port("http://host/?t=abc"), 18765);
+        assert_eq!(parse_port("not-a-url"), 18765);
+    }
+}
+
+
+/// Copy `text` to the clipboard as CF_UNICODETEXT (best-effort).
+fn copy_text_to_clipboard(text: &str) {
+    unsafe {
+        if OpenClipboard(0) == 0 {
+            return;
+        }
+        EmptyClipboard();
+        let w: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let h = GlobalAlloc(GMEM_MOVEABLE, (w.len() * 2) as usize);
+        if !h.is_null() {
+            let p = GlobalLock(h) as *mut u16;
+            if !p.is_null() {
+                std::ptr::copy_nonoverlapping(w.as_ptr(), p, w.len());
+                GlobalUnlock(h);
+
+                SetClipboardData(13, h as isize);
+            }
+        }
+        CloseClipboard();
+    }
+}
+
+

@@ -9,6 +9,7 @@ mod gesture;
 mod accel;
 mod add_mode;
 mod device;
+mod remote;
 
 use parking_lot::RwLock;
 use config::Config;
@@ -30,6 +31,9 @@ fn main() {
 
     // Bring up hooks + injector (or remap table) per the loaded config, and
     // reinstall on every later toggle from the tray menu.
+    // Phase 11: start the phone-trackpad LAN server (best-effort; logs on failure).
+    remote::start_server();
+
     win::hooks::apply_config(cfg.clone());
     eprintln!("[DEBUG] main: called apply_config");
     // Blocks until WM_QUIT (tray "Exit" or window destroy).

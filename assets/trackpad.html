@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0a0a0a">
+<title>妙控板</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;width:100%;overflow:hidden;background:#0a0a0a;touch-action:none;overscroll-behavior:none;}
+  #pad{position:fixed;inset:0;touch-action:none;background:radial-gradient(circle at 50% 38%,#1b1b1b,#0a0a0a);}
+  #hud{position:fixed;top:env(safe-area-inset-top,8px);left:8px;right:8px;display:flex;justify-content:space-between;align-items:center;color:#8a8a8a;font:13px/1.2 system-ui,-apple-system,sans-serif;pointer-events:none;padding:6px 12px;}
+  #status{letter-spacing:.3px;}
+  #lockBtn{pointer-events:auto;background:#222;color:#ccc;border:1px solid #444;border-radius:12px;padding:8px 14px;font:13px system-ui;}
+  #lockBtn.on{background:#3a7;color:#fff;border-color:#3a7;}
+  #fingers{position:fixed;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);left:50%;transform:translateX(-50%);color:#5f5f5f;font:12px/1 system-ui;pointer-events:none;opacity:.85;}
+  #overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);color:#fff;display:none;flex-direction:column;align-items:center;justify-content:center;font:17px/1.6 system-ui;text-align:center;z-index:10;padding:24px;}
+  #overlay.show{display:flex;}
+  #overlay b{font-size:22px;margin-bottom:12px;}
+  .ripple{position:fixed;width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,.45);transform:translate(-50%,-50%);pointer-events:none;animation:rip .35s ease-out forwards;}
+
+  @keyframes rip{from{opacity:.6;transform:translate(-50%,-50%) scale(.4);}to{opacity:0;transform:translate(-50%,-50%) scale(1.7);}}
+  #banner{position:fixed;top:calc(env(safe-area-inset-top,0px) + 46px);left:50%;transform:translateX(-50%);
+    display:none;align-items:center;gap:9px;background:rgba(190,45,45,.94);color:#fff;
+    font:14px/1.3 system-ui;padding:9px 16px;border-radius:20px;z-index:20;max-width:92%;text-align:center;
+    box-shadow:0 3px 12px rgba(0,0,0,.45);}
+  #banner.show{display:flex;}
+  #banner .dot{width:9px;height:9px;border-radius:50%;background:#fff;animation:blink 1s infinite;}
+  @keyframes blink{0%,100%{opacity:.35;}50%{opacity:1;}}
+</style>
+</head>
+<body>
+<div id="pad"></div>
+
+<div id="hud"><span id="status">连接中…</span><button id="lockBtn">锁屏</button></div>
+<div id="fingers">待机</div>
+<div id="banner"><span class="dot"></span><span id="bannerText">连接已断开，正在重连…</span></div>
+<div id="overlay"><b>已锁定</b><span>点按右上角"锁屏"按钮解锁</span></div>
+
+<script>
+(function(){
+  "use strict";
+  var SENS = 2.2;           // 指针增益：手指px -> PC px
+  var SCROLL_GAIN = 3.6;    // 滚动像素 -> 轮子单位（调高 = 更快、更跟手）
+  var TAP_MS = 220, TAP_PX = 10;
+  var SWIPE_PX = 45;        // 三/四指滑动触发距离（质心位移）
+  var SETTLE_MS = 120;      // 手指落下后等待稳定，再锁定指数量
+  var COMMIT_EARLY_PX = 10; // 或位移超过此值立即锁定（更跟手）
+  var ZOOM_STEP_PX = 30;    // 捏合每变化这么多 px 触发一档缩放（更大=更不易误触）
+  var ZOOM_DELTA = 100;     // 每档缩放强度（轮子单位）
+  // 双指时区分"滚动"与"缩放"：累计两种信号，谁占优就锁定谁，避免滚动被误判成缩放。
+  var DECIDE_PX = 16;       // 累计位移超过此值才判定手势类型（防抖）
+  var PINCH_BIAS = 1.3;     // 缩放信号需明显强于滚动才会被判为捏合
+
+  var params = new URLSearchParams(location.search);
+  var token = params.get('t') || '';
+
+  var ws = null, authed = false, backoff = 500, locked = false;
+  var pad = document.getElementById('pad');
+  var statusEl = document.getElementById('status');
+  var fingersEl = document.getElementById('fingers');
+  var lockBtn = document.getElementById('lockBtn');
+
+  var overlay = document.getElementById('overlay');
+  var banner = document.getElementById('banner');
+  var bannerText = document.getElementById('bannerText');
+
+  // Fire-and-forget device-side diagnostic: report the WebSocket close details
+  // back to the server so it lands in ws_debug.log (useful for iOS Safari 1006).
+  function reportClose(code, reason, clean){
+    try {
+      var q = 'code=' + encodeURIComponent(code) +
+              '&reason=' + encodeURIComponent(reason || '') +
+              '&clean=' + (clean ? 1 : 0) +
+              '&ua=' + encodeURIComponent(navigator.userAgent || '');
+      var img = new Image();
+      img.src = '/report?' + q;
+    } catch(_) {}
+  }
+
+  // pointerId -> {x,y,startX,startY,startT,moved}
+  var pointers = new Map();
+  // pending relative move (batched via rAF)
+  var pending = {dx:0, dy:0};
+  var scheduled = false;
+
+  // Live multi-touch gesture state. The finger COUNT is locked ("committed")
+  // once the fingers have settled (or movement forces an early commit), so a
+  // gesture is always interpreted under a single, stable finger count — this is
+  // what makes 2/3/4-finger recognition accurate instead of flipping mid-gesture.
+  var g = null;
+
+  var stopReconnect = false;
+  function showBanner(t){ bannerText.textContent = t; banner.classList.add('show'); }
+  function hideBanner(){ banner.classList.remove('show'); }
+
+  function connect(){
+    if(ws && (ws.readyState === 0 || ws.readyState === 1)) return; // already connecting/open
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(proto + '://' + location.host + '/ws');
+
+    ws.onopen = function(){ statusEl.textContent = '认证中…'; showBanner('握手成功·认证中…'); setTimeout(hideBanner, 1200); ws.send(JSON.stringify({t:'auth', token:token})); };
+    ws.onmessage = function(e){
+      var m; try { m = JSON.parse(e.data); } catch(_) { return; }
+      if(m.t === 'status'){ authed = true; stopReconnect = false; backoff = 500; statusEl.textContent = '已连接'; hideBanner(); }
+      else if(m.t === 'reject'){ statusEl.textContent = '认证失败'; showBanner('认证失败' + (m.reason ? ' ('+m.reason+')' : '') + ' · 请重新扫码'); stopReconnect = true; try { ws.close(); } catch(_){} }
+    };
+
+    ws.onclose = function(e){
+      authed = false; statusEl.textContent = '断开，重连…';
+      var code = e && e.code ? e.code : '?';
+      var reason = e && e.reason ? e.reason : '';
+      var clean = e && e.wasClean;
+      reportClose(code, reason, clean);
+      showBanner('连接已断开，正在重连… [code=' + code + ' ' + reason + ']');
+      if(!stopReconnect) setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 8000);
+    };
+    ws.onerror = function(e){
+      showBanner('WS错误 [code=' + (e && e.code ? e.code : '?') + ']');
+      try { ws.close(); } catch(_){}
+    };
+  }
+
+  function send(obj){ if(ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+  function flush(){
+    scheduled = false;
+    if(!authed || locked){ pending.dx = 0; pending.dy = 0; return; }
+    if(pending.dx !== 0 || pending.dy !== 0){
+      send({t:'move', dx:Math.round(pending.dx*SENS), dy:Math.round(pending.dy*SENS)});
+      pending.dx = 0; pending.dy = 0;
+    }
+  }
+  function scheduleFlush(){ if(!scheduled){ scheduled = true; requestAnimationFrame(flush); } }
+
+  function ripple(x,y){
+    var r = document.createElement('div'); r.className = 'ripple';
+    r.style.left = x+'px'; r.style.top = y+'px';
+    document.body.appendChild(r); setTimeout(function(){ r.remove(); }, 350);
+  }
+
+  function activePointers(){ var a = []; pointers.forEach(function(p){ a.push(p); }); return a; }
+  function centroid(list){ var sx=0, sy=0; for(var i=0;i<list.length;i++){ sx+=list[i].x; sy+=list[i].y; } return {x:sx/list.length, y:sy/list.length}; }
+  // Scale proxy for pinch: diagonal of the bounding box of all touches.
+  // For 2 fingers this is exactly the distance between them.
+  function pinchMetric(list){
+    if(list.length < 2) return 0;
+    var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+    for(var i=0;i<list.length;i++){
+      var p = list[i];
+      if(p.x<minx) minx=p.x; if(p.y<miny) miny=p.y;
+      if(p.x>maxx) maxx=p.x; if(p.y>maxy) maxy=p.y;
+    }
+    return Math.hypot(maxx-minx, maxy-miny);
+  }
+
+  function labelFor(n){
+    if(n<=1) return '指针';
+    if(n===2) return '滚动/缩放';
+    if(n===3) return '三指导航';
+    return '四指窗口';
+  }
+  function updateHud(n, label){
+    if(fingersEl) fingersEl.textContent = n + '指 · ' + label;
+  }
+
+  function newGesture(list){
+    var c = centroid(list);
+    g = {
+      startT: performance.now(),
+      settleUntil: performance.now() + SETTLE_MS,
+      settleMove: 0,
+      maxCount: list.length,
+      committed: false,
+      committedCount: list.length,
+      startC: c, lastC: c,
+      pinch0: pinchMetric(list),
+      anyMoved: false,
+      swipeFired: false,
+      lastGesture: '',
+      // 双指滚动/缩放消歧
+      scrollAccum: 0,
+      pinchAccum: 0,
+      twoDecided: null
+    };
+    updateHud(list.length, '…');
+  }
+
+  function commit(list){
+    g.committed = true;
+    g.committedCount = list.length;
+    var c = centroid(list);
+    g.startC = c; g.lastC = c; g.pinch0 = pinchMetric(list);
+    g.scrollAccum = 0; g.pinchAccum = 0; g.twoDecided = null;
+    updateHud(g.committedCount, labelFor(g.committedCount));
+  }
+
+  pad.addEventListener('pointerdown', function(e){
+    pad.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, {x:e.clientX, y:e.clientY, startX:e.clientX, startY:e.clientY, startT:performance.now(), moved:false});
+    var list = activePointers();
+    if(!g){ newGesture(list); }
+    else {
+      // A new finger joined -> re-settle so the count is (re)locked correctly.
+      g.maxCount = Math.max(g.maxCount, list.length);
+      g.settleUntil = performance.now() + SETTLE_MS;
+      g.settleMove = 0;
+      g.committed = false;
+      g.scrollAccum = 0; g.pinchAccum = 0; g.twoDecided = null;
+      updateHud(list.length, '…');
+    }
+    e.preventDefault();
+  }, {passive:false});
+
+  pad.addEventListener('pointermove', function(e){
+    var p = pointers.get(e.pointerId); if(!p) return;
+    var dx = e.clientX - p.x, dy = e.clientY - p.y;
+    p.x = e.clientX; p.y = e.clientY;
+    if(Math.hypot(e.clientX - p.startX, e.clientY - p.startY) > TAP_PX) p.moved = true;
+    if(p.moved) g.anyMoved = true;
+    var list = activePointers();
+    if(!g || list.length === 0) return;
+
+    // Settling: wait until fingers are placed, unless movement forces an early commit.
+    if(!g.committed){
+      g.settleMove += Math.hypot(dx, dy);
+      if(g.settleMove > COMMIT_EARLY_PX || performance.now() >= g.settleUntil){
+        commit(list);
+      } else {
+        e.preventDefault(); return;
+      }
+    }
+
+    if(g.committedCount === 1){
+      if(authed && !locked){ pending.dx += dx; pending.dy += dy; scheduleFlush(); }
+    } else if(g.committedCount === 2){
+      var c = centroid(list);
+      var sdx = c.x - g.lastC.x, sdy = c.y - g.lastC.y;
+      var pd = pinchMetric(list);
+      var dz = pd - g.pinch0;
+
+      // Disambiguate scroll vs pinch: accumulate both signals, lock a mode once
+      // enough motion has happened. Default stays "scroll" until a clear pinch
+      // emerges, so ordinary two-finger scrolling is never hijacked by jitter.
+      if(g.twoDecided !== 'scroll' && g.twoDecided !== 'pinch'){
+        g.scrollAccum += Math.hypot(sdx, sdy);
+        g.pinchAccum  += Math.abs(dz);
+        if(g.scrollAccum + g.pinchAccum > DECIDE_PX){
+          g.twoDecided = (g.pinchAccum > g.scrollAccum * PINCH_BIAS) ? 'pinch' : 'scroll';
+          updateHud(2, g.twoDecided === 'pinch' ? '缩放' : '滚动');
+        }
+      }
+
+      if(authed && !locked){
+        if(g.twoDecided === 'pinch'){
+          // Deliberate spread/contract -> zoom only.
+          if(dz > ZOOM_STEP_PX){ send({t:'zoom', delta: ZOOM_DELTA}); g.pinch0 += ZOOM_STEP_PX; }
+          else if(dz < -ZOOM_STEP_PX){ send({t:'zoom', delta:-ZOOM_DELTA}); g.pinch0 -= ZOOM_STEP_PX; }
+        } else {
+          // scroll / undecided -> scroll only (baseline tracks live so a later
+          // genuine pinch still registers its delta from the current spread).
+          if(sdx !== 0 || sdy !== 0) send({t:'scroll', dx:Math.round(-sdx*SCROLL_GAIN), dy:Math.round(-sdy*SCROLL_GAIN)});
+          g.pinch0 = pd;
+        }
+      }
+      g.lastC = c;
+    } else {
+      // 3 or 4 fingers: classify a swipe once the centroid travels far enough.
+      var c2 = centroid(list);
+      var adx = c2.x - g.startC.x, ady = c2.y - g.startC.y;
+      g.lastC = c2;
+      if(!g.swipeFired && (Math.abs(adx) > SWIPE_PX || Math.abs(ady) > SWIPE_PX)){
+        g.swipeFired = true;
+        var horiz = Math.abs(adx) >= Math.abs(ady);
+        var name;
+        if(g.committedCount >= 4){
+          // 四指：窗口吸附
+          name = !horiz ? (ady < 0 ? 'snap_up' : 'snap_down')
+                         : (adx < 0 ? 'snap_l'  : 'snap_r');
+        } else {
+          // 三指：导航
+          name = !horiz ? (ady < 0 ? 'taskview' : 'showdesktop')
+                         : (adx < 0 ? 'desk_l'   : 'desk_r');
+        }
+        g.lastGesture = name;
+        if(authed && !locked) send({t:'gesture', g:name});
+        updateHud(g.committedCount, '手势: ' + name);
+      }
+    }
+    e.preventDefault();
+  }, {passive:false});
+
+  function onUp(e){
+    var p = pointers.get(e.pointerId); if(!p){ return; }
+    pointers.delete(e.pointerId);
+    var list = activePointers();
+
+    if(g){
+      var count = g.committed ? g.committedCount : g.maxCount;
+      var quick = (performance.now() - g.startT) < TAP_MS;
+      // Tap = short, no real movement, no swipe fired, and all fingers lifted.
+      if(!g.swipeFired && !g.anyMoved && quick && list.length === 0){
+        if(count === 1 && authed && !locked){ send({t:'tap', b:'left'}); ripple(p.startX, p.startY); }
+        else if(count === 2 && authed && !locked){ send({t:'tap', b:'right'}); ripple(p.startX, p.startY); }
+        else if(count === 3 && authed && !locked){ send({t:'gesture', g:'taskview'}); }
+        else if(count >= 4 && authed && !locked){ send({t:'gesture', g:'showdesktop'}); }
+      }
+      // Re-baseline a 2-finger scroll when a finger lifts, to avoid a jump.
+      if(g.committedCount === 2 && list.length > 0){ g.lastC = centroid(list); }
+      if(list.length === 0){ g = null; updateHud(0, '待机'); }
+    }
+    e.preventDefault();
+  }
+  pad.addEventListener('pointerup', onUp, {passive:false});
+  pad.addEventListener('pointercancel', function(e){
+    pointers.delete(e.pointerId);
+    if(activePointers().length === 0){ g = null; updateHud(0, '待机'); }
+  });
+
+  // kill iOS pinch-zoom / double-tap zoom / context menu
+  ['gesturestart','gesturechange','gestureend'].forEach(function(ev){
+    document.addEventListener(ev, function(e){ e.preventDefault(); }, {passive:false});
+  });
+  pad.addEventListener('touchmove', function(e){ e.preventDefault(); }, {passive:false});
+  pad.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+  document.addEventListener('dblclick', function(e){ e.preventDefault(); });
+
+  lockBtn.addEventListener('click', function(){
+    locked = !locked;
+    lockBtn.classList.toggle('on', locked);
+    lockBtn.textContent = locked ? '解锁' : '锁屏';
+    overlay.classList.toggle('show', locked);
+    if(locked){ g = null; pointers.clear(); updateHud(0, '待机'); }
+  });
+
+
+  // Reconnect immediately when the phone regains connectivity or returns to the page.
+  window.addEventListener('online', function(){ if(!ws || ws.readyState === 3) connect(); });
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden && (!ws || ws.readyState === 3)) connect(); });
+
+  updateHud(0, '待机');
+  connect();
+})();
+</script>
+</body>
+</html>

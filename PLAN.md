@@ -205,6 +205,71 @@ base_dpi = 800         # 参考屏基准 DPI(相对缩放锚点)
 - 关 `auto_switch` → 维持手动/默认档位。
 - 杂牌无 DPI 设备 → 降级提示或 OS 灵敏度补偿,不崩。
 
+
+## Phase 11 — 手机应急妙控板（Web PWA 对接托盘）⬜（计划整顿, 待 PoC）
+
+**目标**:手机浏览器扫码 → 打开全屏妙控板网页 → 经局域网驱动 Windows 光标/滚动/手势,作为**真实鼠标损坏时的应急触控板**。手感复用现有 `SendInput` 注入管线(`src/scroll/injector.rs` / `src/win/hooks.rs`),与真实鼠标一致。
+**详细设计**:`docs/phone-trackpad-plan.md`(含协议 JSON、手势阈值表、攻击点闭环表)。
+
+### 11.0 架构定稿(经攻击评审修订)
+- **传输**:WiFi LAN。托盘内嵌轻量 HTTP 服务:`/` 返回全屏妙控板网页(打包进 exe),`/ws` WebSocket 输入+状态。**砍 SSE**(WS 已双向;SSE 无 auth 头且冗余)。
+- **网页**:全屏 PWA(原生零安装);iOS 须"添加到主屏幕"才真全屏(A2HS)。
+- **连接**:托盘菜单"手机妙控板"→ 弹 Win32 窗口 GDI 自绘二维码(`http://<LAN_IP>:<port>/`);256-bit token 随 QR 轮换,WS 首帧认证,否则 3s 拒连。
+- **已验证可复用**(核对 `hooks.rs`/`injector.rs`):`SCROLL_TX: Mutex<Option<Sender<WheelInput>>>` 已是 mpsc channel(WS 线程复用同模式);`LLMHF_INJECTED` 守卫忽略自身注入(无回环);`send_mouse_move` 为 `pub` 可直接调。
+- **已否决**:原生安卓/iOS app(iOS 不能当 BT HID 外设)、蓝牙 HID(网页走 IP,无意义)、SSE。
+- **语音(后置,P11.5)**:网页文本框 → 系统输入法麦克风做语音→文本 → 逐字 `key` 发 PC;本期仅留 UI 与接口。
+
+### 11.1 托盘本地服务(含 A1/A2/A5/B6/B7)
+- LAN IP 发现:`GetAdaptersAddresses` 枚举,取 Up 的以太网/WiFi、非 `127.*`/`169.254.*`/VPN/WSL/虚拟网卡的活动 IPv4;多候选取默认路由出口。
+- 绑定**具体 LAN IP**(非 `0.0.0.0`),避免暴露公网 WiFi。
+- 防火墙:首次启动 `netsh advfirewall firewall add rule ...` 放行入站 TCP `<port>`(连不上的头号原因)。
+- 服务器模型:手写监听线程 `accept` → **每连接 `spawn` 线程**读 WS 帧(RFC6455 手动握手);零新增 async 依赖,贴项目风格。后续加键盘/屏幕镜像再上 axum。
+
+### 11.2 WS 协议(P11.1)
+- 客户端→服务端:`auth{token}` / `move{dx,dy}` / `scroll{dx,dy}` / `tap{b}` / `gesture{g}` / `key{text}`(JSON 信封,PoC)。
+- 服务端→客户端:`status{conn,phone_battery,locked}`(替代 SSE)、`reject`。
+- 网页 rAF 合批:每帧最多发一次最新 `move`/`scroll` delta。
+
+### 11.3 注入对接(含 A4/B1)
+- `move` → `send_mouse_move`,增益走**独立 `[touch]` 配置段**(与鼠标 `accel::PointerAccel` 解耦,手机屏小增益高一个数量级)。
+- `scroll` → `SCROLL_TX.send(WheelInput)`,平滑曲线走**触摸专用参数**(现有双指数为离散 120 单位轮子 tick 调参,喂连续 delta 会双平滑发飘)。
+- `tap` → `SendInput` 左/右键。
+- `gesture`(A4)→ 独立 `TouchGestureRecognizer`(不在 DragController 内):3 指上滑→`Win+Tab`,3 指左右→`Ctrl+Win+←/→`。DragController 由鼠标按键驱动,触摸无按键,不可复用。
+
+### 11.4 妙控板网页(含 A3/B2/B3/B4/C2/C3/C4)
+- Pointer Events + `touch-action:none` + `user-select:none` + 禁右键菜单。
+- iOS 细节(B3):`touchmove {passive:false}` + `preventDefault`;拦截 `gesturestart`/`gesturechange`;viewport `user-scalable=no`。
+- 手势表+消歧(B2):单指移/点按(<200ms & <8px=左键)/长按>400ms+移=拖;双指 tap=右键;双指质心位移=滚动;双指捏合=缩放(后置);3 指上滑=任务视图,3 指左右=桌面切换;双指抬一指取继续滚。
+- HUD+电量(B4):显示**手机电量**(`navigator.getBattery()` 上行,非 PC 鼠标电量——应急场景鼠标可能已坏/非罗技)+ 连接点。
+- 锁屏:锁后触控全失效(防误触)。
+- 设置:灵敏度/自然滚动/加速度(本地存,可经 `status` 与 `config.toml` 联动)。
+- 触觉(A3):**删 `navigator.vibrate`**(iOS 不支持),改视觉涟漪。
+- ghost cursor(C2):可选 `status` 回显光标坐标画幽灵光标。
+- 重连(C3):指数退避;断线遮罩。
+- 全屏(C4):`apple-mobile-web-app-capable` + manifest + `100dvh`;引导加到主屏。
+
+### 11.5 语音(后置)
+- 文本框 → IME 语音 → 逐字 `key` 发 PC(复用键盘注入接口);本期仅 UI + `key` 协议字段。
+
+### 11.6 验收
+- [ ] 防火墙放行后同 WiFi 扫码首次连接成功(取到正确 LAN IP)。
+- [ ] 单指移/点按左键/双指滚(带惯性)/双指 tap 右键/3 指任务视图·桌面切换。
+- [ ] 锁屏生效;断网指数重连;重连恢复。
+- [ ] iOS Safari:页面不自身滚/缩;加到主屏全屏;点击视觉涟漪(无 vibrate 报错)。
+- [ ] token 错→3s 拒连;公网 WiFi 不暴露(绑具体 IP)。
+- [x] 复用 send_mouse_move / SCROLL_TX / SendInput;LLMHF_INJECTED 守卫防回环【实装】
+
+### 11.7 攻击点闭环(修订依据)
+上轮评审 15 点全闭环(A1–A4 🔴 阻断 / B1–B7 🟡 需补 / C1–C4 🟢 优化),详见 `docs/phone-trackpad-plan.md` §3:
+A1 防火墙+IP / A2 砍 SSE / A3 删 vibrate / A4 独立手势识别器 / B1 触摸专用增益曲线 / B2 多指消歧 / B3 iOS 触摸细节 / B4 手机电量 / B5 QR 弹窗 / B6 每连接线程 / B7 威胁模型 / C1 延迟定位 / C2 ghost cursor / C3 重连退避 / C4 A2HS。
+
+### 11.8 风险(更新)
+- 延迟(C1):WiFi(尤 2.4G)实测 15–40ms 抖动,仅应急可用,非日常主力。
+- UIPI/权限:沿用 PLAN 约束;托盘需足够权限/声明 manifest。
+- 防火墙/IP(A1):不写规则连不上;多网卡取错 IP 扫码打不开。
+- 威胁模型(B7):仅信任家庭 LAN;绝不公网/端口转发;token 随 QR 轮换。
+- iOS 全屏(C4):须引导加到主屏。
+
 ---
 
 ## 跨阶段风险与约束
@@ -226,3 +291,4 @@ base_dpi = 800         # 参考屏基准 DPI(相对缩放锚点)
 **设备层支线(Logitech 可读/可设,独立于主线)** —— `Phase 8` 起步(8.1 枚举+电量最小闭环 ✅,8.2 中 cache ✅ 其余⬜) → `Phase 9` 电量托盘图标 ✅ → `Phase 10` DPI 跨屏自动切换 ✅(2026-08-28 经 OpenLogi 源码校正 SetSensorDpi=fn 0x03,big-endian)。
 下一步建议(主线收尾):**主线(Phase 0–7)已全部实装**;设备支线 `Phase 8` 的 8.1 最小闭环(枚举+电量)已实装。
 下一步建议(支线):Phase 10 已结项——经 OpenLogi `openlogi-hidpp` crate(`adjustable_dpi.rs`)确认 HID++ feature 0x2201 AdjustableDpi 的 SetSensorDpi function code=**0x03**,DPI 字节序为**big-endian**(hi,lo)。`dpi-probe` 二进制已就绪,可在真机有 G502 时运行验证。
+下一步建议(新支线):**Phase 11 手机应急妙控板**(计划整顿完成,详见 `docs/phone-trackpad-plan.md`)——新增托盘 HTTP/WS 服务 + 全屏妙控板网页,与现有 `SendInput` 管线对接;待拍板进 PoC。

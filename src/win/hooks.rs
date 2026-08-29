@@ -8,11 +8,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_MOUSE, MOUSEINPUT, SendInput,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP,
+    INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput,
 };
 
 use crate::CONFIG;
@@ -195,6 +194,185 @@ pub fn poll_foreground_profile() {
 /// Drop the injector sender so its thread disconnects and exits.
 pub fn stop_scroll() {
     *SCROLL_TX.lock() = None;
+}
+
+// ─── Phone-trackpad (Phase 11) remote input bridge ──────────────────────────
+// Called by the WebSocket server in `src/remote.rs`. All funnel through the
+// same `SendInput` path as the local hook layer, so feel is identical and the
+// `LLMHF_INJECTED` guard prevents feedback loops.
+
+/// Feed a remote scroll delta into the smooth-scroll pipeline. If the smoother
+/// is disabled (`SCROLL_TX` is `None`), fall back to a raw wheel injection so
+/// the phone trackpad still scrolls.
+pub fn push_remote_scroll(delta: i32, horizontal: bool) {
+    let tx = SCROLL_TX.lock();
+    if let Some(tx) = tx.as_ref() {
+        let _ = tx.send(WheelInput { delta, horizontal });
+    } else {
+        drop(tx);
+        unsafe { send_raw_wheel(delta, horizontal) };
+    }
+}
+
+unsafe fn send_raw_wheel(delta: i32, horizontal: bool) {
+    let mut input = INPUT {
+        r#type: INPUT_MOUSE,
+        ..std::mem::zeroed()
+    };
+    input.Anonymous.mi = MOUSEINPUT {
+        dx: 0,
+        dy: 0,
+        mouseData: delta as u32,
+        dwFlags: if horizontal {
+            MOUSEEVENTF_HWHEEL
+        } else {
+            MOUSEEVENTF_WHEEL
+        },
+        time: 0,
+        dwExtraInfo: 0,
+    };
+    SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+}
+
+/// Send a mouse click (tap) from the phone trackpad. `right` selects the button.
+pub fn send_remote_click(right: bool) {
+    unsafe {
+        let (down, up) = if right {
+            (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
+        } else {
+            (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
+        };
+        for flags in [down, up] {
+            let mut input = INPUT {
+                r#type: INPUT_MOUSE,
+                ..std::mem::zeroed()
+            };
+            input.Anonymous.mi = MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+}
+
+/// Send a multi-finger navigation / window gesture from the phone trackpad.
+///
+/// 3-finger (navigation):
+///   "taskview"    -> Win+Tab      (Task View)
+///   "showdesktop" -> Win+D        (Show Desktop)
+///   "desk_l"      -> Ctrl+Win+Left  (switch virtual desktop)
+///   "desk_r"      -> Ctrl+Win+Right
+/// 4-finger (window snapping):
+///   "snap_l"      -> Win+Left
+///   "snap_r"      -> Win+Right
+///   "snap_up"     -> Win+Up       (maximize)
+///   "snap_down"   -> Win+Down     (restore/minimize)
+pub fn send_remote_gesture(g: &str) {
+    unsafe {
+        let keys: &[u16] = match g {
+            "taskview" => &[0x5B, 0x09], // LWIN, TAB
+            "showdesktop" => &[0x5B, 0x44], // LWIN, D
+            "desk_l" => &[0x11, 0x5B, 0x25], // CTRL, LWIN, LEFT
+            "desk_r" => &[0x11, 0x5B, 0x27], // CTRL, LWIN, RIGHT
+            "snap_l" => &[0x5B, 0x25],      // LWIN, LEFT
+            "snap_r" => &[0x5B, 0x27],      // LWIN, RIGHT
+            "snap_up" => &[0x5B, 0x26],     // LWIN, UP
+            "snap_down" => &[0x5B, 0x28],   // LWIN, DOWN
+            _ => return,
+        };
+        let mut events: Vec<INPUT> = Vec::with_capacity(keys.len() * 2);
+        for &vk in keys {
+            let mut input = INPUT {
+                r#type: INPUT_KEYBOARD,
+                ..std::mem::zeroed()
+            };
+            input.Anonymous.ki = KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: 0,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            events.push(input);
+        }
+        for &vk in keys.iter().rev() {
+            let mut input = INPUT {
+                r#type: INPUT_KEYBOARD,
+                ..std::mem::zeroed()
+            };
+            input.Anonymous.ki = KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            events.push(input);
+        }
+        SendInput(
+            events.len() as u32,
+            events.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+    }
+}
+
+/// Send a pinch-zoom from the phone trackpad: Ctrl + mouse wheel.
+/// `delta > 0` zooms in, `delta < 0` zooms out (one wheel notch per ~120).
+pub fn send_remote_zoom(delta: i32) {
+    unsafe {
+        let mut events: Vec<INPUT> = Vec::with_capacity(3);
+        // Ctrl down
+        let mut ctrl_down = INPUT {
+            r#type: INPUT_KEYBOARD,
+            ..std::mem::zeroed()
+        };
+        ctrl_down.Anonymous.ki = KEYBDINPUT {
+            wVk: 0x11, // VK_CONTROL
+            wScan: 0,
+            dwFlags: 0,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        events.push(ctrl_down);
+        // wheel
+        let mut wheel = INPUT {
+            r#type: INPUT_MOUSE,
+            ..std::mem::zeroed()
+        };
+        wheel.Anonymous.mi = MOUSEINPUT {
+            dx: 0,
+            dy: 0,
+            mouseData: delta as u32,
+            dwFlags: MOUSEEVENTF_WHEEL,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        events.push(wheel);
+        // Ctrl up
+        let mut ctrl_up = INPUT {
+            r#type: INPUT_KEYBOARD,
+            ..std::mem::zeroed()
+        };
+        ctrl_up.Anonymous.ki = KEYBDINPUT {
+            wVk: 0x11,
+            wScan: 0,
+            dwFlags: KEYEVENTF_KEYUP,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        events.push(ctrl_up);
+        SendInput(
+            events.len() as u32,
+            events.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+    }
 }
 
 /// Current on/off state of a feature (for the tray checkmarks).

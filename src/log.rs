@@ -16,8 +16,10 @@ pub fn write(msg: &str) {
     eprintln!("{line}");
     if let Some(g) = LOG.get() {
         if let Ok(mut g) = g.lock() {
+
             if let Some(f) = g.as_mut() {
                 let _ = writeln!(f, "{line}");
+                let _ = f.flush();
             }
         }
     }
