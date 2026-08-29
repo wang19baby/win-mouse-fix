@@ -3,7 +3,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, KillTimer, MSLLHOOKSTRUCT, MSG, SetTimer,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
+    WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
     XBUTTON2, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -33,7 +33,7 @@ static SCROLL_TX: Mutex<Option<Sender<WheelInput>>> = Mutex::new(None);
 const LLMHF_INJECTED: u32 = 0x01;
 
 /// Timer ID for ClickCycle level-expiration ticks.
-const CLICK_TIMER_ID: usize = 1;
+pub(crate) const CLICK_TIMER_ID: usize = 3006;
 
 /// Which top-level feature a tray-menu toggle acts on.
 #[derive(Clone, Copy)]
@@ -399,7 +399,10 @@ pub fn feature_enabled(f: Feature) -> bool {
 
 /// Toggle a feature, persist to `config.toml`, and hot-reload.
 pub fn toggle_feature(f: Feature) {
-    let mut cfg = Config::load_or_default();
+    // Base the toggle on the currently-loaded config rather than re-reading from
+    // disk, so a transient read error can never overwrite the user's file with a
+    // fallback default (which would silently drop settings like `window_switcher`).
+    let mut cfg = CONFIG.read().clone();
     match f {
         Feature::SmoothScroll => cfg.scroll.enabled = !cfg.scroll.enabled,
         Feature::ButtonRemap => cfg.buttons.enabled = !cfg.buttons.enabled,
@@ -602,14 +605,22 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         let cfg = CONFIG.read();
 
         // ── Wheel events ──────────────────────────────────────────────────────────
-        if (ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL) && cfg.scroll.enabled {
-            let raw_delta = (ms.mouseData >> 16) as i16 as i32;
-            let horizontal = ev == WM_MOUSEHWHEEL;
-            let injected = process_wheel(raw_delta, horizontal, &cfg);
-            if injected.is_some() {
-                return 1; // swallowed: injector will replay it smoothly
+        if ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL {
+            // Window-switcher gesture: wheel navigates the Alt+Tab list while held.
+            if crate::win::window_switcher::is_active() {
+                let raw_delta = (ms.mouseData >> 16) as i16 as i32;
+                crate::win::window_switcher::step(raw_delta < 0);
+                return 1; // swallowed: drives the switcher, never scrolls
             }
-            // smooth is off: fall through to pass raw event to system
+            if cfg.scroll.enabled {
+                let raw_delta = (ms.mouseData >> 16) as i16 as i32;
+                let horizontal = ev == WM_MOUSEHWHEEL;
+                let injected = process_wheel(raw_delta, horizontal, &cfg);
+                if injected.is_some() {
+                    return 1; // swallowed: injector will replay it smoothly
+                }
+                // smooth is off: fall through to pass raw event to system
+            }
         }
 
         // ── Mousemove ────────────────────────────────────────────────────────────
@@ -753,14 +764,19 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             }
         }
 
-        // ── Timer tick ──────────────────────────────────────────────────────────
-        if ev == WM_TIMER {
-            run_click_tick();
-            return CallNextHookEx(0, code, wparam, lparam);
-        }
-
         // ── Button events ───────────────────────────────────────────────────────
         if let Some((btn, down)) = button_event(ev, ms) {
+            // Middle-button window-switcher gesture takes priority over normal remap.
+            // A single middle click is preserved via delayed replay (see window_switcher).
+            if cfg.buttons.window_switcher && btn == MouseButton::Middle {
+                if down {
+                    if crate::win::window_switcher::on_middle_down() {
+                        return 1;
+                    }
+                } else if crate::win::window_switcher::swallow_middle_up() {
+                    return 1;
+                }
+            }
             // Button remapping with ClickCycle support.
             if cfg.buttons.enabled {
                 let kb_state = crate::modifiers::state();
@@ -903,28 +919,33 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize)
 /// The timer posts WM_TIMER which is handled inside `mouse_proc`.
 fn start_click_timer() {
     let cfg = CONFIG.read();
-    if !cfg.buttons.enabled {
+    if !cfg.buttons.enabled && !cfg.buttons.window_switcher {
         return;
     }
     drop(cfg);
-
-    // `SetTimer` requires an HWND; passing HWND_MESSAGE (1) creates a message-only timer
-    // that posts WM_TIMER to the calling thread's message queue without needing a window.
+    // Attach the tick timer to the tray's message-only window so WM_TIMER is
+    // actually dispatched. A NULL-hwnd timer would post WM_TIMER to the thread
+    // queue, but a low-level mouse hook callback never receives WM_TIMER.
     unsafe {
-        SetTimer(std::mem::zeroed::<windows_sys::Win32::Foundation::HWND>(), CLICK_TIMER_ID, 20, None);
+        SetTimer(crate::win::tray::hwnd(), CLICK_TIMER_ID, 20, None);
     }
 }
 
 /// Stops the ClickCycle timer.
 fn stop_click_timer() {
     unsafe {
-        KillTimer(std::mem::zeroed::<windows_sys::Win32::Foundation::HWND>(), CLICK_TIMER_ID);
+        KillTimer(crate::win::tray::hwnd(), CLICK_TIMER_ID);
     }
 }
 
 /// Called on each WM_TIMER message to advance ClickCycle hold detection.
 /// Runs tick() on the tracker and fires any hold effects that have expired.
-fn run_click_tick() {
+/// Invoked from the tray window's `wnd_proc` (the LL mouse hook never sees WM_TIMER).
+pub(crate) fn run_click_tick() {
+    // Drive the window-switcher gesture (delayed replay + Alt-timeout) regardless
+    // of whether any ClickCycle remap is currently active.
+    crate::win::window_switcher::tick();
+
     let tracker_lock = get_tracker();
     let mut tracker = tracker_lock.write();
     if tracker.active_count() == 0 {

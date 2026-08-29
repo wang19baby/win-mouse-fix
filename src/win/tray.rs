@@ -1,4 +1,5 @@
 use std::ptr::{null, null_mut};
+use std::sync::OnceLock;
 
 
 use windows_sys::Win32::UI::Shell::{
@@ -65,6 +66,17 @@ const ABOUT_OK_ID: usize = 2002;
 const REPO_URL: &str = "https://github.com/wang19baby/win-mouse-fix";
 
 /// Last observed mtime of config.toml; used to detect changes for hot-reload.
+static TRAY_HWND: OnceLock<windows_sys::Win32::Foundation::HWND> = OnceLock::new();
+
+/// HWND of the tray message-only window. Used as the anchor for the ClickCycle
+/// tick timer so WM_TIMER is dispatched to `wnd_proc` (a low-level mouse hook
+/// callback never receives WM_TIMER).
+pub(crate) fn hwnd() -> windows_sys::Win32::Foundation::HWND {
+    *TRAY_HWND
+        .get()
+        .unwrap_or(&windows_sys::Win32::Foundation::HWND::default())
+}
+
 static CONFIG_MTIME: parking_lot::Mutex<Option<std::time::SystemTime>> = parking_lot::Mutex::new(None);
 /// Original embedded tray icon; never destroyed.
 static BASE_HICON: parking_lot::Mutex<isize> = parking_lot::Mutex::new(0);
@@ -158,6 +170,7 @@ pub fn create() -> Result<(), String> {
         if hwnd == 0 {
             return Err("failed to create message-only window".into());
         }
+        let _ = TRAY_HWND.set(hwnd);
 
         let mut nid: windows_sys::Win32::UI::Shell::NOTIFYICONDATAW = std::mem::zeroed();
         nid.cbSize =
@@ -311,6 +324,8 @@ unsafe extern "system" fn wnd_proc(
                 update_battery_icon(hwnd);
             } else if wparam == ID_TIMER_DPI {
                 crate::device::dpi::poll_dpi_autoswitch();
+            } else if wparam == crate::win::hooks::CLICK_TIMER_ID {
+                crate::win::hooks::run_click_tick();
             }
             0
         }
@@ -326,6 +341,7 @@ unsafe extern "system" fn wnd_proc(
             KillTimer(hwnd, ID_TIMER_PROFILE);
             KillTimer(hwnd, ID_TIMER_BATTERY);
             KillTimer(hwnd, ID_TIMER_DPI);
+            KillTimer(hwnd, crate::win::hooks::CLICK_TIMER_ID);
 
             let ov = *CUR_OVERLAY.lock();
             if ov != 0 {

@@ -75,7 +75,11 @@ velocity_a = 1.0     # Data weight `a`. 1.0 = off, lower = smoother.
 velocity_y = 1.0     # Trend weight `y`. 1.0 = off, lower = smoother.
 
 [buttons]
-enabled = false
+enabled = true
+# Middle-button window-switcher gesture: double-click middle → Alt+Tab held open,
+# wheel up/down navigates, middle again confirms. Single middle click is preserved
+# via delayed replay, so the plain middle-button function is unaffected.
+window_switcher = true
 
 # ── Legacy button remaps ───────────────────────────────────────────────────────
 # Simple source → target remapping. The source button event is consumed and

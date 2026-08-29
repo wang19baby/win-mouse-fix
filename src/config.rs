@@ -98,7 +98,9 @@ pub struct ScrollConfig {
     pub drag_coefficient: f64,
     #[serde(default = "default_stop_speed")]
     pub stop_speed: f64,
+    #[serde(default = "default_shift_speedup")]
     pub shift_speedup: f64,
+    #[serde(default)]
     pub shift_horizontal: bool,
     // ── Shift nonlinear accelerator (PR-B) ──────────────────────────────────
     /// Hold-time Bezier curve: 4 control points (x0,y0,x1,y1,x2,y2,x3,y3).
@@ -193,10 +195,15 @@ fn default_fast_scroll_initial() -> f64 { 1.33 }
 fn default_fast_scroll_exponential() -> f64 { 7.5 }
 fn default_base_ms_per_step() -> f64 { -1.0 }
 fn default_smoothness() -> u8 { 3 }
+fn default_shift_speedup() -> f64 { 1.0 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ButtonsConfig {
     pub enabled: bool,
+    /// Enable the middle-button window-switcher gesture (double-click middle to
+    /// open Alt+Tab, wheel to navigate, middle again to confirm).
+    #[serde(default)]
+    pub window_switcher: bool,
     /// Legacy remap entries (source → target/action). Used for backward compat.
     #[serde(default)]
     pub remaps: Vec<LegacyRemapEntry>,
@@ -373,13 +380,17 @@ impl Config {
                     Config::default()
                 }
             },
-            Err(_) => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let c = Config::default();
                 if let Ok(s) = toml::to_string_pretty(&c) {
                     let _ = std::fs::write(&path, s);
                 }
                 c
             }
+            // A file exists but couldn't be read/parsed: fall back to defaults
+            // WITHOUT overwriting the user's file (that would destroy their
+            // config).
+            Err(_) => Config::default(),
         }
     }
 
