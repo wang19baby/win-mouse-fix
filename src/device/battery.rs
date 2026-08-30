@@ -152,6 +152,21 @@ pub fn read_first_battery() -> Option<BatteryInfo> {
     }
 }
 
+/// Start a background thread that polls battery every `interval_secs` seconds
+/// and updates `crate::device::cache::BATTERY`. The thread runs until the
+/// process exits. Call once at startup.
+pub fn start_bg_poll(interval_secs: u64) {
+    std::thread::spawn(move || {
+        // Initial wait before first poll.
+        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+        loop {
+            let info = read_first_battery();
+            *crate::device::cache::BATTERY.write() = info;
+            std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+        }
+    });
+}
+
 /// Read device list from G Hub WebSocket.
 /// Returns JSON array of device info objects.
 #[allow(dead_code)]

@@ -302,14 +302,11 @@ impl ScrollInjector {
 ///
 /// Returns `None` if smooth scrolling is disabled in `cfg`.
 pub fn start(cfg: &Config) -> Option<Sender<WheelInput>> {
-    eprintln!("[DEBUG] start() called: scroll.enabled={}, scroll.smooth={}", cfg.scroll.enabled, cfg.scroll.smooth);
     if !cfg.scroll.enabled || !cfg.scroll.smooth {
-        eprintln!("[DEBUG] start() early return: enabled={}, smooth={}", cfg.scroll.enabled, cfg.scroll.smooth);
         return None;
     }
     let s = &cfg.scroll;
     let (tx, rx) = mpsc::channel();
-    eprintln!("[DEBUG] start(): channel created, about to construct injector");
     let injector = ScrollInjector {
         rx,
         vertical: WheelTracker::new(
@@ -341,9 +338,7 @@ pub fn start(cfg: &Config) -> Option<Sender<WheelInput>> {
         shift_scalar_speedup: s.shift_speedup,
         coast: Coast2D::new(s.step),
     };
-    eprintln!("[DEBUG] start(): injector constructed, spawning thread");
-    std::thread::spawn(move || { eprintln!("[DEBUG] injector thread started"); injector.run(); });
-    eprintln!("[DEBUG] start(): thread spawned, returning tx");
+    std::thread::spawn(move || injector.run());
     Some(tx)
 }
 

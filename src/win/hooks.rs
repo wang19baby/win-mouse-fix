@@ -90,6 +90,18 @@ fn drag_output(mode: &str) -> DragOutput {
 /// Pointer-acceleration controller; `None` disables acceleration.
 static ACCEL: RwLock<Option<PointerAccel>> = RwLock::new(None);
 
+/// Atomic flags for hot-path config reads — avoids taking CONFIG.read() lock on every mouse event.
+static SCROLL_ENABLED: AtomicBool = AtomicBool::new(false);
+static SMOOTH_ENABLED: AtomicBool = AtomicBool::new(false);
+static BUTTONS_ENABLED: AtomicBool = AtomicBool::new(false);
+static ACCEL_ENABLED: AtomicBool = AtomicBool::new(false);
+static DRAG_ENABLED: AtomicBool = AtomicBool::new(false);
+static WINDOW_SWITCHER_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Set while `TrackPopupMenu` is active on the tray. The hook skips all button
+/// events when this is true so the menu receives clicks.
+pub static MENU_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// Tracks active drag gesture state: which drag type is active and accumulated delta.
 #[derive(Debug, Clone)]
 pub struct DragState {
@@ -163,6 +175,13 @@ pub fn apply_config(cfg: Config) {
     } else {
         *ACCEL.write() = None;
     }
+    // Update atomic hot-path flags.
+    SCROLL_ENABLED.store(cfg.scroll.enabled, Ordering::Relaxed);
+    SMOOTH_ENABLED.store(cfg.scroll.smooth, Ordering::Relaxed);
+    BUTTONS_ENABLED.store(cfg.buttons.enabled, Ordering::Relaxed);
+    ACCEL_ENABLED.store(cfg.accel.enabled, Ordering::Relaxed);
+    DRAG_ENABLED.store(cfg.drag.enabled, Ordering::Relaxed);
+    WINDOW_SWITCHER_ENABLED.store(cfg.buttons.window_switcher, Ordering::Relaxed);
     drop(cfg);
 
     let _ = install();
@@ -649,7 +668,13 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             return CallNextHookEx(0, code, wparam, lparam);
         }
 
-        let cfg = CONFIG.read();
+        // ── Fast-path flags (no lock) ────────────────────────────────────────────
+        let scroll_on = SCROLL_ENABLED.load(Ordering::Relaxed);
+        let _smooth_on = SMOOTH_ENABLED.load(Ordering::Relaxed);
+        let buttons_on = BUTTONS_ENABLED.load(Ordering::Relaxed);
+        let accel_on = ACCEL_ENABLED.load(Ordering::Relaxed);
+        let drag_on = DRAG_ENABLED.load(Ordering::Relaxed);
+        let ws_on = WINDOW_SWITCHER_ENABLED.load(Ordering::Relaxed);
 
         // ── Wheel events ──────────────────────────────────────────────────────────
         if ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL {
@@ -659,9 +684,10 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                 crate::win::window_switcher::step(raw_delta < 0);
                 return 1; // swallowed: drives the switcher, never scrolls
             }
-            if cfg.scroll.enabled {
+            if scroll_on {
                 let raw_delta = (ms.mouseData >> 16) as i16 as i32;
                 let horizontal = ev == WM_MOUSEHWHEEL;
+                let cfg = CONFIG.read();
                 let injected = process_wheel(raw_delta, horizontal, &cfg);
                 if injected.is_some() {
                     return 1; // swallowed: injector will replay it smoothly
@@ -674,7 +700,9 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         if ev == WM_MOUSEMOVE {
             // Window-drag gesture: behaviour depends on cfg.drag.mode.
             let mut dragging = false;
-            match drag_output(&cfg.drag.mode) {
+            if drag_on {
+                let cfg = CONFIG.read();
+                    match drag_output(&cfg.drag.mode) {
                 DragOutput::Move => {
                     if let Some(ctrl) = DRAG.read().as_ref() {
                         if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
@@ -763,6 +791,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         dragging = true;
                     }
                 }
+                }
             }
             // ModifiedDrag: TwoFingerSwipe / ThreeFingerSwipe → navigation swipe.
             // FakeDrag → synthesized mouse drag (move while button held).
@@ -826,12 +855,22 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                 }
             }
             // Pointer acceleration: amplify the cursor move and swallow.
-            if !dragging {
+            // Skip entirely when accel is disabled (fast atomic check, no lock).
+            if !dragging && accel_on {
+                // Read accel config BEFORE taking ACCEL lock to avoid lock ordering
+                // violation with apply_config (which takes CONFIG.read() then ACCEL.write()).
+                let accel_cfg = CONFIG.read().accel.clone();
                 let mut accel = ACCEL.write();
                 if let Some(ctrl) = accel.as_mut() {
-                    if let Some((dx, dy)) = ctrl.on_move(ms.pt.x, ms.pt.y, &cfg.accel) {
+                    if let Some((dx, dy)) = ctrl.on_move(ms.pt.x, ms.pt.y, &accel_cfg) {
                         if dx != 0 || dy != 0 {
                             crate::scroll::injector::send_mouse_move(dx, dy);
+                            // Re-sync tracker to actual cursor position so screen-edge
+                            // clamping doesn't cause drift.
+                            let mut pt: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
+                            if windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) != 0 {
+                                ctrl.re_sync(pt.x, pt.y);
+                            }
                             return 1;
                         }
                     }
@@ -841,9 +880,19 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
 
         // ── Button events ───────────────────────────────────────────────────────
         if let Some((btn, down)) = button_event(ev, ms) {
+            // Skip all button processing when the tray popup menu is active so
+            // the menu receives clicks.
+            if MENU_ACTIVE.load(Ordering::Relaxed) {
+                return CallNextHookEx(0, code, wparam, lparam);
+            }
+            // Never intercept right-click: the system tray needs it for the context
+            // menu. Right-click remapping is not a common use case.
+            if btn == MouseButton::Right {
+                return CallNextHookEx(0, code, wparam, lparam);
+            }
             // Middle-button window-switcher gesture takes priority over normal remap.
             // A single middle click is preserved via delayed replay (see window_switcher).
-            if cfg.buttons.window_switcher && btn == MouseButton::Middle {
+            if ws_on && btn == MouseButton::Middle {
                 if down {
                     if crate::win::window_switcher::on_middle_down() {
                         return 1;
@@ -853,7 +902,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                 }
             }
             // Button remapping with ClickCycle support.
-            if cfg.buttons.enabled {
+            if buttons_on {
                 let kb_state = crate::modifiers::state();
                 let held_btns = get_tracker().read().held_modifier_buttons();
                 let active_mods = ActiveModifiers {

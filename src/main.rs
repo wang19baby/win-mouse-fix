@@ -87,6 +87,10 @@ fn main() {
     }
 
     win::hooks::apply_config(cfg.clone());
+
+    // Start background battery poll thread (updates cache every 20s, zero main-thread cost).
+    device::battery::start_bg_poll(20);
+
     // Blocks until WM_QUIT (tray "Exit" or window destroy).
     win::message_loop::run();
 

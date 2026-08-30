@@ -58,8 +58,8 @@ const ID_TIMER_CONFIG: usize = 3002;
 const CONFIG_RELOAD_MS: u32 = 1000;
 const ID_TIMER_PROFILE: usize = 3003;
 const PROFILE_POLL_MS: u32 = 500;
-const ID_TIMER_BATTERY: usize = 3004;
-const BATTERY_POLL_MS: u32 = 2000;
+const ID_TIMER_BATTERY_ICON: usize = 3004;
+const BATTERY_ICON_MS: u32 = 5000; // refresh tray icon from cache every 5s
 const ID_TIMER_DPI: usize = 3005;
 const DPI_POLL_MS: u32 = 250;
 
@@ -208,7 +208,7 @@ pub fn create() -> Result<(), String> {
         // Hot-reload: poll config.toml mtime via the tray timer (see check_reload_config).
         SetTimer(hwnd, ID_TIMER_CONFIG, CONFIG_RELOAD_MS, None);
         SetTimer(hwnd, ID_TIMER_PROFILE, PROFILE_POLL_MS, None);
-        SetTimer(hwnd, ID_TIMER_BATTERY, BATTERY_POLL_MS, None);
+        SetTimer(hwnd, ID_TIMER_BATTERY_ICON, BATTERY_ICON_MS, None);
         SetTimer(hwnd, ID_TIMER_DPI, DPI_POLL_MS, None);
         // Seed last-mtime so the first tick doesn't trigger a redundant reload.
         *CONFIG_MTIME.lock() =
@@ -221,7 +221,8 @@ pub fn create() -> Result<(), String> {
 
 /// Refresh the battery cache and update the tray icon + tooltip.
     unsafe fn update_battery_icon(hwnd: isize) {
-        let info = crate::device::cache::update();
+        // Just read from the cache — the bg poll thread updates it periodically.
+        let info = *crate::device::cache::BATTERY.read();
         let base = *BASE_HICON.lock();
         let (icon, tip) = match info {
             Some(b) => {
@@ -351,7 +352,7 @@ unsafe extern "system" fn wnd_proc(
                 check_reload_config();
             } else if wparam == ID_TIMER_PROFILE {
                 crate::win::hooks::poll_foreground_profile();
-            } else if wparam == ID_TIMER_BATTERY {
+            } else if wparam == ID_TIMER_BATTERY_ICON {
                 update_battery_icon(hwnd);
             } else if wparam == ID_TIMER_DPI {
                 crate::device::dpi::poll_dpi_autoswitch();
@@ -370,7 +371,7 @@ unsafe extern "system" fn wnd_proc(
             KillTimer(hwnd, ID_TIMER_ADDMODE);
             KillTimer(hwnd, ID_TIMER_CONFIG);
             KillTimer(hwnd, ID_TIMER_PROFILE);
-            KillTimer(hwnd, ID_TIMER_BATTERY);
+            KillTimer(hwnd, ID_TIMER_BATTERY_ICON);
             KillTimer(hwnd, ID_TIMER_DPI);
             KillTimer(hwnd, crate::win::hooks::CLICK_TIMER_ID);
 
@@ -401,6 +402,8 @@ unsafe fn show_menu(hwnd: isize) {
     if menu == 0 {
         return;
     }
+
+    crate::win::hooks::MENU_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
 
     let smooth_flags =
         MF_STRING | if crate::win::hooks::feature_enabled(crate::win::hooks::Feature::SmoothScroll)
@@ -457,6 +460,7 @@ unsafe fn show_menu(hwnd: isize) {
         hwnd,
         null_mut(),
     );
+    crate::win::hooks::MENU_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
     DestroyMenu(menu);
 
     match cmd as usize {

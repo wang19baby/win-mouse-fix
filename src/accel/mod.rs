@@ -41,12 +41,20 @@ impl PointerAccel {
                 return None;
             }
         };
+        // Update last BEFORE computing delta so that re_sync can override.
         self.last = Some((x, y));
         let dx = x - prev.0;
         let dy = y - prev.1;
         let speed = ((dx * dx + dy * dy) as f64).sqrt();
         let f = accel_factor(speed, cfg);
         Some((((dx as f64) * f).round() as i32, ((dy as f64) * f).round() as i32))
+    }
+
+    /// Re-sync the tracker to the actual cursor position after an injected
+    /// move.  Call this after `send_mouse_move` so that screen-edge clamping
+    /// doesn't cause the tracker to drift.
+    pub fn re_sync(&mut self, actual_x: i32, actual_y: i32) {
+        self.last = Some((actual_x, actual_y));
     }
 }
 

@@ -82,11 +82,28 @@ unsafe extern "system" fn monitor_cb(
 
 /// The monitor currently under the cursor, or `None` if undeterminable.
 /// Falls back to the primary monitor when the cursor is outside any rect.
+/// Cached monitor list, refreshed at most once per 5 seconds.
+static MONITORS_CACHE: parking_lot::Mutex<Option<(Vec<Monitor>, std::time::Instant)>> =
+    parking_lot::Mutex::new(None);
+
+/// Return cached monitors, refreshing if older than 5 seconds.
+fn cached_monitors() -> Vec<Monitor> {
+    let mut guard = MONITORS_CACHE.lock();
+    if let Some((ref monitors, ts)) = *guard {
+        if ts.elapsed() < std::time::Duration::from_secs(5) {
+            return monitors.clone();
+        }
+    }
+    let monitors = enumerate_monitors();
+    *guard = Some((monitors.clone(), std::time::Instant::now()));
+    monitors
+}
+
 pub fn cursor_monitor() -> Option<Monitor> {
     unsafe {
         let mut pt: POINT = std::mem::zeroed();
         GetCursorPos(&mut pt);
-        let monitors = enumerate_monitors();
+        let monitors = cached_monitors();
         let hit = monitors
             .iter()
             .find(|m| pt.x >= m.left && pt.x < m.right && pt.y >= m.top && pt.y < m.bottom);
@@ -272,7 +289,7 @@ fn decide_dpi(last: u16, pending: u16, count: u8, target: u16, threshold: u8) ->
 /// No-op when `dpi.auto_switch` is off, the cursor monitor is unknown, or no
 /// capable device responds (best-effort, probe degradation).
 pub fn poll_dpi_autoswitch() {
-    let ref_dpi = enumerate_monitors()
+    let ref_dpi = cached_monitors()
         .into_iter()
         .find(|m| m.primary)
         .map(|m| m.dpi_x)
