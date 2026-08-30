@@ -524,3 +524,120 @@ fn exe_len(buf: &[u16]) -> usize {
 }
 
 use windows_sys::Win32::System::Registry::RegQueryValueExW;
+
+// ─── Per-app profiles dialog ────────────────────────────────────────────────
+
+const PROFILES_CLASS: &str = "WinMouseFixProfiles";
+const IDC_LST_PROFILES: usize = 5001;
+const IDC_EDT_EXE: usize = 5002;
+const IDC_BTN_ADD: usize = 5003;
+const IDC_BTN_DEL: usize = 5004;
+const IDCProfiles_OK: usize = 5005;
+const IDCProfiles_CANCEL: usize = 5006;
+
+/// Open the per-app profiles management dialog.
+pub fn open_profiles(parent: isize) {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| unsafe {
+        let hmod = GetModuleHandleW(null());
+        let class_name = to_wide(PROFILES_CLASS);
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: 0,
+            lpfnWndProc: Some(profiles_wnd_proc),
+            cbClsExtra: 0, cbWndExtra: 0, hInstance: hmod,
+            hIcon: 0, hCursor: LoadCursorW(0, IDC_ARROW),
+            hbrBackground: 0, lpszMenuName: null(),
+            lpszClassName: class_name.as_ptr(), hIconSm: 0,
+        };
+        RegisterClassExW(&wc);
+    });
+    unsafe {
+        let hwnd = CreateWindowExW(0,
+            to_wide(PROFILES_CLASS).as_ptr(),
+            to_wide("应用配置文件 — Win Mouse Fix").as_ptr(),
+            WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+            300, 200, 460, 360,
+            parent, 0, GetModuleHandleW(null()), null_mut(),
+        );
+        if hwnd != 0 { ShowWindow(hwnd, 9); }
+    }
+}
+
+unsafe extern "system" fn profiles_wnd_proc(
+    hwnd: isize, msg: u32, wparam: usize, _lparam: isize,
+) -> isize {
+    match msg {
+        WM_CREATE => {
+            let hmod = GetModuleHandleW(null());
+            // Exe name input.
+            create_label(hwnd, hmod, 0, "进程名 (如 chrome.exe):", 20, 16);
+            CreateWindowExW(0, to_wide("Edit").as_ptr(), null(),
+                0x0080u32 | WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                20, 38, 280, 22, hwnd, IDC_EDT_EXE as isize, hmod, null_mut());
+            create_button(hwnd, hmod, IDC_BTN_ADD, "添加", 310, 36, 60, 26);
+            create_button(hwnd, hmod, IDC_BTN_DEL, "删除", 380, 36, 60, 26);
+            // Profiles list.
+            CreateWindowExW(0, to_wide("ListBox").as_ptr(), null(),
+                (0x00010000 | 0x00200000 | 0x00000002 | 0x00000040 | WS_CHILD | WS_VISIBLE | WS_TABSTOP) as u32,
+                20, 72, 420, 210, hwnd, IDC_LST_PROFILES as isize, hmod, null_mut());
+            // OK / Cancel.
+            create_button(hwnd, hmod, IDCProfiles_OK, "确定", 240, 300, 90, 28);
+            create_button(hwnd, hmod, IDCProfiles_CANCEL, "取消", 340, 300, 90, 28);
+            populate_profile_list(hwnd);
+            0
+        }
+        WM_COMMAND => {
+            let id = wparam & 0xFFFF;
+            match id {
+                IDC_BTN_ADD => {
+                    let exe = get_edit_text(hwnd, IDC_EDT_EXE);
+                    if !exe.is_empty() {
+                        let mut cfg = crate::CONFIG.write();
+                        cfg.profiles.push(crate::config::Profile {
+                            match_type: "exe".to_string(),
+                            match_exe: Some(exe),
+                            match_device: None,
+                            config: toml::value::Table::new(),
+                        });
+                        let _ = cfg.save();
+                        drop(cfg);
+                        populate_profile_list(hwnd);
+                        set_edit_text(hwnd, IDC_EDT_EXE, "");
+                    }
+                }
+                IDC_BTN_DEL => {
+                    let sel = SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_GETCURSEL, 0, 0);
+                    if sel >= 0 {
+                        let mut cfg = crate::CONFIG.write();
+                        let idx = sel as usize;
+                        if idx < cfg.profiles.len() {
+                            cfg.profiles.remove(idx);
+                            let _ = cfg.save();
+                        }
+                        drop(cfg);
+                        populate_profile_list(hwnd);
+                    }
+                }
+                IDCProfiles_OK => { DestroyWindow(hwnd); }
+                IDCProfiles_CANCEL => { DestroyWindow(hwnd); }
+                _ => {}
+            }
+            0
+        }
+        WM_DESTROY => 0,
+        _ => DefWindowProcW(hwnd, msg, wparam, _lparam),
+    }
+}
+
+unsafe fn populate_profile_list(hwnd: isize) {
+    let hlist = match getDlgItem(hwnd, IDC_LST_PROFILES) { Some(h) => h, None => return };
+    while SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_DELETESTRING, 0, 0) > 0 {}
+    let cfg = crate::CONFIG.read();
+    for p in &cfg.profiles {
+        let exe = p.match_exe.as_deref().unwrap_or("(any)");
+        let desc = format!("{exe} → {} 项覆盖", p.config.len());
+        SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_ADDSTRING, 0, to_wide(&desc).as_ptr() as isize);
+    }
+}

@@ -51,6 +51,7 @@ const ID_DPI: usize = 1007;
 
 const ID_REMOTE: usize = 1008;
 const ID_SETTINGS: usize = 1009;
+const ID_PROFILES: usize = 1010;
 static FW_DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const ID_TIMER_ADDMODE: usize = 3001;
@@ -425,6 +426,7 @@ unsafe fn show_menu(hwnd: isize) {
 
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_SETTINGS, to_wide("设置").as_ptr());
+    AppendMenuW(menu, MF_STRING, ID_PROFILES, to_wide("配置文件").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_ABOUT, to_wide("关于").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_EXIT, to_wide("退出").as_ptr());
 
@@ -464,6 +466,9 @@ unsafe fn show_menu(hwnd: isize) {
         }
         ID_SETTINGS => {
             crate::gui::open_settings(hwnd);
+        }
+        ID_PROFILES => {
+            crate::gui::open_profiles(hwnd);
         }
         ID_BATTERY => {
             crate::device::log_battery_status();
