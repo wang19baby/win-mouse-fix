@@ -10,9 +10,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     LoadCursorW, RegisterClassExW, ShowWindow,
     WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSEXW,
     WS_CAPTION, WS_CHILD, WS_SYSMENU, WS_VISIBLE,
-    WS_TABSTOP, WS_GROUP,
+    WS_TABSTOP, WS_GROUP, WS_VSCROLL,
     MessageBoxW, PostQuitMessage, IDC_ARROW,
     SendDlgItemMessageW, GetDlgItem, SetWindowTextW, GetWindowTextW,
+    LB_ADDSTRING, LB_DELETESTRING, LB_GETCURSEL, LB_SETCURSEL,
+    LBS_HASSTRINGS, LBS_NOTIFY, EN_CHANGE,
 };
 
 // ─── Control IDs (every control has a unique ID) ───────────────────────────
@@ -40,8 +42,9 @@ const IDC_LBL_SENS: usize = 3202;
 const IDC_EDT_SENS: usize = 3203;
 
 // Buttons tab (tab 3)
-const IDC_LBL_REMAP_COUNT: usize = 3301;
-const IDC_ADD_REMAP: usize = 3302;
+const IDC_LST_REMAPS: usize = 3301;
+const IDC_BTN_DELETE: usize = 3302;
+const IDC_ADD_REMAP: usize = 3303;
 
 // Dialog buttons (always visible)
 const IDC_OK: usize = 4001;
@@ -64,7 +67,8 @@ const CTRL_TABLE: &[CtrlDef] = &[
     CtrlDef { id: IDC_CHK_ACCEL,       tab: 2 },
     CtrlDef { id: IDC_LBL_SENS,        tab: 2 },
     CtrlDef { id: IDC_EDT_SENS,        tab: 2 },
-    CtrlDef { id: IDC_LBL_REMAP_COUNT, tab: 3 },
+    CtrlDef { id: IDC_LST_REMAPS,      tab: 3 },
+    CtrlDef { id: IDC_BTN_DELETE,      tab: 3 },
     CtrlDef { id: IDC_ADD_REMAP,       tab: 3 },
 ];
 
@@ -163,12 +167,11 @@ unsafe extern "system" fn settings_wnd_proc(
             create_edit(hwnd, hmod, IDC_EDT_SENS, "1.0", 160, 83, 80);
 
             // ── Buttons tab ──
-            let cfg = crate::CONFIG.read();
-            let remap_count = cfg.buttons.advanced.len();
-            let label = format!("已配置 {} 条按键映射", remap_count);
-            create_label(hwnd, hmod, IDC_LBL_REMAP_COUNT, &label, 30, 56);
-            create_button(hwnd, hmod, IDC_ADD_REMAP, "录制新映射...", 30, 84, 120, 26);
-            drop(cfg);
+            // ListBox showing existing remaps.
+            create_listbox(hwnd, hmod, IDC_LST_REMAPS, 30, 56, 430, 250);
+            create_button(hwnd, hmod, IDC_BTN_DELETE, "删除选中", 30, 314, 90, 26);
+            create_button(hwnd, hmod, IDC_ADD_REMAP, "录制新映射...", 130, 314, 120, 26);
+            populate_remap_list(hwnd);
 
             // ── OK / Cancel (always visible) ──
             create_button(hwnd, hmod, IDC_OK, "确定", 280, 350, 90, 28);
@@ -201,6 +204,26 @@ unsafe extern "system" fn settings_wnd_proc(
                     DestroyWindow(hwnd);
                 }
                 IDC_CANCEL => { DestroyWindow(hwnd); }
+                IDC_BTN_DELETE => {
+                    let sel = SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_GETCURSEL, 0, 0);
+                    if sel >= 0 {
+                        // Remove from config.
+                        {
+                            let mut cfg = crate::CONFIG.write();
+                            let idx = sel as usize;
+                            if idx < cfg.buttons.advanced.len() {
+                                cfg.buttons.advanced.remove(idx);
+                                let _ = cfg.save();
+                            }
+                        }
+                        // Refresh list.
+                        SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_DELETESTRING, sel as usize, 0);
+                        // Select next item or last.
+                        let count = SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, 0x018B /* LB_GETCOUNT */, 0, 0);
+                        let new_sel = if count > 0 { sel.min(count - 1) } else { 0 };
+                        SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_SETCURSEL, new_sel as usize, 0);
+                    }
+                }
                 IDC_ADD_REMAP => {
                     DestroyWindow(hwnd);
                     if let Some(p) = get_parent_hwnd(hwnd) {
@@ -254,6 +277,77 @@ unsafe fn create_button(p: isize, h: isize, id: usize, label: &str, x: i32, y: i
     CreateWindowExW(0, to_wide("Button").as_ptr(), to_wide(label).as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         x, y, w, h2, p, id as isize, h, null_mut());
+}
+unsafe fn create_listbox(p: isize, h: isize, id: usize, x: i32, y: i32, w: i32, h2: i32) {
+    CreateWindowExW(0, to_wide("ListBox").as_ptr(), null(),
+        (0x00010000 /* WS_BORDER */ | 0x00200000 /* WS_VSCROLL */
+         | 0x00000002 /* LBS_NOTIFY */ | 0x00000040 /* LBS_HASSTRINGS */
+         | WS_CHILD | WS_VISIBLE | WS_TABSTOP) as u32,
+        x, y, w, h2, p, id as isize, h, null_mut());
+}
+
+/// Populate the ListBox with formatted remap entries.
+unsafe fn populate_remap_list(hwnd: isize) {
+    let hlist = match getDlgItem(hwnd, IDC_LST_REMAPS) { Some(h) => h, None => return };
+    // Clear existing items.
+    while SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_DELETESTRING, 0, 0) > 0 {}
+    let cfg = crate::CONFIG.read();
+    for entry in &cfg.buttons.advanced {
+        let desc = format_remap_entry(entry);
+        SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_ADDSTRING, 0, to_wide(&desc).as_ptr() as isize);
+    }
+}
+
+/// Format a RemapEntry as a human-readable string for the ListBox.
+fn format_remap_entry(entry: &crate::remap::RemapEntry) -> String {
+    use crate::remap::{Trigger, Effect, ClickDuration, SwipeDirection, MouseButton};
+
+    let trigger_str = match &entry.trigger {
+        Trigger::Button { button, level, duration } => {
+            let btn = match button {
+                MouseButton::Left => "左键", MouseButton::Right => "右键",
+                MouseButton::Middle => "中键", MouseButton::X1 => "X1", MouseButton::X2 => "X2",
+            };
+            let dur = match duration { ClickDuration::Click => "单击", ClickDuration::Hold => "长按" };
+            let lvl = if *level > 1 { format!(" x{level}") } else { String::new() };
+            format!("{btn}{dur}{lvl}")
+        }
+        Trigger::Scroll => "滚轮".to_string(),
+        Trigger::Drag => "拖拽".to_string(),
+    };
+
+    let mod_str = if entry.modifiers.keyboard != 0 {
+        let mut parts = Vec::new();
+        if entry.modifiers.keyboard & 0x100 != 0 { parts.push("Ctrl"); }
+        if entry.modifiers.keyboard & 0x200 != 0 { parts.push("Shift"); }
+        if entry.modifiers.keyboard & 0x400 != 0 { parts.push("Alt"); }
+        if entry.modifiers.keyboard & 0x800 != 0 { parts.push("Win"); }
+        format!("+{}", parts.join("+"))
+    } else {
+        String::new()
+    };
+
+    let effect_str = match &entry.effect {
+        Effect::PassThrough => "PassThrough",
+        Effect::Disabled => "禁用",
+        Effect::TaskView => "TaskView (Win+Tab)",
+        Effect::ShowDesktop => "ShowDesktop (Win+D)",
+        Effect::NavigationSwipe { direction: SwipeDirection::Back } => "后退",
+        Effect::NavigationSwipe { direction: SwipeDirection::Forward } => "前进",
+        Effect::SymbolicHotkey { .. } => "热键",
+        Effect::MouseButtonClicks { button, .. } => {
+            match button {
+                MouseButton::X1 => "X1 点击", MouseButton::X2 => "X2 点击",
+                MouseButton::Left => "左键点击", MouseButton::Right => "右键点击",
+                MouseButton::Middle => "中键点击",
+            }
+        }
+        Effect::ModifiedScroll { .. } => "修饰滚动",
+        Effect::ModifiedDrag { .. } => "修饰拖拽",
+        Effect::SystemDefinedEvent { .. } => "系统事件",
+    };
+
+    format!("{trigger_str}{mod_str} → {effect_str}")
 }
 
 // ─── Config I/O ─────────────────────────────────────────────────────────────
