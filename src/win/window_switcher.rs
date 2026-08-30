@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 /// Marker so our injected events are ignored by our own low-level hooks.
-const EXTRA: usize = 0xFA57_0000;
+const EXTRA: usize = crate::win::hooks::OUR_MARKER;
 
 /// Max gap between the two middle presses to count as a double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);

@@ -33,6 +33,11 @@ static SCROLL_TX: Mutex<Option<Sender<WheelInput>>> = Mutex::new(None);
 /// must not be re-smoothed (would cause a feedback loop).
 const LLMHF_INJECTED: u32 = 0x01;
 
+/// Extra-info marker we stamp onto every injected event. The hook procedure
+/// checks this alongside `LLMHF_INJECTED` to robustly skip our own synthesis
+/// (some Windows versions don't reliably set `LLMHF_INJECTED` for SendInput).
+pub const OUR_MARKER: usize = 0xFA57_0000;
+
 /// Timer ID for ClickCycle level-expiration ticks.
 pub(crate) const CLICK_TIMER_ID: usize = 3006;
 
@@ -224,7 +229,7 @@ unsafe fn send_raw_wheel(delta: i32, horizontal: bool) {
             MOUSEEVENTF_WHEEL
         },
         time: 0,
-        dwExtraInfo: 0,
+        dwExtraInfo: OUR_MARKER,
     };
     SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
 }
@@ -248,7 +253,7 @@ pub fn send_remote_click(right: bool) {
                 mouseData: 0,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: OUR_MARKER,
             };
             SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
         }
@@ -274,7 +279,7 @@ pub fn send_remote_text(text: &str) {
                 wScan: code,
                 dwFlags: KEYEVENTF_UNICODE,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: OUR_MARKER,
             };
             events.push(down);
             let mut up = INPUT {
@@ -286,7 +291,7 @@ pub fn send_remote_text(text: &str) {
                 wScan: code,
                 dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: OUR_MARKER,
             };
             events.push(up);
         }
@@ -351,7 +356,7 @@ pub fn send_remote_gesture(g: &str) {
                 wScan: 0,
                 dwFlags: 0,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: OUR_MARKER,
             };
             events.push(input);
         }
@@ -365,7 +370,7 @@ pub fn send_remote_gesture(g: &str) {
                 wScan: 0,
                 dwFlags: KEYEVENTF_KEYUP,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: OUR_MARKER,
             };
             events.push(input);
         }
@@ -392,7 +397,7 @@ pub fn send_remote_zoom(delta: i32) {
             wScan: 0,
             dwFlags: 0,
             time: 0,
-            dwExtraInfo: 0,
+            dwExtraInfo: OUR_MARKER,
         };
         events.push(ctrl_down);
         // wheel
@@ -406,7 +411,7 @@ pub fn send_remote_zoom(delta: i32) {
             mouseData: delta as u32,
             dwFlags: MOUSEEVENTF_WHEEL,
             time: 0,
-            dwExtraInfo: 0,
+            dwExtraInfo: OUR_MARKER,
         };
         events.push(wheel);
         // Ctrl up
@@ -419,7 +424,7 @@ pub fn send_remote_zoom(delta: i32) {
             wScan: 0,
             dwFlags: KEYEVENTF_KEYUP,
             time: 0,
-            dwExtraInfo: 0,
+            dwExtraInfo: OUR_MARKER,
         };
         events.push(ctrl_up);
         SendInput(
@@ -1043,7 +1048,7 @@ fn send_fake_drag_move(btn: MouseButton, dx: i32, dy: i32) {
     unsafe {
         let mut input = INPUT { r#type: INPUT_MOUSE, ..std::mem::zeroed() };
         input.Anonymous.mi = MOUSEINPUT {
-            dx, dy, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: 0,
+            dx, dy, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: OUR_MARKER,
         };
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
@@ -1061,7 +1066,7 @@ fn send_fake_drag_button_up(btn: MouseButton) {
     unsafe {
         let mut input = INPUT { r#type: INPUT_MOUSE, ..std::mem::zeroed() };
         input.Anonymous.mi = MOUSEINPUT {
-            dx: 0, dy: 0, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: 0,
+            dx: 0, dy: 0, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: OUR_MARKER,
         };
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
@@ -1079,7 +1084,7 @@ fn send_fake_drag_button_down(btn: MouseButton) {
     unsafe {
         let mut input = INPUT { r#type: INPUT_MOUSE, ..std::mem::zeroed() };
         input.Anonymous.mi = MOUSEINPUT {
-            dx: 0, dy: 0, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: 0,
+            dx: 0, dy: 0, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: OUR_MARKER,
         };
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
