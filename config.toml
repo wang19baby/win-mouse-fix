@@ -69,10 +69,25 @@ modifiers = { keyboard = 0x100 }
 trigger = { type = "scroll" }
 effect = { type = "modified_scroll", data = { modification = "precision" } }
 
-# Drag gestures enabled (left-click drag = move window / scroll / navigate)
+# X1 (back) side button → Task View (Win+Tab)
+# Uncomment to bind:
+# [[buttons.advanced]]
+# trigger = { type = "button", button = "x1", level = 1, duration = "click" }
+# effect = { type = "task_view" }
+#
+# X2 (forward) side button → Show Desktop (Win+D)
+# Uncomment to bind:
+# [[buttons.advanced]]
+# trigger = { type = "button", button = "x2", level = 1, duration = "click" }
+# effect = { type = "show_desktop" }
+
+# Drag gestures (left-click drag)
+# Modes: "move" (drag window), "scroll" (drag-to-scroll), "navigate" (back/forward),
+#        "taskview" (drag up = Win+Tab), "showdesktop" (drag down = Win+D)
 [drag]
 enabled = true
 button = "left"
+mode = "move"
 
 # Pointer acceleration (subtle; adjusts mouse sensitivity by movement speed)
 [accel]

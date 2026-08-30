@@ -116,6 +116,8 @@ pub enum Effect {
     SystemDefinedEvent { #[serde(rename = "event_type")] event_type: u32, #[serde(default)] flags: u32 },
     ModifiedScroll { modification: ModifiedScrollModification },
     ModifiedDrag { drag_type: ModifiedDragType, #[serde(default)] variant: Option<ModifiedDragVariant> },
+    TaskView,      // Win+Tab — virtual desktop overview
+    ShowDesktop,   // Win+D — minimize all windows / restore
     Disabled,
     PassThrough,
 }
@@ -423,6 +425,8 @@ pub fn execute_effect(effect: &Effect) {
         Effect::ModifiedScroll { .. } => {
             // ModifiedScroll is handled by the scroll engine directly, not here.
         }
+        Effect::TaskView => unsafe { send_task_view() },
+        Effect::ShowDesktop => unsafe { send_show_desktop() },
         Effect::Disabled => {}
         Effect::PassThrough => {}
     }
@@ -550,6 +554,26 @@ unsafe fn send_system_event(event_type: u32, _flags: u32) {
         1 => send_symbolic_hotkey(0x09, 0x400),
         _ => {}
     }
+}
+
+/// Open Task View (Win+Tab) — virtual desktop overview / Timeline.
+unsafe fn send_task_view() {
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(4);
+    inputs.push(vk_input(0x5B, 0, true));  // VK_LWIN down
+    inputs.push(vk_input(0x09, 0, true));  // VK_TAB down
+    inputs.push(vk_input(0x09, 0, false)); // VK_TAB up
+    inputs.push(vk_input(0x5B, 0, false)); // VK_LWIN up
+    SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+}
+
+/// Show Desktop / restore all (Win+D) — toggle minimize all windows.
+unsafe fn send_show_desktop() {
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(4);
+    inputs.push(vk_input(0x5B, 0, true));  // VK_LWIN down
+    inputs.push(vk_input(0x44, 0, true));  // VK_D down
+    inputs.push(vk_input(0x44, 0, false)); // VK_D up
+    inputs.push(vk_input(0x5B, 0, false)); // VK_LWIN up
+    SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
 }
 
 // ─── Mouse button synthesis ──────────────────────────────────────────────────

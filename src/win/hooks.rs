@@ -66,6 +66,8 @@ enum DragOutput {
     Move,
     Scroll,
     Navigate,
+    TaskView,    // drag → Win+Tab (virtual desktop overview)
+    ShowDesktop, // drag → Win+D (minimize all / restore)
 }
 
 /// Map the config `drag.mode` string to a [`DragOutput`].
@@ -73,6 +75,8 @@ fn drag_output(mode: &str) -> DragOutput {
     match mode {
         "scroll" => DragOutput::Scroll,
         "navigate" => DragOutput::Navigate,
+        "taskview" => DragOutput::TaskView,
+        "showdesktop" => DragOutput::ShowDesktop,
         _ => DragOutput::Move,
     }
 }
@@ -676,6 +680,34 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                                 crate::remap::SwipeDirection::Back
                             };
                             crate::remap::execute_effect(&crate::remap::Effect::NavigationSwipe { direction });
+                            ctrl.reset_accum();
+                        }
+                        dragging = true;
+                    }
+                }
+                DragOutput::TaskView => {
+                    // Vertical drag up → Task View (Win+Tab).
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        let (_dx, dy) = ctrl.total_delta();
+                        const TASKVIEW_THRESH: i32 = 80;
+                        if dy < -TASKVIEW_THRESH {
+                            crate::remap::execute_effect(&crate::remap::Effect::TaskView);
+                            ctrl.reset_accum();
+                        }
+                        dragging = true;
+                    }
+                }
+                DragOutput::ShowDesktop => {
+                    // Vertical drag down → Show Desktop (Win+D).
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        let (_dx, dy) = ctrl.total_delta();
+                        const SHOWDESKTOP_THRESH: i32 = 80;
+                        if dy > SHOWDESKTOP_THRESH {
+                            crate::remap::execute_effect(&crate::remap::Effect::ShowDesktop);
                             ctrl.reset_accum();
                         }
                         dragging = true;
