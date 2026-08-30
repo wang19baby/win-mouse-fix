@@ -379,7 +379,7 @@ pub fn send_mouse_move(dx: i32, dy: i32) {
             mouseData: 0,
             dwFlags: MOUSEEVENTF_MOVE,
             time: 0,
-            dwExtraInfo: 0,
+            dwExtraInfo: crate::win::hooks::OUR_MARKER,
         };
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }

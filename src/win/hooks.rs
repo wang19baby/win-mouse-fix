@@ -627,7 +627,6 @@ unsafe fn process_wheel(delta: i32, horizontal: bool, cfg: &Config) -> Option<Wh
     //    The hook swallows the original event; the injector replays it smoothly.
     //    If smooth mode is off, return None so the original event passes through.
     if cfg.scroll.smooth {
-        crate::log::write(&format!("[wheel] process_wheel smooth=true delta={} horiz={}", delta, horizontal));
         if let Some(tx) = SCROLL_TX.lock().as_ref() {
             let _ = tx.send(WheelInput { delta, horizontal });
         }
@@ -868,38 +867,31 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                 if down {
                     let mut tracker = get_tracker().write();
                     let (click_count, is_new) = tracker.on_button_down(btn);
+                    // Single read of REMAP_ENGINE for the entire button-down path.
+                    let engine_guard = REMAP_ENGINE.read();
+                    let engine = engine_guard.as_ref();
                     if is_new {
-                        if let Some(engine) = REMAP_ENGINE.read().as_ref() {
-                            let max_level = engine.max_level_for_button(btn);
+                        if let Some(e) = engine {
+                            let max_level = e.max_level_for_button(btn);
                             tracker.set_max_level(btn, max_level);
                         }
                     }
-                    let has_remap = {
-                        if let Some(engine) = REMAP_ENGINE.read().as_ref() {
-                            let results = engine.resolve_effects(btn, click_count, false, &active_mods);
-                            !results.is_empty()
-                        } else {
-                            false
-                        }
-                    };
-                    if has_remap {
+                    let results = engine
+                        .map(|e| e.resolve_effects(btn, click_count, false, &active_mods))
+                        .unwrap_or_default();
+                    if !results.is_empty() {
                         // Activate drag state if this is a drag trigger.
-                        if let Some(engine) = REMAP_ENGINE.read().as_ref() {
-                            let results = engine.resolve_effects(btn, click_count, false, &active_mods);
-                            for (effect, _) in &results {
-                                if let Effect::ModifiedDrag { drag_type, .. } = effect {
-                                    let origin = crate::win::window::cursor_pos();
-                                    *DRAG_EFFECT.write() = Some(DragState {
-                                        drag_type: drag_type.clone(),
-                                        trigger_button: btn,
-                                        origin_x: origin.0,
-                                        origin_y: origin.1,
-                                    });
-                                    // For FakeDrag: send the button-down now so the system
-                                    // sees a click; we will send button-up on release.
-                                    if *drag_type == ModifiedDragType::FakeDrag {
-                                        send_fake_drag_button_down(btn);
-                                    }
+                        for (effect, _) in &results {
+                            if let Effect::ModifiedDrag { drag_type, .. } = effect {
+                                let origin = crate::win::window::cursor_pos();
+                                *DRAG_EFFECT.write() = Some(DragState {
+                                    drag_type: drag_type.clone(),
+                                    trigger_button: btn,
+                                    origin_x: origin.0,
+                                    origin_y: origin.1,
+                                });
+                                if *drag_type == ModifiedDragType::FakeDrag {
+                                    send_fake_drag_button_down(btn);
                                 }
                             }
                         }
@@ -913,15 +905,19 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                 } else {
                     // Button up: end click cycle and fire effects.
                     // FakeDrag: send button-up for the trigger button and swallow.
-                    if let Some(drag_state) = DRAG_EFFECT.read().clone() {
-                        if drag_state.drag_type == ModifiedDragType::FakeDrag
-                            && drag_state.trigger_button == btn
-                        {
-                            // Send the button-up for the fake drag.
-                            send_fake_drag_button_up(drag_state.trigger_button);
-                            *DRAG_EFFECT.write() = None;
-                            return 1; // swallow the button-up
+                    let is_fake_drag = {
+                        let drag = DRAG_EFFECT.read();
+                        if let Some(ref ds) = *drag {
+                            ds.drag_type == ModifiedDragType::FakeDrag && ds.trigger_button == btn
+                        } else {
+                            false
                         }
+                    };
+                    if is_fake_drag {
+                        let trigger = DRAG_EFFECT.read().as_ref().unwrap().trigger_button;
+                        send_fake_drag_button_up(trigger);
+                        *DRAG_EFFECT.write() = None;
+                        return 1; // swallow the button-up
                     }
                     *DRAG_EFFECT.write() = None;
                     let mut tracker = get_tracker().write();
