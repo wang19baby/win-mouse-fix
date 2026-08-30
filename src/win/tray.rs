@@ -101,7 +101,7 @@ static BASE_HICON: parking_lot::Mutex<isize> = parking_lot::Mutex::new(0);
 /// Currently displayed (overlay) icon; destroyed before each replacement.
 static CUR_OVERLAY: parking_lot::Mutex<isize> = parking_lot::Mutex::new(0);
 
-fn to_wide(s: &str) -> Vec<u16> {
+pub fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
@@ -275,30 +275,48 @@ pub fn create() -> Result<(), String> {
         let mem = CreateCompatibleDC(screen);
         let bmp = CreateCompatibleBitmap(screen, size, size);
         if mem == 0 || bmp == 0 {
-            if mem != 0 {
-                DeleteDC(mem);
-            }
-            if bmp != 0 {
-                DeleteObject(bmp);
-            }
+            if mem != 0 { DeleteDC(mem); }
+            if bmp != 0 { DeleteObject(bmp); }
             ReleaseDC(0, screen);
             return base;
         }
         let old = SelectObject(mem, bmp);
-        let mut rect = RECT { left: 0, top: 0, right: size, bottom: size };
-        let brush = CreateSolidBrush(0x00FF_FFFF); // white
-        if brush != 0 {
-            FillRect(mem, &rect, brush);
-            DeleteObject(brush);
-        }
+
+        // Draw the base mouse icon first.
         DrawIcon(mem, 0, 0, base);
+
+        // Draw a small battery bar at the bottom (2px tall, 60% width).
+        let bar_w = size * 6 / 10;
+        let bar_h = 2i32;
+        let bar_x = (size - bar_w) / 2;
+        let bar_y = size - bar_h - 1;
+        let bar_color: u32 = if percent > 50 { 0x0000CC00 }  // green
+            else if percent > 20 { 0x0000CCFF }  // yellow (0x00BBGGRR)
+            else { 0x000000FF };  // red
+        let bar_brush = CreateSolidBrush(bar_color);
+        if bar_brush != 0 {
+            let bar_rect = RECT { left: bar_x, top: bar_y, right: bar_x + bar_w, bottom: bar_y + bar_h };
+            FillRect(mem, &bar_rect, bar_brush);
+            DeleteObject(bar_brush);
+        }
+
+        // Draw percentage text with dark outline for readability on any taskbar.
         let text = to_wide(&format!("{percent}"));
         SetBkMode(mem, TRANSPARENT as i32);
-        // COLORREF is 0x00BBGGRR; red = 0x0000FF, black = 0.
-        SetTextColor(mem, if low { 0x0000FF } else { 0x000000 });
+        let mut rect = RECT { left: 0, top: 0, right: size, bottom: size - bar_h - 2 };
+        // Dark outline: draw at 4 offsets.
+        SetTextColor(mem, 0x00000000); // black
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let mut r = rect;
+            r.left += dx; r.right += dx;
+            r.top += dy; r.bottom += dy;
+            DrawTextW(mem, text.as_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        // White text on top.
+        SetTextColor(mem, 0x00FFFFFF);
         DrawTextW(mem, text.as_ptr(), -1, &mut rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(mem, old);
 
+        SelectObject(mem, old);
         let mask = CreateBitmap(size, size, 1, 1, std::ptr::null());
         let mut ii: ICONINFO = std::mem::zeroed();
         ii.fIcon = 1;
@@ -307,16 +325,12 @@ pub fn create() -> Result<(), String> {
         let hicon = CreateIconIndirect(&ii);
         ReleaseDC(0, screen);
         DeleteDC(mem);
-        if mask != 0 {
-            DeleteObject(mask);
-        }
+        if mask != 0 { DeleteObject(mask); }
         if hicon != 0 {
-            DeleteObject(bmp); // icon takes ownership
+            DeleteObject(bmp);
             hicon
         } else {
-            if bmp != 0 {
-                DeleteObject(bmp);
-            }
+            if bmp != 0 { DeleteObject(bmp); }
             base
         }
     }
