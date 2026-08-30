@@ -28,6 +28,9 @@ const IDC_TAB_BUTTONS: usize = 2004;
 // General tab (tab 0)
 const IDC_CHK_START_HIDDEN: usize = 3001;
 const IDC_CHK_REMOTE: usize = 3002;
+const IDC_CHK_DPI_AUTO: usize = 3003;
+const IDC_LBL_DPI_BASE: usize = 3004;
+const IDC_EDT_DPI_BASE: usize = 3005;
 
 // Scroll tab (tab 1)
 const IDC_CHK_SMOOTH: usize = 3101;
@@ -59,6 +62,9 @@ struct CtrlDef { id: usize, tab: usize }
 const CTRL_TABLE: &[CtrlDef] = &[
     CtrlDef { id: IDC_CHK_START_HIDDEN, tab: 0 },
     CtrlDef { id: IDC_CHK_REMOTE,      tab: 0 },
+    CtrlDef { id: IDC_CHK_DPI_AUTO,    tab: 0 },
+    CtrlDef { id: IDC_LBL_DPI_BASE,    tab: 0 },
+    CtrlDef { id: IDC_EDT_DPI_BASE,    tab: 0 },
     CtrlDef { id: IDC_CHK_SMOOTH,      tab: 1 },
     CtrlDef { id: IDC_LBL_DURATION,    tab: 1 },
     CtrlDef { id: IDC_EDT_DURATION,    tab: 1 },
@@ -153,6 +159,9 @@ unsafe extern "system" fn settings_wnd_proc(
             // ── General tab ──
             create_checkbox(hwnd, hmod, IDC_CHK_START_HIDDEN, "启动时最小化到托盘", 30, 56);
             create_checkbox(hwnd, hmod, IDC_CHK_REMOTE, "启用手势服务（手机触控板）", 30, 84);
+            create_checkbox(hwnd, hmod, IDC_CHK_DPI_AUTO, "跨屏时自动调整鼠标 DPI", 30, 112);
+            create_label(hwnd, hmod, IDC_LBL_DPI_BASE, "基准 DPI:", 30, 142);
+            create_edit(hwnd, hmod, IDC_EDT_DPI_BASE, "800", 160, 139, 80);
 
             // ── Scroll tab ──
             create_checkbox(hwnd, hmod, IDC_CHK_SMOOTH, "启用平滑滚动", 30, 56);
@@ -356,6 +365,8 @@ unsafe fn load_config_to_controls(hwnd: isize) {
     let cfg = crate::CONFIG.read();
     set_check(hwnd, IDC_CHK_START_HIDDEN, cfg.general.start_hidden);
     set_check(hwnd, IDC_CHK_REMOTE, cfg.remote.enabled);
+    set_check(hwnd, IDC_CHK_DPI_AUTO, cfg.dpi.auto_switch);
+    set_edit_text(hwnd, IDC_EDT_DPI_BASE, &cfg.dpi.base_dpi.to_string());
     set_check(hwnd, IDC_CHK_SMOOTH, cfg.scroll.smooth);
     set_edit_text(hwnd, IDC_EDT_DURATION, &cfg.scroll.speed.to_string());
     set_edit_text(hwnd, IDC_EDT_DISTANCE, &cfg.scroll.step.to_string());
@@ -368,6 +379,10 @@ unsafe fn save_config_from_controls(hwnd: isize) -> Result<(), String> {
         let mut cfg = crate::CONFIG.write();
         cfg.general.start_hidden = get_check(hwnd, IDC_CHK_START_HIDDEN);
         cfg.remote.enabled = get_check(hwnd, IDC_CHK_REMOTE);
+        cfg.dpi.auto_switch = get_check(hwnd, IDC_CHK_DPI_AUTO);
+        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_DPI_BASE).parse::<u16>() {
+            cfg.dpi.base_dpi = v;
+        }
         cfg.scroll.smooth = get_check(hwnd, IDC_CHK_SMOOTH);
         if let Ok(v) = get_edit_text(hwnd, IDC_EDT_DURATION).parse::<f64>() {
             cfg.scroll.speed = v;
