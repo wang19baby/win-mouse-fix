@@ -111,7 +111,22 @@
     ws.onopen = function(){ statusEl.textContent = '认证中…'; showBanner('握手成功·认证中…'); setTimeout(hideBanner, 1200); ws.send(JSON.stringify({t:'auth', token:token})); };
     ws.onmessage = function(e){
       var m; try { m = JSON.parse(e.data); } catch(_) { return; }
-      if(m.t === 'status'){ authed = true; stopReconnect = false; backoff = 500; statusEl.textContent = '已连接'; hideBanner(); }
+      if(m.t === 'status'){
+        authed = true; stopReconnect = false; backoff = 500; statusEl.textContent = '已连接'; hideBanner();
+        // Apply touch config from server if provided
+        if(m.touch){
+          var tc = m.touch;
+          if(tc.gain !== undefined) SENS = tc.gain;
+          if(tc.accel_ref !== undefined) ACCEL_REF = tc.accel_ref;
+          if(tc.accel_slope !== undefined) ACCEL_SLOPE = tc.accel_slope;
+          if(tc.accel_max_mult !== undefined) ACCEL_MAX_MULT = tc.accel_max_mult;
+          if(tc.move_ema !== undefined) MOVE_EMA = tc.move_ema;
+          if(tc.scroll_gain !== undefined) SCROLL_GAIN = tc.scroll_gain;
+          if(tc.tap_ms !== undefined) TAP_MS = tc.tap_ms;
+          if(tc.tap_px !== undefined) TAP_PX = tc.tap_px;
+          if(tc.swipe_px !== undefined) SWIPE_PX = tc.swipe_px;
+        }
+      }
       else if(m.t === 'reject'){ statusEl.textContent = '认证失败'; showBanner('认证失败' + (m.reason ? ' ('+m.reason+')' : '') + ' · 请重新扫码'); stopReconnect = true; try { ws.close(); } catch(_){} }
     };
 

@@ -85,6 +85,8 @@ pub struct Config {
     #[serde(default)]
     pub remote: RemoteConfig,
     #[serde(default)]
+    pub touch: TouchConfig,
+    #[serde(default)]
     pub profiles: Vec<Profile>,
 }
 
@@ -97,6 +99,7 @@ impl PartialEq for Config {
                     && self.accel == other.accel
         && self.dpi == other.dpi
         && self.remote == other.remote
+        && self.touch == other.touch
         && self.profiles == other.profiles
     }
 }
@@ -350,6 +353,56 @@ impl Default for RemoteConfig {
     }
 }
 
+/// Touch-trackpad parameters. Sent to the phone via WS status message so the
+/// web page can use server-configured values instead of hardcoded constants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TouchConfig {
+    #[serde(default = "default_touch_gain")]
+    pub gain: f64,
+    #[serde(default = "default_touch_accel_ref")]
+    pub accel_ref: f64,
+    #[serde(default = "default_touch_accel_slope")]
+    pub accel_slope: f64,
+    #[serde(default = "default_touch_accel_max_mult")]
+    pub accel_max_mult: f64,
+    #[serde(default = "default_touch_move_ema")]
+    pub move_ema: f64,
+    #[serde(default = "default_touch_scroll_gain")]
+    pub scroll_gain: f64,
+    #[serde(default = "default_touch_tap_ms")]
+    pub tap_ms: u32,
+    #[serde(default = "default_touch_tap_px")]
+    pub tap_px: f64,
+    #[serde(default = "default_touch_swipe_px")]
+    pub swipe_px: f64,
+}
+
+fn default_touch_gain() -> f64 { 6.7 }
+fn default_touch_accel_ref() -> f64 { 10.0 }
+fn default_touch_accel_slope() -> f64 { 10.0 }
+fn default_touch_accel_max_mult() -> f64 { 2.0 }
+fn default_touch_move_ema() -> f64 { 0.35 }
+fn default_touch_scroll_gain() -> f64 { 5.5 }
+fn default_touch_tap_ms() -> u32 { 220 }
+fn default_touch_tap_px() -> f64 { 10.0 }
+fn default_touch_swipe_px() -> f64 { 45.0 }
+
+impl Default for TouchConfig {
+    fn default() -> Self {
+        TouchConfig {
+            gain: default_touch_gain(),
+            accel_ref: default_touch_accel_ref(),
+            accel_slope: default_touch_accel_slope(),
+            accel_max_mult: default_touch_accel_max_mult(),
+            move_ema: default_touch_move_ema(),
+            scroll_gain: default_touch_scroll_gain(),
+            tap_ms: default_touch_tap_ms(),
+            tap_px: default_touch_tap_px(),
+            swipe_px: default_touch_swipe_px(),
+        }
+    }
+}
+
 /// A per-app (or, in a future phase, per-device) configuration override.
 ///
 /// When the foreground window's exe name contains `match_exe` (case-insensitive
@@ -410,6 +463,7 @@ impl Default for Config {
             accel: AccelConfig::default(),
             dpi: DpiConfig::default(),
             remote: RemoteConfig::default(),
+            touch: TouchConfig::default(),
             profiles: Vec::new(),
         }
     }

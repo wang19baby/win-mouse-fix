@@ -421,7 +421,25 @@ fn dispatch(
             let ok = v.get("token").and_then(|x| x.as_str()) == Some(token);
             if ok {
                 *authed = true;
-                let _ = write_frame(stream, 0x1, br#"{"t":"status","conn":true}"#);
+                // Build status with touch config from current config
+                let cfg = crate::CONFIG.read();
+                let touch = &cfg.touch;
+                let status = serde_json::json!({
+                    "t": "status",
+                    "conn": true,
+                    "touch": {
+                        "gain": touch.gain,
+                        "accel_ref": touch.accel_ref,
+                        "accel_slope": touch.accel_slope,
+                        "accel_max_mult": touch.accel_max_mult,
+                        "move_ema": touch.move_ema,
+                        "scroll_gain": touch.scroll_gain,
+                        "tap_ms": touch.tap_ms,
+                        "tap_px": touch.tap_px,
+                        "swipe_px": touch.swipe_px,
+                    }
+                }).to_string();
+                let _ = write_frame(stream, 0x1, status.as_bytes());
             } else {
                 // Tell the client WHY (clean reject), then a proper close frame so
                 // the browser delivers the reject message and stops retrying

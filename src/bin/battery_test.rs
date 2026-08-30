@@ -1,100 +1,174 @@
 use tungstenite::{connect, Message};
 use tungstenite::client::IntoClientRequest;
+use windows_sys::Win32::Devices::HumanInterfaceDevice::{
+    GUID_DEVINTERFACE_HID, HIDD_ATTRIBUTES, HidD_GetAttributes, HidD_GetPreparsedData,
+    HidD_FreePreparsedData, HidP_GetCaps, HIDP_CAPS,
+};
+use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+    SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
+    SetupDiGetDeviceInterfaceDetailW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
+    SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
+};
+use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
+
+const LOGITECH_VID: u16 = 0x046D;
 
 fn main() {
-    println!("=== Battery Auto-Start + WebSocket Test ===\n");
+    println!("=== G502 LIGHTSPEED: HID Buttons + G Hub Slots ===\n");
 
-    ensure_lghub();
+    // 1. Read HID capabilities
+    let devices = enumerate_logitech();
+    println!("Found {} Logitech HID device(s)\n", devices.len());
+    for d in &devices {
+        if d.pid == 0xC539 {
+            println!("HID path: {}", d.path);
+            if let Some(caps) = check_hid_caps(&d.path) {
+                println!("  Usage: 0x{:04X} (UsagePage: 0x{:04X})", caps.0, caps.1);
+                println!("  Input buttons: {}, Input values: {}", caps.2, caps.3);
+                println!("  Feature report len: {}", caps.4);
+            }
+        }
+    }
 
+    // 2. Get G Hub slots
+    println!("\n=== G Hub Button Slots ===\n");
     let mut request = "ws://localhost:9010".into_client_request().unwrap();
-    request.headers_mut().insert(
-        "Sec-WebSocket-Protocol",
-        "json".parse().unwrap(),
-    );
-
+    request.headers_mut().insert("Sec-WebSocket-Protocol", "json".parse().unwrap());
     let (mut ws, _) = match connect(request) {
         Ok(c) => c,
-        Err(e) => { println!("Failed: {}", e); return; }
+        Err(e) => { println!("G Hub not available: {}", e); return; }
     };
-
     let _welcome = ws.read_message().unwrap();
 
     ws.write_message(Message::binary(
-        serde_json::json!({
-            "path": "/devices/list",
-            "verb": "GET"
-        }).to_string(),
+        serde_json::json!({"path": "/devices/list", "verb": "GET"}).to_string()
     )).unwrap();
+    let resp = read_response(&mut ws);
+    let json: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let device = json["payload"]["deviceInfos"].as_array().unwrap()
+        .iter().find(|d| d["connectionType"] == "WIRELESS").unwrap();
 
-    let devices_msg = ws.read_message().unwrap();
-    let devices_text = match devices_msg {
-        Message::Text(t) => t,
-        Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
-        _ => { println!("Unexpected"); return; }
-    };
+    let slots = device["slots"].as_object().unwrap();
 
-    let json: serde_json::Value = serde_json::from_str(&devices_text).unwrap();
-    let device_infos = json["payload"]["deviceInfos"].as_array().unwrap();
-    let wireless: Vec<_> = device_infos.iter()
-        .filter(|d| d["connectionType"] == "WIRELESS")
-        .collect();
+    // Physical button mapping for G502 LIGHTSPEED
+    let physical: Vec<(&str, &str, &str)> = vec![
+        ("g502wireless_g1_m1",  "G1",  "左键上方 (DPI+)"),
+        ("g502wireless_g2_m1",  "G2",  "左键下方 (DPI-)"),
+        ("g502wireless_g3_m1",  "G3",  "滚轮按下 (中键)"),
+        ("g502wireless_g4_m1",  "G4",  "左键侧面 (DPI Shift)"),
+        ("g502wireless_g5_m1",  "G5",  "右键上方 (后退)"),
+        ("g502wireless_g6_m1",  "G6",  "右键下方 (前进)"),
+        ("g502wireless_g7_m1",  "G7",  "侧键1 (拇指)"),
+        ("g502wireless_g8_m1",  "G8",  "侧键2 (拇指)"),
+        ("g502wireless_g9_m1",  "G9",  "滚轮左倾"),
+        ("g502wireless_g10_m1", "G10", "滚轮右倾"),
+        ("g502wireless_g11_m1", "G11", "G-Shift (底部)"),
+    ];
 
-    println!("Found {} wireless device(s)\n", wireless.len());
+    println!("{:<5} {:<10} {:<25} {:<18} {}", "Slot", "Button", "Physical", "Attribute", "G-Shift?");
+    println!("{}", "-".repeat(80));
 
-    for device in &wireless {
-        let id = device["id"].as_str().unwrap();
-        let name = device["displayName"].as_str().unwrap();
-        println!("Device: {} (id={})", name, id);
+    for (slot_id, gname, pos) in &physical {
+        let slot = slots.get(*slot_id);
+        let attr = slot.map(|s| s["attribute"].as_str().unwrap_or("?")).unwrap_or("NOT FOUND");
+        let shifted_slot = format!("{}_shifted", slot_id);
+        let has_shift = slots.contains_key(&shifted_slot);
+        println!("{:<5} {:<10} {:<25} {:<18} {}", slot_id, gname, pos, attr, if has_shift { "yes" } else { "no" });
+    }
 
-        ws.write_message(Message::binary(
-            serde_json::json!({
-                "path": format!("/battery/{}/state", id),
-                "verb": "GET"
-            }).to_string(),
-        )).unwrap();
-
-        let bat_msg = ws.read_message().unwrap();
-        let bat_text = match bat_msg {
-            Message::Text(t) => t,
-            Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
-            _ => { println!("  Unexpected"); continue; }
-        };
-
-        let bat_json: serde_json::Value = serde_json::from_str(&bat_text).unwrap();
-        let percentage = bat_json["payload"]["percentage"].as_u64().unwrap_or(0);
-        let charging = bat_json["payload"]["charging"].as_bool().unwrap_or(false);
-        println!("  Battery: {}%{}\n", percentage, if charging { " (charging)" } else { "" });
+    // Also show non-button slots
+    println!("\n=== Settings Slots ===");
+    for (slot_id, slot_info) in slots {
+        if slot_id.contains("setting") || slot_id.contains("lighting") {
+            let attr = slot_info["attribute"].as_str().unwrap_or("?");
+            println!("  {} → {}", slot_id, attr);
+        }
     }
 
     ws.close(None).unwrap();
-    println!("Done!");
+    println!("\nDone!");
 }
 
-fn ensure_lghub() {
-    let running = std::process::Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq lghub_agent.exe", "/NH"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("lghub_agent"))
-        .unwrap_or(false);
+// --- HID helpers ---
 
-    if running {
-        println!("G Hub already running\n");
-        return;
-    }
+struct DevInfo { path: String, pid: u16 }
 
-    println!("G Hub not running, starting...");
-    let paths = [
-        "C:\\Program Files\\LGHUB\\system_tray\\lghub_system_tray.exe",
-        "C:\\Program Files (x86)\\LGHUB\\system_tray\\lghub_system_tray.exe",
-    ];
-    for p in &paths {
-        if std::path::Path::new(p).exists() {
-            println!("Starting: {}", p);
-            let _ = std::process::Command::new(p).arg("--minimized").spawn();
-            println!("Waiting 8s for G Hub to initialize...");
-            std::thread::sleep(std::time::Duration::from_secs(8));
-            return;
+fn check_hid_caps(path: &str) -> Option<(u16, u16, u16, u16, u16)> {
+    let path = path.to_owned();
+    let child = std::thread::spawn(move || unsafe {
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = CreateFileW(
+            wide.as_ptr(), 0x80000000 | 0x40000000,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null_mut(), OPEN_EXISTING, 0, 0,
+        );
+        if handle == INVALID_HANDLE_VALUE { return None; }
+
+        let mut preparsed: isize = 0;
+        if HidD_GetPreparsedData(handle, &mut preparsed) == 0 {
+            CloseHandle(handle); return None;
         }
+        let mut caps: HIDP_CAPS = std::mem::zeroed();
+        let status = HidP_GetCaps(preparsed, &mut caps);
+        HidD_FreePreparsedData(preparsed);
+        CloseHandle(handle);
+        if status != 1 { return None; }
+
+        Some((caps.UsagePage, caps.Usage, caps.NumberInputButtonCaps,
+              caps.NumberInputValueCaps, caps.FeatureReportByteLength))
+    });
+    child.join().ok().flatten()
+}
+
+fn enumerate_logitech() -> Vec<DevInfo> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let guid = GUID_DEVINTERFACE_HID;
+    unsafe {
+        let dev_info = SetupDiGetClassDevsW(&guid, std::ptr::null(), 0, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+        if dev_info == INVALID_HANDLE_VALUE { return out; }
+        let mut index = 0u32;
+        loop {
+            let mut iface: SP_DEVICE_INTERFACE_DATA = std::mem::zeroed();
+            iface.cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32;
+            if SetupDiEnumDeviceInterfaces(dev_info, std::ptr::null(), &guid, index, &mut iface) == 0 { break; }
+            index += 1;
+            let mut needed: u32 = 0;
+            SetupDiGetDeviceInterfaceDetailW(dev_info, &iface, std::ptr::null_mut(), 0, &mut needed, std::ptr::null_mut());
+            if needed == 0 { continue; }
+            let mut buf: Vec<u8> = vec![0u8; needed as usize];
+            let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
+            (*detail).cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+            if SetupDiGetDeviceInterfaceDetailW(dev_info, &iface, detail, needed, std::ptr::null_mut(), std::ptr::null_mut()) == 0 { continue; }
+            let path = wide_to_string((*detail).DevicePath.as_ptr());
+            let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+            let h = CreateFileW(wide.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, std::ptr::null_mut(), OPEN_EXISTING, 0, 0);
+            if h == INVALID_HANDLE_VALUE { continue; }
+            let mut attr: HIDD_ATTRIBUTES = std::mem::zeroed();
+            attr.Size = std::mem::size_of::<HIDD_ATTRIBUTES>() as u32;
+            if HidD_GetAttributes(h, &mut attr) != 0 && attr.VendorID == LOGITECH_VID {
+                if seen.insert(path.clone()) {
+                    out.push(DevInfo { path, pid: attr.ProductID });
+                }
+            }
+            CloseHandle(h);
+        }
+        SetupDiDestroyDeviceInfoList(dev_info);
     }
-    println!("G Hub not found in standard paths!");
+    out
+}
+
+unsafe fn wide_to_string(p: *const u16) -> String {
+    if p.is_null() { return String::new(); }
+    let mut len = 0usize;
+    while *p.add(len) != 0 { len += 1; }
+    String::from_utf16_lossy(std::slice::from_raw_parts(p, len))
+}
+
+fn read_response(ws: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>) -> String {
+    let msg = ws.read_message().unwrap();
+    match msg { Message::Text(t) => t, Message::Binary(b) => String::from_utf8_lossy(&b).to_string(), _ => "{}".into() }
 }

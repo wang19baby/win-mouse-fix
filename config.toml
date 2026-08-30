@@ -96,3 +96,17 @@ sensitivity = 1000.0
 min_factor = 1.0
 max_factor = 2.0
 
+# ── Phone trackpad touch parameters ──────────────────────────────────────────
+# Sent to the phone via WebSocket status message.
+# Adjust these to match your phone's screen size and preferred feel.
+[touch]
+gain = 6.7             # Base pointer gain (finger px → cursor px)
+accel_ref = 10.0       # Speed threshold below which no acceleration applies (px/frame)
+accel_slope = 10.0     # Each px/frame above accel_ref adds +1x gain
+accel_max_mult = 2.0   # Maximum acceleration multiplier
+move_ema = 0.35        # EMA smoothing coefficient for speed estimate (lower = smoother)
+scroll_gain = 5.5      # Finger px → scroll wheel units
+tap_ms = 220           # Max duration for a tap gesture (ms)
+tap_px = 10.0          # Max displacement for a tap gesture (px)
+swipe_px = 45.0        # 3/4-finger swipe trigger distance (px)
+
