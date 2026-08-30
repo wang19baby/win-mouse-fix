@@ -467,13 +467,21 @@ unsafe fn show_menu(hwnd: isize) {
             crate::win::hooks::toggle_feature(crate::win::hooks::Feature::ButtonRemap)
         }
         ID_EXIT => {
-            let mut nid: windows_sys::Win32::UI::Shell::NOTIFYICONDATAW = std::mem::zeroed();
-            nid.cbSize =
-                std::mem::size_of::<windows_sys::Win32::UI::Shell::NOTIFYICONDATAW>() as u32;
-            nid.hWnd = hwnd;
-            nid.uID = 1;
-            Shell_NotifyIconW(NIM_DELETE, &nid);
-            PostQuitMessage(0);
+            let result = MessageBoxW(
+                hwnd,
+                to_wide("确定要退出 Win Mouse Fix 吗？").as_ptr(),
+                to_wide("退出确认").as_ptr(),
+                0x00000024, // MB_YESNO | MB_ICONQUESTION
+            );
+            if result == IDYES {
+                let mut nid: windows_sys::Win32::UI::Shell::NOTIFYICONDATAW = std::mem::zeroed();
+                nid.cbSize =
+                    std::mem::size_of::<windows_sys::Win32::UI::Shell::NOTIFYICONDATAW>() as u32;
+                nid.hWnd = hwnd;
+                nid.uID = 1;
+                Shell_NotifyIconW(NIM_DELETE, &nid);
+                PostQuitMessage(0);
+            }
         }
         ID_ABOUT => {
             show_about();
