@@ -123,6 +123,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
     let mut is_qr = false;
     let mut is_diag = false;
     let mut is_report = false;
+    let mut is_manifest = false;
     loop {
         match stream.read(&mut tmp) {
             Ok(0) => return,
@@ -157,6 +158,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                     is_qr = req_path == "/qr" || req_path == "//qr";
                     is_diag = req_path == "/diag";
                     is_report = req_path.starts_with("/report");
+                    is_manifest = req_path == "/manifest.json";
                     break;
                 }
                 if buf.len() > 16384 {
@@ -199,6 +201,8 @@ dbg_log(&format!("remote: ws handshake OK from {ip}"));
         let _ = stream.write_all(
             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
         );
+    } else if is_manifest {
+        serve_manifest(&mut stream);
     } else {
         serve_page(&mut stream);
     }
@@ -514,6 +518,20 @@ fn serve_page(stream: &mut TcpStream) {
     let _ = stream.write_all(body);
 }
 
+fn serve_manifest(stream: &mut TcpStream) {
+    let body = MANIFEST_JSON.as_bytes();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/manifest+json; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+}
+
 /// Diagnostic page: tests whether the phone's browser can do WebSockets at all,
 /// comparing our server against a public echo server. Phase 11 debugging.
 fn serve_diag(stream: &mut TcpStream) {
@@ -786,6 +804,7 @@ fn base64(data: &[u8]) -> String {
 
 const TRACKPAD_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/trackpad.html"));
 const QR_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/qr.html"));
+const MANIFEST_JSON: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/manifest.json"));
 
 #[cfg(test)]
 mod tests {

@@ -197,17 +197,15 @@ pub fn stop_scroll() {
 // same `SendInput` path as the local hook layer, so feel is identical and the
 // `LLMHF_INJECTED` guard prevents feedback loops.
 
-/// Feed a remote scroll delta into the smooth-scroll pipeline. If the smoother
-/// is disabled (`SCROLL_TX` is `None`), fall back to a raw wheel injection so
-/// the phone trackpad still scrolls.
+/// Feed a remote scroll delta from the phone trackpad.
+///
+/// Touch input bypasses the smooth-scroll pipeline entirely — the smoother is
+/// tuned for discrete 120-unit physical wheel ticks and produces floaty output
+/// when fed continuous small touch deltas. Instead, we inject raw wheel events
+/// directly via SendInput, which gives a responsive feel matching the phone's
+/// own gain/acceleration applied in the JS layer.
 pub fn push_remote_scroll(delta: i32, horizontal: bool) {
-    let tx = SCROLL_TX.lock();
-    if let Some(tx) = tx.as_ref() {
-        let _ = tx.send(WheelInput { delta, horizontal });
-    } else {
-        drop(tx);
-        unsafe { send_raw_wheel(delta, horizontal) };
-    }
+    unsafe { send_raw_wheel(delta, horizontal) };
 }
 
 unsafe fn send_raw_wheel(delta: i32, horizontal: bool) {
