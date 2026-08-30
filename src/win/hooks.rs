@@ -107,17 +107,10 @@ pub fn apply_config(cfg: Config) {
 
     // Start the injector only when scroll is enabled AND smooth mode is enabled.
     // When smooth is off, wheel events pass through unmodified (with modifiers applied).
-    eprintln!("[DEBUG] apply_config: scroll.enabled={}, scroll.smooth={}", cfg.scroll.enabled, cfg.scroll.smooth);
     if cfg.scroll.enabled && cfg.scroll.smooth {
-        eprintln!("[DEBUG] apply_config: calling start()");
         if let Some(tx) = crate::scroll::injector::start(&*cfg) {
-            eprintln!("[DEBUG] apply_config: start() returned Some, setting SCROLL_TX");
             *SCROLL_TX.lock() = Some(tx);
-        } else {
-            eprintln!("[DEBUG] apply_config: start() returned None");
         }
-    } else {
-        eprintln!("[DEBUG] apply_config: not calling start (enabled={}, smooth={})", cfg.scroll.enabled, cfg.scroll.smooth);
     }
     if cfg.buttons.enabled {
         let entries: Vec<(crate::remap::MouseButton, crate::remap::ButtonAction)> = cfg
@@ -855,11 +848,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                     let engine = engine_guard.as_mut();
                     let effects = tracker.on_button_up(btn, engine, &active_mods);
                     for (effect, phase) in &effects {
-                        if matches!(phase, crate::remap::ActionPhase::Combined)
-                            || matches!(phase, crate::remap::ActionPhase::Start)
-                        {
-                            crate::remap::execute_effect(effect);
-                        }
+                        crate::remap::execute_effect_phase(effect, *phase);
                     }
                     if effects.is_empty() {
                         if let Some(table) = REMAP_TABLE.read().as_ref() {

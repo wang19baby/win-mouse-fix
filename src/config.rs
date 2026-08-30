@@ -1,8 +1,28 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::SystemTime;
+use parking_lot::Mutex;
 use toml::{Table, Value};
 use crate::remap::{LegacyRemapEntry, RemapEntry};
+
+/// Caches the last successfully parsed configuration. A transient parse error
+/// (e.g. a typo while editing `config.toml`) must NOT silently reset every
+/// feature back to defaults — we keep serving the previous valid config until
+/// the file parses again. Initialized on first good load.
+static LAST_GOOD: OnceLock<Mutex<Config>> = OnceLock::new();
+
+fn store_good(c: &Config) {
+    let slot = LAST_GOOD.get_or_init(|| Mutex::new(Config::default()));
+    *slot.lock() = c.clone();
+}
+
+fn last_good_or_default() -> Config {
+    match LAST_GOOD.get() {
+        Some(slot) => slot.lock().clone(),
+        None => Config::default(),
+    }
+}
 
 /// Four control points of a 1-D Bezier curve (degree 3).
 ///
@@ -63,6 +83,8 @@ pub struct Config {
     #[serde(default)]
     pub dpi: DpiConfig,
     #[serde(default)]
+    pub remote: RemoteConfig,
+    #[serde(default)]
     pub profiles: Vec<Profile>,
 }
 
@@ -74,6 +96,7 @@ impl PartialEq for Config {
             && self.drag == other.drag
                     && self.accel == other.accel
         && self.dpi == other.dpi
+        && self.remote == other.remote
         && self.profiles == other.profiles
     }
 }
@@ -289,7 +312,7 @@ pub struct DpiConfig {
     pub max_dpi: u16,
 }
 
-fn default_dpi_auto_switch() -> bool { true }
+fn default_dpi_auto_switch() -> bool { false }
 fn default_dpi_base() -> u16 { 800 }
 fn default_dpi_min() -> u16 { 200 }
 fn default_dpi_max() -> u16 { 4000 }
@@ -301,6 +324,28 @@ impl Default for DpiConfig {
             base_dpi: default_dpi_base(),
             min_dpi: default_dpi_min(),
             max_dpi: default_dpi_max(),
+        }
+    }
+}
+
+/// Phone-trackpad (Phase 11) LAN bridge. Off by default so the app does not
+/// open a network listener / firewall rule unless the user opts in.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RemoteConfig {
+    #[serde(default = "default_remote_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_remote_port")]
+    pub port: u16,
+}
+
+fn default_remote_enabled() -> bool { false }
+fn default_remote_port() -> u16 { 18765 }
+
+impl Default for RemoteConfig {
+    fn default() -> Self {
+        RemoteConfig {
+            enabled: default_remote_enabled(),
+            port: default_remote_port(),
         }
     }
 }
@@ -364,6 +409,7 @@ impl Default for Config {
             drag: DragConfig::default(),
             accel: AccelConfig::default(),
             dpi: DpiConfig::default(),
+            remote: RemoteConfig::default(),
             profiles: Vec::new(),
         }
     }
@@ -374,10 +420,15 @@ impl Config {
         let path = config_path();
         match std::fs::read_to_string(&path) {
             Ok(s) => match toml::from_str::<Config>(&s) {
-                Ok(c) => c,
+                Ok(c) => {
+                    store_good(&c);
+                    c
+                }
                 Err(e) => {
-                    crate::log::write(&format!("config parse error ({e}); using defaults"));
-                    Config::default()
+                    crate::log::write(&format!(
+                        "config parse error ({e}); keeping previous valid config"
+                    ));
+                    last_good_or_default()
                 }
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -385,19 +436,21 @@ impl Config {
                 if let Ok(s) = toml::to_string_pretty(&c) {
                     let _ = std::fs::write(&path, s);
                 }
+                store_good(&c);
                 c
             }
-            // A file exists but couldn't be read/parsed: fall back to defaults
-            // WITHOUT overwriting the user's file (that would destroy their
-            // config).
-            Err(_) => Config::default(),
+            // A file exists but couldn't be read/parsed: keep the previous valid
+            // config WITHOUT overwriting the user's file (that would destroy it).
+            Err(_) => last_good_or_default(),
         }
     }
 
     pub fn save(&self) -> std::io::Result<()> {
         let s = toml::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(config_path(), s)
+        std::fs::write(config_path(), s)?;
+        store_good(self);
+        Ok(())
     }
 
     /// Merge the first `exe`-type profile whose `match_exe` is a substring of
@@ -493,6 +546,17 @@ mod tests {
         let toml = toml::to_string_pretty(&Config::default()).unwrap();
         let parsed: Config = toml::from_str(&toml).unwrap();
         assert_eq!(parsed, Config::default());
+    }
+
+    #[test]
+    fn keeps_last_good_config_on_parse_failure() {
+        // A transient parse error must keep serving the previous valid config
+        // instead of silently resetting everything to defaults.
+        let mut good = Config::default();
+        good.scroll.speed = 9.9;
+        store_good(&good);
+        let kept = last_good_or_default();
+        assert_eq!(kept.scroll.speed, 9.9);
     }
 
     #[test]
@@ -700,7 +764,9 @@ enabled = false
     #[test]
     fn dpi_config_defaults() {
         let d = DpiConfig::default();
-        assert!(d.auto_switch);
+        // Off by default: writing hardware DPI to a device must be an explicit,
+        // validated opt-in, never a silent startup side effect.
+        assert!(!d.auto_switch);
         assert_eq!(d.base_dpi, 800);
         assert_eq!(d.min_dpi, 200);
         assert_eq!(d.max_dpi, 4000);

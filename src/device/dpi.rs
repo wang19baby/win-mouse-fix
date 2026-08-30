@@ -1,9 +1,10 @@
 //! Cross-screen DPI detection and HID++ DPI application (Phase 10).
 //!
-//! Monitor density is read via `EnumDisplayMonitors` + `GetDeviceCaps` (logical
-//! DPI per monitor), which needs only the GDI feature already enabled. The HID++
-//! DPI write path targets the Adjustable DPI feature (0x2201); it requires a
-//! connected, capable device and is best-effort (probe degradation, no errors).
+//! Monitor density is read via `EnumDisplayMonitors` + `GetDpiForMonitor`
+//! (raw per-monitor DPI), which requires the process to be DPI-aware (set in
+//! `main.rs`). The HID++ DPI write path targets the Adjustable DPI feature
+//! (0x2201); it requires a connected, capable device and is best-effort
+//! (probe degradation, no errors).
 #![allow(dead_code)]
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, POINT, RECT};
@@ -13,6 +14,7 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadFile, WriteFile,
 };
+use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_RAW_DPI};
 use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use crate::device::enumerate;
 use crate::device::hidpp::{self, feature};
@@ -52,23 +54,28 @@ pub fn enumerate_monitors() -> Vec<Monitor> {
 }
 
 unsafe extern "system" fn monitor_cb(
-    _hmon: HMONITOR,
+    hmon: HMONITOR,
     hdc: HDC,
     rect: *mut RECT,
     data: isize,
 ) -> i32 {
     let monitors = &mut *(data as *mut Vec<Monitor>);
     let r = *rect;
-    let dpi_x = if hdc != 0 { GetDeviceCaps(hdc, LOGPIXELSX as i32) } else { 96 };
-    let dpi_y = if hdc != 0 { GetDeviceCaps(hdc, LOGPIXELSY as i32) } else { 96 };
+    // Prefer the real per-monitor raw DPI. `GetDpiForMonitor` needs the process
+    // to be DPI-aware (set in `main.rs`); fall back to GDI if it fails.
+    let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
+    if GetDpiForMonitor(hmon, MDT_RAW_DPI, &mut dpi_x, &mut dpi_y) != 0 && hdc != 0 {
+        dpi_x = GetDeviceCaps(hdc, LOGPIXELSX as i32) as u32;
+        dpi_y = GetDeviceCaps(hdc, LOGPIXELSY as i32) as u32;
+    }
     monitors.push(Monitor {
         index: monitors.len(),
         left: r.left,
         top: r.top,
         right: r.right,
         bottom: r.bottom,
-        dpi_x,
-        dpi_y,
+        dpi_x: dpi_x as i32,
+        dpi_y: dpi_y as i32,
         primary: false, // resolved by the caller after enumeration
     });
     1

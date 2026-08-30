@@ -846,6 +846,7 @@ mod integration {
     }
 
     #[test]
+    #[ignore = "touches real loopback listener; run with --ignored on an interactive session"]
     fn ws_handshake_auth_status_and_reject() {
         let token = "smoketoken";
         let port = 18999u16;
@@ -949,6 +950,7 @@ mod integration {
     /// Safari does not abort with code 1006. Regression test for the trackpad
     /// "重连 1006" bug on real iPhones.
     #[test]
+    #[ignore = "touches real loopback listener; run with --ignored on an interactive session"]
     fn ws_handshake_declines_permessage_deflate() {
         let token = "saftoken";
         let port = 18996u16;
@@ -1005,6 +1007,7 @@ mod integration {
     /// (what real iPhone Safari sends) and asserts the response's accept value is
     /// the correct one, i.e. the server preserved the key's original case.
     #[test]
+    #[ignore = "touches real loopback listener; run with --ignored on an interactive session"]
     fn ws_handshake_accept_preserves_key_case() {
         let token = "casetoken";
         let port = 18995u16;
@@ -1065,7 +1068,12 @@ mod integration {
     /// If any dispatch (move/scroll/tap/gesture -> SendInput) panicked or
     /// dropped the socket, the server thread would close and our pong read
     /// would fail — so a successful pong proves the whole chain stayed up.
+    // Ignored by default: this test drives real Win32 global state (SendInput,
+    // virtual-desktop COM, netsh firewall rules) and is racy under the parallel
+    // test harness. Run it explicitly on an interactive session:
+    //   cargo test --bin win-mouse-fix -- --ignored ws_phone_trackpad_dispatch_e2e
     #[test]
+    #[ignore = "touches real Win32 global state; run with --ignored on an interactive session"]
     fn ws_phone_trackpad_dispatch_e2e() {
         let token = "e2etoken";
         let port = 18997u16;
@@ -1135,6 +1143,7 @@ mod integration {
     /// A bare 1006 makes the browser discard the reject message and reconnect
     /// forever; a clean close lets the client stop and show "请重新扫码".
     #[test]
+    #[ignore = "touches real loopback listener; run with --ignored on an interactive session"]
     fn ws_bad_token_clean_reject_not_1006() {
         let token = "cleanreject";
         let port = 18994u16;

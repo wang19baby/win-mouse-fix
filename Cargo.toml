@@ -9,6 +9,7 @@ license = "MIT"
 # Pinned to versions already present in the local cargo cache (rsproxy.cn mirror).
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
+    "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

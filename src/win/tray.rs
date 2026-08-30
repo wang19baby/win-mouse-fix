@@ -402,7 +402,9 @@ unsafe fn show_menu(hwnd: isize) {
 
     AppendMenuW(menu, MF_STRING, ID_BATTERY, to_wide("电池状态").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_DPI, to_wide("DPI 同步当前屏").as_ptr());
-    AppendMenuW(menu, MF_STRING, ID_REMOTE, to_wide("手机妙控板").as_ptr());
+    if crate::CONFIG.read().remote.enabled {
+        AppendMenuW(menu, MF_STRING, ID_REMOTE, to_wide("手机妙控板").as_ptr());
+    }
 
     AppendMenuW(menu, MF_STRING, ID_ABOUT, to_wide("关于").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_EXIT, to_wide("退出").as_ptr());

@@ -359,9 +359,7 @@ impl ClickCycleTracker {
                 let effects =
                     engine.resolve_effects(button, state.click_count, state.held_fired, active_mods);
                 for (effect, phase) in effects {
-                    if matches!(phase, ActionPhase::Start) {
-                        execute_effect(&effect);
-                    }
+                    execute_effect_phase(&effect, phase);
                 }
                 if let Some(s) = self.active.get_mut(&button) {
                     s.held_fired = true;
@@ -430,32 +428,88 @@ pub fn execute_effect(effect: &Effect) {
     }
 }
 
-unsafe fn send_symbolic_hotkey(keycode: u16, flags: u32) {
-    // On Windows, modifier keys (Ctrl, Alt, Shift, Win) must be held down
-    // explicitly before the target key and released after — embedding them in
-    // dwFlags only works for Shift/Alt modifiers. Matches mac's CGEventKeyboardSetUnicodeString
-    // which explicitly holds modifiers during the hotkey sequence.
+/// Execute an effect for a specific action phase. `Combined` fires the full
+/// effect (e.g. a complete key press+release). `Start` (a hold began) presses
+/// the key/modifier down and keeps it held; `End` (the trigger released)
+/// releases it. This makes "hold a button = act as a modifier key" work
+/// instead of dropping the release on the floor.
+pub fn execute_effect_phase(effect: &Effect, phase: ActionPhase) {
+    match phase {
+        ActionPhase::Combined => execute_effect(effect),
+        ActionPhase::Start => send_effect_down(effect),
+        ActionPhase::End => send_effect_up(effect),
+    }
+}
 
+fn send_effect_down(effect: &Effect) {
+    if let Effect::SymbolicHotkey { keycode, flags } = effect {
+        unsafe { send_symbolic_hotkey_down(*keycode, *flags) };
+    }
+}
+
+fn send_effect_up(effect: &Effect) {
+    if let Effect::SymbolicHotkey { keycode, flags } = effect {
+        unsafe { send_symbolic_hotkey_up(*keycode, *flags) };
+    }
+}
+
+#[derive(Clone, Copy)]
+enum KeyState { Down, Up, Both }
+
+unsafe fn symbolic_hotkey_inputs(keycode: u16, flags: u32, state: KeyState) -> Vec<INPUT> {
     let ctrl = (flags & 0x100) != 0;
     let alt  = (flags & 0x400) != 0;
     let shift = (flags & 0x200) != 0;
     let win  = (flags & 0x800) != 0;
-
-    let key_flags = flags & 0x7FF; // strip modifier bits, keep KEYEVENTF_*
+    let key_flags = flags & 0x7FF;
 
     let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
-    if ctrl  { inputs.push(vk_input(0xA2, key_flags, true)); }  // VK_LCONTROL
-    if alt   { inputs.push(vk_input(0xA4, key_flags, true)); }  // VK_LMENU
-    if shift { inputs.push(vk_input(0xA0, key_flags, true)); }  // VK_LSHIFT
-    if win   { inputs.push(vk_input(0x5B, key_flags, true)); }  // VK_LWIN
+    let down = |inputs: &mut Vec<INPUT>, vk: u16| inputs.push(vk_input(vk, key_flags, true));
+    let up = |inputs: &mut Vec<INPUT>, vk: u16| inputs.push(vk_input(vk, key_flags, false));
 
-    inputs.push(vk_input(keycode, key_flags, true));  // key down
-    inputs.push(vk_input(keycode, key_flags | KEYEVENTF_KEYUP, false)); // key up
+    match state {
+        KeyState::Down => {
+            if ctrl { down(&mut inputs, 0xA2); }
+            if alt  { down(&mut inputs, 0xA4); }
+            if shift { down(&mut inputs, 0xA0); }
+            if win  { down(&mut inputs, 0x5B); }
+            down(&mut inputs, keycode);
+        }
+        KeyState::Up => {
+            up(&mut inputs, keycode);
+            if win  { up(&mut inputs, 0x5B); }
+            if shift { up(&mut inputs, 0xA0); }
+            if alt  { up(&mut inputs, 0xA4); }
+            if ctrl { up(&mut inputs, 0xA2); }
+        }
+        KeyState::Both => {
+            if ctrl { down(&mut inputs, 0xA2); }
+            if alt  { down(&mut inputs, 0xA4); }
+            if shift { down(&mut inputs, 0xA0); }
+            if win  { down(&mut inputs, 0x5B); }
+            down(&mut inputs, keycode);
+            up(&mut inputs, keycode);
+            if win  { up(&mut inputs, 0x5B); }
+            if shift { up(&mut inputs, 0xA0); }
+            if alt  { up(&mut inputs, 0xA4); }
+            if ctrl { up(&mut inputs, 0xA2); }
+        }
+    }
+    inputs
+}
 
-    if win  { inputs.push(vk_input(0x5B, key_flags, false)); }
-    if shift { inputs.push(vk_input(0xA0, key_flags, false)); }
-    if alt  { inputs.push(vk_input(0xA4, key_flags, false)); }
-    if ctrl { inputs.push(vk_input(0xA2, key_flags, false)); }
+unsafe fn send_symbolic_hotkey(keycode: u16, flags: u32) {
+    let inputs = symbolic_hotkey_inputs(keycode, flags, KeyState::Both);
+    SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+}
+
+unsafe fn send_symbolic_hotkey_down(keycode: u16, flags: u32) {
+    let inputs = symbolic_hotkey_inputs(keycode, flags, KeyState::Down);
+    SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+}
+
+unsafe fn send_symbolic_hotkey_up(keycode: u16, flags: u32) {
+    let inputs = symbolic_hotkey_inputs(keycode, flags, KeyState::Up);
     SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
 }
 
