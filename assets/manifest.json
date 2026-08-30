@@ -4,7 +4,7 @@
   "description": "手机变触控板 — 驱动 Windows 光标",
   "start_url": "/",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "any",
   "background_color": "#0a0a0a",
   "theme_color": "#0a0a0a",
   "icons": [
