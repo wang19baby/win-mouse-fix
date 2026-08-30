@@ -39,10 +39,16 @@ const IDC_CHK_AUTOSTART: usize = 3006;
 
 // Scroll tab (tab 1)
 const IDC_CHK_SMOOTH: usize = 3101;
-const IDC_LBL_DURATION: usize = 3102;
-const IDC_EDT_DURATION: usize = 3103;
-const IDC_LBL_DISTANCE: usize = 3104;
-const IDC_EDT_DISTANCE: usize = 3105;
+const IDC_LBL_SPEED: usize = 3102;
+const IDC_EDT_SPEED: usize = 3103;
+const IDC_LBL_STEP: usize = 3104;
+const IDC_EDT_STEP: usize = 3105;
+const IDC_LBL_SHIFT_SPEEDUP: usize = 3106;
+const IDC_EDT_SHIFT_SPEEDUP: usize = 3107;
+const IDC_LBL_STOP_SPEED: usize = 3108;
+const IDC_EDT_STOP_SPEED: usize = 3109;
+const IDC_LBL_BASE_MS: usize = 3110;
+const IDC_EDT_BASE_MS: usize = 3111;
 
 // Pointer tab (tab 2)
 const IDC_CHK_ACCEL: usize = 3201;
@@ -72,10 +78,16 @@ const CTRL_TABLE: &[CtrlDef] = &[
     CtrlDef { id: IDC_EDT_DPI_BASE,    tab: 0 },
     CtrlDef { id: IDC_CHK_AUTOSTART,   tab: 0 },
     CtrlDef { id: IDC_CHK_SMOOTH,      tab: 1 },
-    CtrlDef { id: IDC_LBL_DURATION,    tab: 1 },
-    CtrlDef { id: IDC_EDT_DURATION,    tab: 1 },
-    CtrlDef { id: IDC_LBL_DISTANCE,    tab: 1 },
-    CtrlDef { id: IDC_EDT_DISTANCE,    tab: 1 },
+    CtrlDef { id: IDC_LBL_SPEED,       tab: 1 },
+    CtrlDef { id: IDC_EDT_SPEED,       tab: 1 },
+    CtrlDef { id: IDC_LBL_STEP,        tab: 1 },
+    CtrlDef { id: IDC_EDT_STEP,        tab: 1 },
+    CtrlDef { id: IDC_LBL_SHIFT_SPEEDUP, tab: 1 },
+    CtrlDef { id: IDC_EDT_SHIFT_SPEEDUP, tab: 1 },
+    CtrlDef { id: IDC_LBL_STOP_SPEED,  tab: 1 },
+    CtrlDef { id: IDC_EDT_STOP_SPEED,  tab: 1 },
+    CtrlDef { id: IDC_LBL_BASE_MS,     tab: 1 },
+    CtrlDef { id: IDC_EDT_BASE_MS,     tab: 1 },
     CtrlDef { id: IDC_CHK_ACCEL,       tab: 2 },
     CtrlDef { id: IDC_LBL_SENS,        tab: 2 },
     CtrlDef { id: IDC_EDT_SENS,        tab: 2 },
@@ -172,10 +184,16 @@ unsafe extern "system" fn settings_wnd_proc(
 
             // ── Scroll tab ──
             create_checkbox(hwnd, hmod, IDC_CHK_SMOOTH, "启用平滑滚动", 30, 56);
-            create_label(hwnd, hmod, IDC_LBL_DURATION, "平滑时长 (ms):", 30, 86);
-            create_edit(hwnd, hmod, IDC_EDT_DURATION, "120", 160, 83, 80);
-            create_label(hwnd, hmod, IDC_LBL_DISTANCE, "行距 (px):", 30, 116);
-            create_edit(hwnd, hmod, IDC_EDT_DISTANCE, "40", 160, 113, 80);
+            create_label(hwnd, hmod, IDC_LBL_SPEED, "速度:", 30, 86);
+            create_edit(hwnd, hmod, IDC_EDT_SPEED, "1.0", 160, 83, 80);
+            create_label(hwnd, hmod, IDC_LBL_STEP, "步长 (px):", 30, 116);
+            create_edit(hwnd, hmod, IDC_EDT_STEP, "120", 160, 113, 80);
+            create_label(hwnd, hmod, IDC_LBL_SHIFT_SPEEDUP, "Shift 加速:", 30, 146);
+            create_edit(hwnd, hmod, IDC_EDT_SHIFT_SPEEDUP, "2.0", 160, 143, 80);
+            create_label(hwnd, hmod, IDC_LBL_STOP_SPEED, "停止速度:", 30, 176);
+            create_edit(hwnd, hmod, IDC_EDT_STOP_SPEED, "30", 160, 173, 80);
+            create_label(hwnd, hmod, IDC_LBL_BASE_MS, "基础帧间隔 (ms):", 30, 206);
+            create_edit(hwnd, hmod, IDC_EDT_BASE_MS, "8", 160, 203, 80);
 
             // ── Pointer tab ──
             create_checkbox(hwnd, hmod, IDC_CHK_ACCEL, "启用指针加速", 30, 56);
@@ -376,8 +394,11 @@ unsafe fn load_config_to_controls(hwnd: isize) {
     set_edit_text(hwnd, IDC_EDT_DPI_BASE, &cfg.dpi.base_dpi.to_string());
     set_check(hwnd, IDC_CHK_AUTOSTART, is_autostart_enabled());
     set_check(hwnd, IDC_CHK_SMOOTH, cfg.scroll.smooth);
-    set_edit_text(hwnd, IDC_EDT_DURATION, &cfg.scroll.speed.to_string());
-    set_edit_text(hwnd, IDC_EDT_DISTANCE, &cfg.scroll.step.to_string());
+    set_edit_text(hwnd, IDC_EDT_SPEED, &cfg.scroll.speed.to_string());
+    set_edit_text(hwnd, IDC_EDT_STEP, &cfg.scroll.step.to_string());
+    set_edit_text(hwnd, IDC_EDT_SHIFT_SPEEDUP, &cfg.scroll.shift_speedup.to_string());
+    set_edit_text(hwnd, IDC_EDT_STOP_SPEED, &cfg.scroll.stop_speed.to_string());
+    set_edit_text(hwnd, IDC_EDT_BASE_MS, &cfg.scroll.base_ms_per_step.to_string());
     set_check(hwnd, IDC_CHK_ACCEL, cfg.accel.enabled);
     set_edit_text(hwnd, IDC_EDT_SENS, &cfg.accel.sensitivity.to_string());
 }
@@ -393,11 +414,20 @@ unsafe fn save_config_from_controls(hwnd: isize) -> Result<(), String> {
         }
         set_autostart(get_check(hwnd, IDC_CHK_AUTOSTART));
         cfg.scroll.smooth = get_check(hwnd, IDC_CHK_SMOOTH);
-        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_DURATION).parse::<f64>() {
+        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SPEED).parse::<f64>() {
             cfg.scroll.speed = v;
         }
-        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_DISTANCE).parse::<f64>() {
+        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_STEP).parse::<f64>() {
             cfg.scroll.step = v;
+        }
+        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SHIFT_SPEEDUP).parse::<f64>() {
+            cfg.scroll.shift_speedup = v;
+        }
+        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_STOP_SPEED).parse::<f64>() {
+            cfg.scroll.stop_speed = v;
+        }
+        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_BASE_MS).parse::<f64>() {
+            cfg.scroll.base_ms_per_step = v;
         }
         cfg.accel.enabled = get_check(hwnd, IDC_CHK_ACCEL);
         if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SENS).parse::<f64>() {
