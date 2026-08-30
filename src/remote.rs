@@ -426,12 +426,20 @@ fn dispatch(
             let ok = v.get("token").and_then(|x| x.as_str()) == Some(token);
             if ok {
                 *authed = true;
-                // Build status with touch config from current config
+                // Build status with touch config and PC battery from current config
                 let cfg = crate::CONFIG.read();
                 let touch = &cfg.touch;
+                let pc_battery = crate::device::cache::BATTERY.read().map(|b| {
+                    serde_json::json!({
+                        "percent": b.percent,
+                        "charging": b.charging,
+                        "low": b.low,
+                    })
+                });
                 let status = serde_json::json!({
                     "t": "status",
                     "conn": true,
+                    "pc_battery": pc_battery,
                     "touch": {
                         "gain": touch.gain,
                         "accel_ref": touch.accel_ref,

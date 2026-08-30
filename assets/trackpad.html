@@ -14,6 +14,12 @@
   #pad{position:fixed;inset:0;touch-action:none;background:radial-gradient(circle at 50% 38%,#1b1b1b,#0a0a0a);}
   #hud{position:fixed;top:env(safe-area-inset-top,8px);left:8px;right:8px;display:flex;justify-content:space-between;align-items:center;color:#8a8a8a;font:13px/1.2 system-ui,-apple-system,sans-serif;pointer-events:none;padding:6px 12px;}
   #status{letter-spacing:.3px;}
+  #batteries{display:flex;gap:8px;font-size:12px;color:#6a6a6a;}
+  .bat{display:flex;align-items:center;gap:3px;}
+  .bat-icon{width:18px;height:10px;border:1px solid #555;border-radius:2px;position:relative;padding:1px;}
+  .bat-icon::after{content:'';position:absolute;right:-4px;top:2px;width:3px;height:4px;background:#555;border-radius:0 1px 1px 0;}
+  .bat-fill{height:100%;border-radius:1px;transition:width .3s;}
+  .bat-pct{font-size:11px;}
   #fingers{position:fixed;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);left:50%;transform:translateX(-50%);color:#5f5f5f;font:12px/1 system-ui;pointer-events:none;opacity:.85;}
   .ripple{position:fixed;width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,.45);transform:translate(-50%,-50%);pointer-events:none;animation:rip .35s ease-out forwards;}
 
@@ -41,7 +47,7 @@
 <body>
 <div id="pad"></div>
 
-<div id="hud"><span id="status">连接中…</span></div>
+<div id="hud"><span id="status">连接中…</span><span id="batteries"></span></div>
 <div id="fingers">待机</div>
 <div id="banner"><span class="dot"></span><span id="bannerText">连接已断开，正在重连…</span></div>
 <button id="inputToggle">🎤</button>
@@ -142,6 +148,10 @@
           if(tc.diag_ratio !== undefined) DIAG_RATIO = tc.diag_ratio;
           if(tc.longpress_ms !== undefined) LONGPRESS_MS = tc.longpress_ms;
         }
+        // Display PC battery if provided
+        if(m.pc_battery) updateBatteryDisplay('pc', m.pc_battery);
+        // Report phone battery to server
+        reportPhoneBattery();
       }
       else if(m.t === 'reject'){ statusEl.textContent = '认证失败'; showBanner('认证失败' + (m.reason ? ' ('+m.reason+')' : '') + ' · 请重新扫码'); stopReconnect = true; try { ws.close(); } catch(_){} }
     };
@@ -163,6 +173,34 @@
   }
 
   function send(obj){ if(ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+  // Battery display
+  var batteriesEl = document.getElementById('batteries');
+  var pcBattery = null, phoneBattery = null;
+  function updateBatteryDisplay(who, info){
+    if(who === 'pc') pcBattery = info;
+    else phoneBattery = info;
+    renderBatteries();
+  }
+  function renderBatteries(){
+    var html = '';
+    if(pcBattery) html += batHtml('PC', pcBattery.percent, pcBattery.charging);
+    if(phoneBattery) html += batHtml('📱', phoneBattery.level != null ? Math.round(phoneBattery.level*100) : '?', phoneBattery.charging);
+    batteriesEl.innerHTML = html;
+  }
+  function batHtml(label, pct, charging){
+    var color = pct <= 20 ? '#e44' : pct <= 50 ? '#ea4' : '#4a4';
+    var fill = typeof pct === 'number' ? pct : 0;
+    return '<span class="bat"><span class="bat-icon"><span class="bat-fill" style="width:'+fill+'%;background:'+color+'"></span></span><span class="bat-pct">'+label+' '+(typeof pct === 'number' ? pct+'%' : '?')+(charging ? '⚡' : '')+'</span></span>';
+  }
+  function reportPhoneBattery(){
+    if(!navigator.getBattery) return;
+    navigator.getBattery().then(function(bat){
+      updateBatteryDisplay('phone', bat);
+      bat.onlevelchange = function(){ updateBatteryDisplay('phone', bat); };
+      bat.onchargingchange = function(){ updateBatteryDisplay('phone', bat); };
+    });
+  }
 
   // Long-press drag: 1 finger held still for LONGPRESS_MS → window drag mode
   function startLongpressTimer(){
