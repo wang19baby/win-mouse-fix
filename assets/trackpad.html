@@ -541,6 +541,11 @@
 
   updateHud(0, '待机');
   connect();
+
+  // Register Service Worker for offline caching
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('/sw.js').catch(function(){});
+  }
 })();
 </script>
 </body>

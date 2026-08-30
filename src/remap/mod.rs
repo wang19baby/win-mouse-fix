@@ -758,4 +758,27 @@ mod tests {
         );
         assert_eq!(results.len(), 1);
     }
+
+    #[test]
+    fn test_active_modifiers_empty_satisfies_empty() {
+        let active = ActiveModifiers::default();
+        let required = ModifierCondition::default();
+        assert!(active.satisfies(&required));
+    }
+
+    #[test]
+    fn test_active_modifiers_ctrl_satisfies_ctrl() {
+        // 0x100 = Ctrl bitmask (matches flags convention in symbolic_hotkey_inputs)
+        let active = ActiveModifiers { keyboard: 0x100, buttons: vec![] };
+        let required = ModifierCondition { keyboard: 0x100, buttons: vec![] };
+        assert!(active.satisfies(&required));
+    }
+
+    #[test]
+    fn test_active_modifiers_ctrl_does_not_satisfy_shift() {
+        // 0x100 = Ctrl, 0x200 = Shift
+        let active = ActiveModifiers { keyboard: 0x100, buttons: vec![] };
+        let required = ModifierCondition { keyboard: 0x200, buttons: vec![] };
+        assert!(!active.satisfies(&required));
+    }
 }

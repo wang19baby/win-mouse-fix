@@ -316,25 +316,30 @@ pub fn carry_over_distance(animating: bool, last_frac: f64, prev_total_dist: f64
 }
 
 #[cfg(test)]
+pub(crate) fn make_axis() -> ScrollAxis {
+    let accel = BezierAccelCurve::new(6.25, 66.667, 30.0, 120.0, 3.0);
+    let speedup = ScrollSpeedupCurve::new(3, 1.33, 7.5);
+    ScrollAxis::new(
+        1.05,   // drag_exponent
+        15.0,   // drag_coefficient
+        30.0,   // stop_speed
+        1.0,    // gain
+        120.0,  // step
+        accel,
+        speedup,
+        0.015,  // accel_end
+        0.160,  // tick_max
+        -1.0,   // base_ms_per_step
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::scroll::curve::HybridCurve;
 
-    fn make_axis() -> ScrollAxis {
-        let accel = BezierAccelCurve::new(6.25, 66.667, 30.0, 120.0, 3.0);
-        let speedup = ScrollSpeedupCurve::new(3, 1.33, 7.5);
-        ScrollAxis::new(
-            1.05,   // drag_exponent
-            15.0,   // drag_coefficient
-            30.0,   // stop_speed
-            1.0,    // gain
-            120.0,  // step
-            accel,
-            speedup,
-            0.015,  // accel_end
-            0.160,  // tick_max
-            -1.0,   // base_ms_per_step
-        )
+    fn make_axis_for_tests() -> ScrollAxis {
+        make_axis()
     }
 
     #[test]
@@ -350,7 +355,7 @@ mod tests {
 
     #[test]
     fn tick_emits_positive_delta_after_wheel() {
-        let mut axis = make_axis();
+        let mut axis = make_axis_for_tests();
         let t0 = Instant::now();
         axis.on_wheel(120, t0);
         let delta = axis.tick(t0);
@@ -359,7 +364,7 @@ mod tests {
 
     #[test]
     fn inertia_fully_decays() {
-        let mut axis = make_axis();
+        let mut axis = make_axis_for_tests();
         let t0 = Instant::now();
         axis.on_wheel(120, t0);
         let mut prev_speed = axis.current_speed();
@@ -375,7 +380,7 @@ mod tests {
 
     #[test]
     fn opposite_tick_resets_coast_but_allows_new_scroll() {
-        let mut axis = make_axis();
+        let mut axis = make_axis_for_tests();
         let t0 = Instant::now();
         axis.on_wheel(120, t0);
         let t1 = t0 + std::time::Duration::from_millis(50);
@@ -385,7 +390,7 @@ mod tests {
     #[test]
     fn base_carry_over_distance_not_animating_returns_zero() {
         // When not animating, carry-over is always 0.
-        let axis = make_axis();
+        let axis = make_axis_for_tests();
         let curve = HybridCurve::new(
             axis.accel_curve(),
             50.0,
@@ -401,7 +406,7 @@ mod tests {
 
     #[test]
     fn base_carry_over_distance_animating_with_curve_delegates_to_base_phase_remaining() {
-        let axis = make_axis();
+        let axis = make_axis_for_tests();
         let curve = HybridCurve::new(
             axis.accel_curve(), 50.0, 100.0, 15.0, 1.05, 30.0, 0.2,
         );
@@ -418,12 +423,61 @@ mod tests {
 
     #[test]
     fn hybrid_curve_evaluate_at_t_zero_is_near_zero() {
-        let axis = make_axis();
+        let axis = make_axis_for_tests();
         let curve = HybridCurve::new(
             axis.accel_curve(), 50.0, 100.0, 15.0, 1.05, 30.0, 0.2,
         );
         // At t=0 (animation just starting), accumulated fraction should be ~0
         let frac = curve.evaluate(0.0);
         assert!(frac < 0.1, "evaluate(0) should be near 0, got {}", frac);
+    }
+}
+
+// ── Performance benchmarks ────────────────────────────────────────────────
+// Run: cargo test bench --release -- --nocapture
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use crate::scroll::smoother::DoubleExponentialSmoother;
+
+    #[test]
+    fn bench_wheel_processing() {
+        let mut axis = make_axis();
+        let t0 = Instant::now();
+        let mut now = t0;
+        for _ in 0..1000 {
+            axis.on_wheel(120, now);
+            let _ = axis.tick(now);
+            now += std::time::Duration::from_millis(16);
+        }
+        let elapsed = t0.elapsed();
+        eprintln!("bench_wheel_processing: 1000 ticks in {elapsed:?}");
+    }
+
+    #[test]
+    fn bench_smoother() {
+        let mut smoother = DoubleExponentialSmoother::new(0.5, 0.5);
+        let t0 = Instant::now();
+        for i in 0..1000 {
+            smoother.smooth(i as f64);
+        }
+        let elapsed = t0.elapsed();
+        eprintln!("bench_smoother: 1000 smooth passes in {elapsed:?}");
+    }
+
+    #[test]
+    fn bench_coast_simulation() {
+        let mut axis = make_axis();
+        let t0 = Instant::now();
+        let start = t0;
+        // Prime the engine with a wheel event so coasting begins.
+        axis.on_wheel(120, start);
+        let mut now = start + std::time::Duration::from_millis(16);
+        for _ in 0..5000 {
+            let _ = axis.tick(now);
+            now += std::time::Duration::from_millis(8);
+        }
+        let elapsed = t0.elapsed();
+        eprintln!("bench_coast_simulation: 5000 frames in {elapsed:?}");
     }
 }

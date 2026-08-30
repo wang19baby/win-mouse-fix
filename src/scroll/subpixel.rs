@@ -118,4 +118,28 @@ mod tests {
         a.add(10000.0);
         assert!(a.acc <= 240.0 + 1e-9);
     }
+
+    #[test]
+    fn test_subpixel_flush_emits_remainder() {
+        // Use high add-threshold so add() doesn't drain what flush() should emit.
+        let mut a = SubPixelAccumulator::new(10.0, 1e9);
+        a.add(3.7); // acc = 3.7, below add threshold (10.0), returns 0
+        assert_eq!(a.flush(), 3); // 3.7 >= 1.0 -> emit 3, keep ~0.7
+        assert!((a.acc - 0.7).abs() < 1e-9);
+        assert_eq!(a.flush(), 0); // 0.7 < 1.0 -> nothing
+    }
+
+    #[test]
+    fn test_subpixel_multiple_accumulations() {
+        let mut a = SubPixelAccumulator::new(1.0, 1e9);
+        // Multiple small accumulations below threshold individually
+        assert_eq!(a.add(0.3), 0);
+        assert_eq!(a.add(0.3), 0);
+        assert_eq!(a.add(0.3), 0); // total 0.9, still < 1
+        assert_eq!(a.add(0.2), 1); // total 1.1, emit 1
+        // Now add more small bits
+        assert_eq!(a.add(0.4), 0);
+        assert_eq!(a.add(0.4), 0);
+        assert_eq!(a.add(0.4), 1); // 0.2 + 1.2 = 1.4 -> emit 1, keep 0.4
+    }
 }

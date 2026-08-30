@@ -125,6 +125,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
     let is_diag;
     let is_report;
     let is_manifest;
+    let is_sw;
     loop {
         match stream.read(&mut tmp) {
             Ok(0) => return,
@@ -160,6 +161,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                     is_diag = req_path == "/diag";
                     is_report = req_path.starts_with("/report");
                     is_manifest = req_path == "/manifest.json";
+                    is_sw = req_path == "/sw.js";
                     break;
                 }
                 if buf.len() > 16384 {
@@ -204,6 +206,8 @@ dbg_log(&format!("remote: ws handshake OK from {ip}"));
         );
     } else if is_manifest {
         serve_manifest(&mut stream);
+    } else if is_sw {
+        serve_sw(&mut stream);
     } else {
         serve_page(&mut stream);
     }
@@ -545,6 +549,23 @@ fn serve_manifest(stream: &mut TcpStream) {
         "HTTP/1.1 200 OK\r\n\
          Content-Type: application/manifest+json; charset=utf-8\r\n\
          Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+}
+
+static SW_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sw.js"));
+
+fn serve_sw(stream: &mut TcpStream) {
+    let body = SW_JS.as_bytes();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/javascript; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Cache-Control: no-cache\r\n\
          Connection: close\r\n\
          \r\n",
         body.len()

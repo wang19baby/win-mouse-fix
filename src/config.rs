@@ -870,4 +870,83 @@ enabled = false
             "at least 2 advanced remaps expected (Shift+scroll, Ctrl+scroll)");
     }
 
+    #[test]
+    fn touch_config_explicit_values() {
+        let doc = r#"
+gain = 8.0
+accel_ref = 15.0
+accel_slope = 12.0
+accel_max_mult = 3.0
+move_ema = 0.4
+scroll_gain = 6.0
+tap_ms = 250
+tap_px = 12.0
+swipe_px = 50.0
+decide_px = 14.0
+pinch_bias = 2.0
+diag_min = 25.0
+diag_ratio = 1.8
+longpress_ms = 450
+"#;
+        let cfg: TouchConfig = toml::from_str(doc).unwrap();
+        assert!((cfg.gain - 8.0).abs() < 1e-9);
+        assert!((cfg.accel_ref - 15.0).abs() < 1e-9);
+        assert!((cfg.accel_slope - 12.0).abs() < 1e-9);
+        assert!((cfg.accel_max_mult - 3.0).abs() < 1e-9);
+        assert!((cfg.move_ema - 0.4).abs() < 1e-9);
+        assert!((cfg.scroll_gain - 6.0).abs() < 1e-9);
+        assert_eq!(cfg.tap_ms, 250);
+        assert!((cfg.tap_px - 12.0).abs() < 1e-9);
+        assert!((cfg.swipe_px - 50.0).abs() < 1e-9);
+        assert!((cfg.decide_px - 14.0).abs() < 1e-9);
+        assert!((cfg.pinch_bias - 2.0).abs() < 1e-9);
+        assert!((cfg.diag_min - 25.0).abs() < 1e-9);
+        assert!((cfg.diag_ratio - 1.8).abs() < 1e-9);
+        assert_eq!(cfg.longpress_ms, 450);
+    }
+
+    #[test]
+    fn touch_config_defaults_when_missing() {
+        // An empty document must parse successfully, producing defaults
+        // for every field — critical for users upgrading from older configs.
+        let doc = "";
+        let cfg: TouchConfig = toml::from_str(doc).unwrap();
+        let d = TouchConfig::default();
+        assert!((cfg.gain - d.gain).abs() < 1e-9);
+        assert!((cfg.accel_ref - d.accel_ref).abs() < 1e-9);
+        assert!((cfg.accel_slope - d.accel_slope).abs() < 1e-9);
+        assert!((cfg.accel_max_mult - d.accel_max_mult).abs() < 1e-9);
+        assert!((cfg.move_ema - d.move_ema).abs() < 1e-9);
+        assert!((cfg.scroll_gain - d.scroll_gain).abs() < 1e-9);
+        assert_eq!(cfg.tap_ms, d.tap_ms);
+        assert!((cfg.tap_px - d.tap_px).abs() < 1e-9);
+        assert!((cfg.swipe_px - d.swipe_px).abs() < 1e-9);
+        assert!((cfg.decide_px - d.decide_px).abs() < 1e-9);
+        assert!((cfg.pinch_bias - d.pinch_bias).abs() < 1e-9);
+        assert!((cfg.diag_min - d.diag_min).abs() < 1e-9);
+        assert!((cfg.diag_ratio - d.diag_ratio).abs() < 1e-9);
+        assert_eq!(cfg.longpress_ms, d.longpress_ms);
+    }
+
+    #[test]
+    fn touch_config_partial_override_with_defaults() {
+        // User sets only new fields; existing fields keep their defaults.
+        let doc = r#"
+decide_px = 20.0
+pinch_bias = 3.0
+diag_min = 30.0
+diag_ratio = 2.0
+longpress_ms = 600
+"#;
+        let cfg: TouchConfig = toml::from_str(doc).unwrap();
+        assert!((cfg.decide_px - 20.0).abs() < 1e-9);
+        assert!((cfg.pinch_bias - 3.0).abs() < 1e-9);
+        assert!((cfg.diag_min - 30.0).abs() < 1e-9);
+        assert!((cfg.diag_ratio - 2.0).abs() < 1e-9);
+        assert_eq!(cfg.longpress_ms, 600);
+        // Untouched fields remain at defaults
+        assert!((cfg.gain - default_touch_gain()).abs() < 1e-9);
+        assert_eq!(cfg.tap_ms, default_touch_tap_ms());
+    }
+
 }

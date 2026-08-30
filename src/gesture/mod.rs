@@ -224,4 +224,32 @@ mod tests {
             DragScrollRefine { horizontal_only: true, precision: true }
         );
     }
+
+    #[test]
+    fn test_drag_scroll_refine_shift_only() {
+        let r = drag_scroll_refine(true, false);
+        assert!(r.horizontal_only);
+        assert!(!r.precision);
+    }
+
+    #[test]
+    fn test_drag_scroll_refine_ctrl_only() {
+        let r = drag_scroll_refine(false, true);
+        assert!(!r.horizontal_only);
+        assert!(r.precision);
+    }
+
+    #[test]
+    fn test_drag_scroll_refine_both() {
+        let r = drag_scroll_refine(true, true);
+        assert!(r.horizontal_only);
+        assert!(r.precision);
+    }
+
+    #[test]
+    fn test_drag_scroll_refine_neither() {
+        let r = drag_scroll_refine(false, false);
+        assert!(!r.horizontal_only);
+        assert!(!r.precision);
+    }
 }
