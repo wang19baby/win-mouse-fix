@@ -1,8 +1,6 @@
-//! Logitech HID++ device layer (Phase 8).
+//! Logitech device layer (Phase 8).
 //!
-//! Minimal closed loop: enumerate Logitech HID devices → resolve the battery
-//! feature index via the ROOT feature → read battery level. Live I/O requires
-//! a connected device; the protocol module (`hidpp`) is unit-tested headlessly.
+//! Battery reading uses G Hub WebSocket API (auto-starts G Hub if needed).
 pub mod hidpp;
 pub mod enumerate;
 pub mod battery;
@@ -11,35 +9,21 @@ pub mod dpi;
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_OK, MB_ICONINFORMATION};
 
-/// Enumerate connected Logitech devices and log each one's battery level.
-/// Also shows a MessageBox with a summary for user-visible feedback.
+/// Read battery via G Hub WebSocket and show a MessageBox summary.
 pub fn log_battery_status() {
-    let devices = enumerate::enumerate_logitech();
-    if devices.is_empty() {
-        crate::log::write("battery: no Logitech HID devices found");
-        show_battery_msg("未检测到罗技设备");
-        return;
-    }
-    let mut lines = Vec::new();
-    for d in &devices {
-        let mut found = false;
-        for &idx in &[0x01u8, 0xFF] {
-            if let Some((level, charging)) = battery::read_battery_hidpp(&d.path, idx) {
-                lines.push(format!(
-                    "{} (pid={:04X}): {}%{}",
-                    d.path, d.pid, level,
-                    if charging { " 充电中" } else { "" },
-                ));
-                crate::log::write(&format!("battery: pid={:04X} idx=0x{:02X} → {}%{}", d.pid, idx, level, if charging { " charging" } else { "" }));
-                found = true;
-                break;
-            }
+    match crate::device::battery::read_first_battery() {
+        Some(info) => {
+            let msg = format!(
+                "鼠标电量: {}%{}",
+                info.percent,
+                if info.charging { "（充电中）" } else { "" }
+            );
+            show_battery_msg(&msg);
         }
-        if !found {
-            lines.push(format!("{} (pid={:04X}): 无法读取", d.path, d.pid));
+        None => {
+            show_battery_msg("无法读取鼠标电量\n请确保 G Hub 已安装并正在运行");
         }
     }
-    show_battery_msg(&lines.join("\n"));
 }
 
 fn show_battery_msg(text: &str) {
