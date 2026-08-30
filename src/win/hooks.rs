@@ -318,9 +318,11 @@ pub fn send_remote_text(text: &str) {
 ///   "snap_up"     -> Win+Up       (maximize)
 ///   "snap_down"   -> Win+Down     (restore/minimize)
 pub fn send_remote_gesture(g: &str) {
-    // 4-finger diagonal corner snaps = two sequential Win+Arrow chords
-    // (e.g. up-left = Win+Left then Win+Up -> quarter window at top-left).
+    // Long-press drag: simulate left button hold for window dragging
     match g {
+        "longpress_drag" => { send_fake_drag_button_down(MouseButton::Left); return; }
+        "longpress_end" => { send_fake_drag_button_up(MouseButton::Left); return; }
+        // 4-finger diagonal corner snaps = two sequential Win+Arrow chords
         "snap_up_l"   => { send_remote_gesture("snap_l"); send_remote_gesture("snap_up"); return; }
         "snap_up_r"   => { send_remote_gesture("snap_r"); send_remote_gesture("snap_up"); return; }
         "snap_down_l" => { send_remote_gesture("snap_l"); send_remote_gesture("snap_down"); return; }

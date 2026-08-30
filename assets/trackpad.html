@@ -63,15 +63,16 @@
   var SCROLL_GAIN = 5.5;    // 滚动像素 -> 轮子单位（调高 = 更快、更跟手）
   var TAP_MS = 220, TAP_PX = 10;
   var SWIPE_PX = 45;        // 三/四指滑动触发距离（质心位移）
-  var DIAG_MIN = 22;        // 判定斜向时，两个方向都需超过此位移
-  var DIAG_RATIO = 1.8;     // 某方向超过另一方向 DIAG_RATIO 倍则视为正方向（非斜向）
+  var DIAG_MIN = 20;        // 判定斜向时，两个方向都需超过此位移
+  var DIAG_RATIO = 1.6;     // 某方向超过另一方向 DIAG_RATIO 倍则视为正方向（非斜向）
   var SETTLE_MS = 120;      // 手指落下后等待稳定，再锁定指数量
   var COMMIT_EARLY_PX = 10; // 或位移超过此值立即锁定（更跟手）
   var ZOOM_STEP_PX = 30;    // 捏合每变化这么多 px 触发一档缩放（更大=更不易误触）
   var ZOOM_DELTA = 100;     // 每档缩放强度（轮子单位）
   // 双指时区分"滚动"与"缩放"：累计两种信号，谁占优就锁定谁，避免滚动被误判成缩放。
-  var DECIDE_PX = 16;       // 累计位移超过此值才判定手势类型（防抖）
-  var PINCH_BIAS = 1.3;     // 缩放信号需明显强于滚动才会被判为捏合
+  var DECIDE_PX = 12;       // 累计位移超过此值才判定手势类型（防抖）
+  var PINCH_BIAS = 1.5;     // 缩放信号需明显强于滚动才会被判为捏合
+  var LONGPRESS_MS = 400;   // 长按触发窗口拖拽的时长（ms）
 
   var params = new URLSearchParams(location.search);
   var token = params.get('t') || '';
@@ -135,6 +136,11 @@
           if(tc.tap_ms !== undefined) TAP_MS = tc.tap_ms;
           if(tc.tap_px !== undefined) TAP_PX = tc.tap_px;
           if(tc.swipe_px !== undefined) SWIPE_PX = tc.swipe_px;
+          if(tc.decide_px !== undefined) DECIDE_PX = tc.decide_px;
+          if(tc.pinch_bias !== undefined) PINCH_BIAS = tc.pinch_bias;
+          if(tc.diag_min !== undefined) DIAG_MIN = tc.diag_min;
+          if(tc.diag_ratio !== undefined) DIAG_RATIO = tc.diag_ratio;
+          if(tc.longpress_ms !== undefined) LONGPRESS_MS = tc.longpress_ms;
         }
       }
       else if(m.t === 'reject'){ statusEl.textContent = '认证失败'; showBanner('认证失败' + (m.reason ? ' ('+m.reason+')' : '') + ' · 请重新扫码'); stopReconnect = true; try { ws.close(); } catch(_){} }
@@ -157,6 +163,22 @@
   }
 
   function send(obj){ if(ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+  // Long-press drag: 1 finger held still for LONGPRESS_MS → window drag mode
+  function startLongpressTimer(){
+    if(!g || g.longpressTimer) return;
+    g.longpressTimer = setTimeout(function(){
+      if(g && g.committedCount === 1 && !g.anyMoved && !g.longpressFired){
+        g.longpressFired = true;
+        if(authed) send({t:'gesture', g:'longpress_drag'});
+        updateHud(1, '窗口拖拽');
+        ripple(g.startC.x, g.startC.y);
+      }
+    }, LONGPRESS_MS);
+  }
+  function cancelLongpressTimer(){
+    if(g && g.longpressTimer){ clearTimeout(g.longpressTimer); g.longpressTimer = null; }
+  }
 
   // Drive one relative move from a single pointer delta. The acceleration gain is
   // derived from a *smoothed* speed (EMA of per-event magnitude) so it changes
@@ -220,7 +242,10 @@
       // 双指滚动/缩放消歧
       scrollAccum: 0,
       pinchAccum: 0,
-      twoDecided: null
+      twoDecided: null,
+      // 长按拖拽
+      longpressTimer: null,
+      longpressFired: false
     };
     updateHud(list.length, '…');
   }
@@ -238,7 +263,7 @@
     pad.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, {x:e.clientX, y:e.clientY, startX:e.clientX, startY:e.clientY, startT:performance.now(), moved:false});
     var list = activePointers();
-    if(!g){ newGesture(list); }
+    if(!g){ newGesture(list); startLongpressTimer(); }
     else {
       // A new finger joined -> re-settle so the count is (re)locked correctly.
       g.maxCount = Math.max(g.maxCount, list.length);
@@ -246,6 +271,7 @@
       g.settleMove = 0;
       g.committed = false;
       g.scrollAccum = 0; g.pinchAccum = 0; g.twoDecided = null;
+      cancelLongpressTimer();
       updateHud(list.length, '…');
     }
     e.preventDefault();
@@ -256,7 +282,7 @@
     var dx = e.clientX - p.x, dy = e.clientY - p.y;
     p.x = e.clientX; p.y = e.clientY;
     if(Math.hypot(e.clientX - p.startX, e.clientY - p.startY) > TAP_PX) p.moved = true;
-    if(p.moved) g.anyMoved = true;
+    if(p.moved){ g.anyMoved = true; cancelLongpressTimer(); }
     var list = activePointers();
     if(!g || list.length === 0) return;
 
@@ -330,6 +356,7 @@
         }
         g.lastGesture = name;
         if(authed) send({t:'gesture', g:name});
+        ripple(g.startC.x, g.startC.y);
         updateHud(g.committedCount, '手势: ' + name);
       }
     }
@@ -342,6 +369,9 @@
     var list = activePointers();
 
     if(g){
+      cancelLongpressTimer();
+      // End longpress drag if it was active
+      if(g.longpressFired && authed){ send({t:'gesture', g:'longpress_end'}); }
       var count = g.committed ? g.committedCount : g.maxCount;
       var quick = (performance.now() - g.startT) < TAP_MS;
       // Tap = short, no real movement, no swipe fired, and all fingers lifted.

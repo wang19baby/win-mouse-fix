@@ -109,4 +109,9 @@ scroll_gain = 5.5      # Finger px → scroll wheel units
 tap_ms = 220           # Max duration for a tap gesture (ms)
 tap_px = 10.0          # Max displacement for a tap gesture (px)
 swipe_px = 45.0        # 3/4-finger swipe trigger distance (px)
+decide_px = 12.0       # Scroll vs pinch disambiguation threshold (px)
+pinch_bias = 1.5       # Pinch signal must exceed scroll * bias to be classified as pinch
+diag_min = 20.0        # Minimum displacement on both axes for diagonal detection (px)
+diag_ratio = 1.6       # Max ratio between axes for diagonal (higher = more strict)
+longpress_ms = 400     # Long-press duration to start window drag (ms)
 

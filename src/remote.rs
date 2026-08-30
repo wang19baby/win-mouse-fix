@@ -442,6 +442,11 @@ fn dispatch(
                         "tap_ms": touch.tap_ms,
                         "tap_px": touch.tap_px,
                         "swipe_px": touch.swipe_px,
+                        "decide_px": touch.decide_px,
+                        "pinch_bias": touch.pinch_bias,
+                        "diag_min": touch.diag_min,
+                        "diag_ratio": touch.diag_ratio,
+                        "longpress_ms": touch.longpress_ms,
                     }
                 }).to_string();
                 let _ = write_frame(stream, 0x1, status.as_bytes());

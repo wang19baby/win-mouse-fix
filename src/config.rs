@@ -375,6 +375,16 @@ pub struct TouchConfig {
     pub tap_px: f64,
     #[serde(default = "default_touch_swipe_px")]
     pub swipe_px: f64,
+    #[serde(default = "default_touch_decide_px")]
+    pub decide_px: f64,
+    #[serde(default = "default_touch_pinch_bias")]
+    pub pinch_bias: f64,
+    #[serde(default = "default_touch_diag_min")]
+    pub diag_min: f64,
+    #[serde(default = "default_touch_diag_ratio")]
+    pub diag_ratio: f64,
+    #[serde(default = "default_touch_longpress_ms")]
+    pub longpress_ms: u32,
 }
 
 fn default_touch_gain() -> f64 { 6.7 }
@@ -386,6 +396,11 @@ fn default_touch_scroll_gain() -> f64 { 5.5 }
 fn default_touch_tap_ms() -> u32 { 220 }
 fn default_touch_tap_px() -> f64 { 10.0 }
 fn default_touch_swipe_px() -> f64 { 45.0 }
+fn default_touch_decide_px() -> f64 { 12.0 }
+fn default_touch_pinch_bias() -> f64 { 1.5 }
+fn default_touch_diag_min() -> f64 { 20.0 }
+fn default_touch_diag_ratio() -> f64 { 1.6 }
+fn default_touch_longpress_ms() -> u32 { 400 }
 
 impl Default for TouchConfig {
     fn default() -> Self {
@@ -399,6 +414,11 @@ impl Default for TouchConfig {
             tap_ms: default_touch_tap_ms(),
             tap_px: default_touch_tap_px(),
             swipe_px: default_touch_swipe_px(),
+            decide_px: default_touch_decide_px(),
+            pinch_bias: default_touch_pinch_bias(),
+            diag_min: default_touch_diag_min(),
+            diag_ratio: default_touch_diag_ratio(),
+            longpress_ms: default_touch_longpress_ms(),
         }
     }
 }
