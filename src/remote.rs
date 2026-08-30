@@ -497,6 +497,13 @@ fn dispatch(
                 crate::win::hooks::send_remote_gesture(g);
             }
         }
+        "key" => {
+            if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
+                if !text.is_empty() {
+                    crate::win::hooks::send_remote_text(text);
+                }
+            }
+        }
         _ => {}
     }
     Ok(())

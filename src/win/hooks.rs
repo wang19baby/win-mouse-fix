@@ -7,7 +7,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     XBUTTON2, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_HWHEEL,
+    INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+    MOUSEEVENTF_HWHEEL,
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
     MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
     MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput,
@@ -250,6 +251,51 @@ pub fn send_remote_click(right: bool) {
                 dwExtraInfo: 0,
             };
             SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+}
+
+/// Inject a text string into the focused window via Unicode keyboard events.
+/// Each character is sent as a KEYDOWN + KEYUP pair with `KEYEVENTF_UNICODE`.
+/// Works with all input fields regardless of keyboard layout, and supports
+/// CJK, emoji, and other Unicode characters from phone IME / voice input.
+pub fn send_remote_text(text: &str) {
+    unsafe {
+        let mut events: Vec<INPUT> = Vec::with_capacity(text.len() * 2);
+        for ch in text.chars() {
+            let code = ch as u16;
+            if code == 0 { continue; }
+            let mut down = INPUT {
+                r#type: INPUT_KEYBOARD,
+                ..std::mem::zeroed()
+            };
+            down.Anonymous.ki = KEYBDINPUT {
+                wVk: 0,
+                wScan: code,
+                dwFlags: KEYEVENTF_UNICODE,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            events.push(down);
+            let mut up = INPUT {
+                r#type: INPUT_KEYBOARD,
+                ..std::mem::zeroed()
+            };
+            up.Anonymous.ki = KEYBDINPUT {
+                wVk: 0,
+                wScan: code,
+                dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            events.push(up);
+        }
+        if !events.is_empty() {
+            SendInput(
+                events.len() as u32,
+                events.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            );
         }
     }
 }
