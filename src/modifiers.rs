@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::LazyLock;
 use std::time::Instant;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_MENU, VK_SHIFT};
 
 pub const SHIFT: u8 = 1 << 0;
 pub const CTRL: u8 = 1 << 1;

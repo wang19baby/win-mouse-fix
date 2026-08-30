@@ -74,6 +74,7 @@ pub fn drag_stop_time(v0: f64, a: f64, b: f64, stop_speed: f64) -> f64 {
 #[derive(Debug, Clone)]
 pub struct BezierAccelCurve {
     /// Control points in sorted order by x.
+    #[allow(dead_code)]
     pts: Vec<(f64, f64)>,
     n: usize,
     x_min: f64,
@@ -81,6 +82,7 @@ pub struct BezierAccelCurve {
     y_min: f64,
     y_max: f64,
     /// Pre-line: y = b (horizontal), b = y0
+    #[allow(dead_code)]
     pre_b: f64,
     /// Post-line: y = a*(x - x_max) + y_max, a = exit_slope
     post_a: f64,
@@ -172,6 +174,7 @@ impl BezierAccelCurve {
     }
 
     /// Evaluate at speed → px/tick.
+    #[allow(dead_code)]
     pub fn evaluate(&self, speed: f64) -> f64 {
         self.eval(speed)
     }
@@ -341,6 +344,7 @@ pub struct DragCurveParams {
     pub a: f64,
     pub b: f64,
     pub c: f64,
+    #[allow(dead_code)]
     pub initial_speed: f64,
     pub stop_speed: f64,
 }
@@ -444,6 +448,7 @@ impl DragCurveParams {
 // ─── HybridCurve ─────────────────────────────────────────────────────────────
 
 /// Sub-curve enum returned by `sub_curve()`.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HybridSubCurve {
     /// Animation is in the base (gesture-driven) phase.
@@ -460,12 +465,14 @@ pub enum HybridSubCurve {
 #[derive(Debug, Clone)]
 pub struct HybridCurve {
     /// Fraction of total duration where base phase ends: transitionTime / totalDuration.
+    #[allow(dead_code)]
     base_end: f64,
     /// Fraction of total distance covered by base phase: transitionDistance / totalDistance.
     base_dist_end: f64,
     /// Total animation duration in seconds.
     total_duration: f64,
     /// Total scroll distance in wheel units.
+    #[allow(dead_code)]
     total_distance: f64,
     /// Drag parameters for the tail (None if transition speed <= stop_speed).
     drag: Option<DragCurveParams>,
@@ -474,6 +481,7 @@ pub struct HybridCurve {
     /// Transition time in seconds (base phase length).
     transition_time: f64,
     /// Transition distance in wheel units.
+    #[allow(dead_code)]
     transition_distance: f64,
 }
 
@@ -542,16 +550,19 @@ impl HybridCurve {
     }
 
     /// Total scroll distance in wheel units.
+    #[allow(dead_code)]
     pub fn total_distance(&self) -> f64 {
         self.total_distance
     }
 
     /// Transition time in seconds.
+    #[allow(dead_code)]
     pub fn transition_time(&self) -> f64 {
         self.transition_time
     }
 
     /// Base end fraction (transition_time / total_duration).
+    #[allow(dead_code)]
     pub fn base_end(&self) -> f64 {
         if self.total_duration > 0.0 {
             self.transition_time / self.total_duration
@@ -566,6 +577,7 @@ impl HybridCurve {
     /// the base phase the remaining magnitude is the base phase total times the
     /// fraction of the base phase not yet consumed. Returns `0.0` once the drag
     /// phase has taken over.
+    #[allow(dead_code)]
     pub fn base_phase_distance_remaining(&self, t: f64) -> f64 {
         let base_end_t = if self.total_duration > 0.0 {
             self.transition_time / self.total_duration
@@ -593,6 +605,7 @@ impl HybridCurve {
     /// Total scroll distance remaining at normalized time `t` (both phases combined).
     /// During the drag phase the drag portion is accounted for via the accumulated
     /// fraction: `(1 − evaluate(t)) * total_distance`.
+    #[allow(dead_code)]
     pub fn distance_remaining(&self, t: f64) -> f64 {
         (1.0 - self.evaluate(t).clamp(0.0, 1.0)) * self.total_distance
     }
@@ -656,6 +669,7 @@ impl HybridCurve {
     }
 
     /// Which sub-curve is active at normalized time t.
+    #[allow(dead_code)]
     pub fn sub_curve(&self, t: f64) -> HybridSubCurve {
         let base_end_t = if self.total_duration > 0.0 {
             self.transition_time / self.total_duration
@@ -670,6 +684,7 @@ impl HybridCurve {
     }
 
     /// True for the base (gesture-driven) phase.
+    #[allow(dead_code)]
     pub fn is_gesture_phase(&self, t: f64) -> bool {
         self.sub_curve(t) == HybridSubCurve::Base
     }

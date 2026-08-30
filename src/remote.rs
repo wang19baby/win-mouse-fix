@@ -6,7 +6,7 @@
 //! no SSE (status rides the same socket). LAN-only; bound to a specific NIC IP.
 
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -18,6 +18,7 @@ use qrcode::{Color, QrCode};
 #[derive(Clone)]
 pub struct RemoteInfo {
     pub url: String,
+    #[allow(dead_code)]
     pub token: String,
 }
 
@@ -119,11 +120,11 @@ fn handle_conn(mut stream: TcpStream, token: String) {
     let mut ws_ext = String::new();
 
 
-    let mut is_ws = false;
-    let mut is_qr = false;
-    let mut is_diag = false;
-    let mut is_report = false;
-    let mut is_manifest = false;
+    let is_ws;
+    let is_qr;
+    let is_diag;
+    let is_report;
+    let is_manifest;
     loop {
         match stream.read(&mut tmp) {
             Ok(0) => return,

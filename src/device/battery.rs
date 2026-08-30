@@ -154,6 +154,7 @@ pub fn read_first_battery() -> Option<BatteryInfo> {
 
 /// Read device list from G Hub WebSocket.
 /// Returns JSON array of device info objects.
+#[allow(dead_code)]
 pub fn read_device_list() -> Option<Vec<serde_json::Value>> {
     if !ensure_lghub_running() {
         return None;

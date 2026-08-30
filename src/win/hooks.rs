@@ -1,7 +1,7 @@
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, KillTimer, MSLLHOOKSTRUCT, MSG, SetTimer,
-    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    CallNextHookEx, KillTimer, MSLLHOOKSTRUCT, SetTimer,
+    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_RBUTTONDOWN,
     WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
     XBUTTON2, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use std::sync::mpsc::Sender;
 use parking_lot::{Mutex, RwLock};
 use crate::scroll::engine::WheelInput;
-use crate::remap::{MouseButton, SimpleRemapTable, ButtonAction, RemapEngine, ClickCycleTracker, ActiveModifiers, Trigger, Effect, ModifiedScrollModification, ModifiedDragType};
+use crate::remap::{MouseButton, SimpleRemapTable, RemapEngine, ClickCycleTracker, ActiveModifiers, Effect, ModifiedScrollModification, ModifiedDragType};
 
 /// Sender to the injector thread. `None` when scroll is disabled or smooth is off.
 /// Wrapped in a `Mutex` for shared access from the hook procedure.

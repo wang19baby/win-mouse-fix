@@ -53,11 +53,14 @@ pub struct ScrollAxis {
     /// Fast-scroll multiplier curve: swipe count → speed factor.
     speedup_curve: ScrollSpeedupCurve,
     /// Acceleration end interval (seconds) — time below which the curve saturates.
+    #[allow(dead_code)]
     accel_end: f64,
     /// Max tick interval (seconds) — time above which a new swipe begins.
+    #[allow(dead_code)]
     tick_max: f64,
     /// Base animation duration (ms). -1.0 means use baseMsPerStepCurve lookup.
     /// Mirrors Mac `baseMsPerStep`.
+    #[allow(dead_code)]
     base_ms_per_step: f64,
 }
 
@@ -198,6 +201,7 @@ impl ScrollAxis {
     }
 
     /// Signed velocity (positive = forward/down, negative = backward/up).
+    #[allow(dead_code)]
     pub fn signed_speed(&self) -> f64 {
         self.velocity
     }
@@ -237,6 +241,7 @@ impl ScrollAxis {
     }
 
     /// Base animation duration (ms), or -1 if using the baseMsPerStepCurve lookup.
+    #[allow(dead_code)]
     pub fn config_base_ms_per_step(&self) -> f64 {
         self.base_ms_per_step
     }
@@ -261,6 +266,7 @@ impl ScrollAxis {
     }
 
     /// Whether a scroll is currently in progress.
+    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.active
     }
@@ -282,6 +288,7 @@ impl ScrollAxis {
 /// `baseDistanceLeftWithDistanceLeft`), not the full-hybrid remaining. This
 /// ensures subpixel carry-over during the base phase is accurate to Mac's
 /// behavior. If `curve` is `None` (animation not started) returns `0.0`.
+#[allow(dead_code)]
 pub fn base_carry_over_distance(
     animating: bool,
     _prev_total_dist: f64,
@@ -299,6 +306,7 @@ pub fn base_carry_over_distance(
 
 /// Fallback carry-over using the simple fraction-based approach.
 /// Used when no HybridCurve is available (e.g. horizontal axis before curve init).
+#[allow(dead_code)]
 pub fn carry_over_distance(animating: bool, last_frac: f64, prev_total_dist: f64) -> f64 {
     if animating {
         (1.0 - last_frac) * prev_total_dist

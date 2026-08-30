@@ -201,6 +201,7 @@ pub enum ActionPhase {
 // ─── Runtime button tracking ─────────────────────────────────────────────────
 
 struct ClickState {
+    #[allow(dead_code)]
     button: MouseButton,
     down_at: Instant,
     click_count: u8,
@@ -211,6 +212,7 @@ struct ClickState {
 
 impl ClickState {
     /// Marks this click state as a modifier (button held → acts as modifier key).
+    #[allow(dead_code)]
     fn set_modifier(&mut self) {
         // A button used as modifier doesn't expire via level timers;
         // it stays active until released.
@@ -276,6 +278,7 @@ impl ClickCycleTracker {
 
     /// Marks a button as a held modifier (e.g., right-click held = acts as Ctrl).
     /// When set, the button's max_level becomes 0 and it stays active indefinitely.
+    #[allow(dead_code)]
     pub fn set_modifier(&mut self, button: MouseButton) {
         if let Some(state) = self.active.get_mut(&button) {
             state.set_modifier();
@@ -283,6 +286,7 @@ impl ClickCycleTracker {
     }
 
     /// Returns true if `button` is currently held as a modifier.
+    #[allow(dead_code)]
     pub fn is_modifier_button(&self, button: MouseButton) -> bool {
         self.active.get(&button).map(|s| s.is_modifier()).unwrap_or(false)
     }
@@ -370,10 +374,12 @@ impl ClickCycleTracker {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_active(&self, button: MouseButton) -> bool {
         self.active.contains_key(&button)
     }
 
+    #[allow(dead_code)]
     pub fn on_release(&mut self, button: MouseButton, cb: impl FnOnce() + Send + 'static) {
         self.release_callbacks
             .lock()
@@ -386,6 +392,7 @@ impl ClickCycleTracker {
         self.active.len()
     }
 
+    #[allow(dead_code)]
     pub fn expire_all(&mut self) {
         self.active.clear();
         self.release_callbacks.lock().clear();

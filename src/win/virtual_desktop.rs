@@ -27,6 +27,7 @@ const IID_VD_INTERNAL: GUID = GUID {
 // ─── Raw COM vtable ─────────────────────────────────────────────────────────
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct IVDInternalVtbl {
     QueryInterface: usize,
     AddRef: usize,
@@ -37,10 +38,12 @@ struct IVDInternalVtbl {
 }
 
 #[repr(C)]
+#[allow(non_snake_case)]
 struct IVirtualDesktopManagerInternal {
     lpVtbl: *const IVDInternalVtbl,
 }
 
+#[allow(non_snake_case)]
 impl IVirtualDesktopManagerInternal {
     unsafe fn GetCurrentDesktopIndex(&self, idx: *mut u32) -> i32 {
         let fn_ptr = (*self.lpVtbl).GetCurrentDesktopIndex;

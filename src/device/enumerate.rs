@@ -47,7 +47,9 @@ const GUID_DEVINTERFACE_MOUSE: GUID = GUID {
 pub struct HidDeviceInfo {
     pub path: String,
     pub vid: u16,
+    #[allow(dead_code)]
     pub pid: u16,
+    #[allow(dead_code)]
     pub serial: Option<String>,
 }
 

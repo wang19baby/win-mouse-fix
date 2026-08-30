@@ -3,7 +3,7 @@
 //!
 //! Mirrors mac-mouse-fix's `RemapSwizzler.swift` + `RemapsAnalyzer.swift`.
 
-use super::{ActiveModifiers, ClickDuration, Effect, MouseButton, ModifierCondition, RemapEntry, RemapTable, Trigger, ActionPhase};
+use super::{ActiveModifiers, ClickDuration, Effect, MouseButton, RemapEntry, RemapTable, Trigger, ActionPhase};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 
@@ -16,6 +16,7 @@ pub struct RemapEngine {
     /// Cache: (keyboard_mask << 16 | button_bits) → Vec<Effect> for Trigger::Scroll.
     scroll_cache: Mutex<HashMap<u64, Vec<Effect>>>,
     /// Cache: same key → Vec<Effect> for Trigger::Drag.
+    #[allow(dead_code)]
     drag_cache: Mutex<HashMap<u64, Vec<Effect>>>,
 }
 
@@ -26,6 +27,7 @@ impl RemapEngine {
     }
 
     /// Reload with new entries.
+    #[allow(dead_code)]
     pub fn reload(&mut self, entries: Vec<RemapEntry>) {
         self.table = RemapTable::from_entries(&entries);
         self.entries = entries;
@@ -61,6 +63,7 @@ impl RemapEngine {
     }
 
     /// Resolve effects for a drag event.
+    #[allow(dead_code)]
     pub fn resolve_drag_effects(&self, active_mods: &ActiveModifiers) -> Vec<Effect> {
         let key = Self::modifier_cache_key(active_mods);
         if let Some(cached) = self.drag_cache.lock().get(&key) {
@@ -138,11 +141,13 @@ impl RemapEngine {
     }
 
     /// Returns true if any entry modifies scroll.
+    #[allow(dead_code)]
     pub fn modifies_scroll(&self) -> bool {
         self.entries.iter().any(|e| matches!(e.trigger, Trigger::Scroll))
     }
 
     /// Returns true if any entry modifies pointing.
+    #[allow(dead_code)]
     pub fn modifies_pointing(&self) -> bool {
         self.entries.iter().any(|e| matches!(e.trigger, Trigger::Drag))
     }

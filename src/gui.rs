@@ -14,11 +14,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     LoadCursorW, RegisterClassExW, ShowWindow,
     WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSEXW,
     WS_CAPTION, WS_CHILD, WS_SYSMENU, WS_VISIBLE,
-    WS_TABSTOP, WS_GROUP, WS_VSCROLL,
+    WS_TABSTOP, WS_GROUP,
     MessageBoxW, PostQuitMessage, IDC_ARROW,
     SendDlgItemMessageW, GetDlgItem, SetWindowTextW, GetWindowTextW,
     LB_ADDSTRING, LB_DELETESTRING, LB_GETCURSEL, LB_SETCURSEL,
-    LBS_HASSTRINGS, LBS_NOTIFY, EN_CHANGE,
 };
 
 // ─── Control IDs (every control has a unique ID) ───────────────────────────
@@ -322,7 +321,7 @@ unsafe fn create_listbox(p: isize, h: isize, id: usize, x: i32, y: i32, w: i32, 
 
 /// Populate the ListBox with formatted remap entries.
 unsafe fn populate_remap_list(hwnd: isize) {
-    let hlist = match getDlgItem(hwnd, IDC_LST_REMAPS) { Some(h) => h, None => return };
+    let _hlist = match getDlgItem(hwnd, IDC_LST_REMAPS) { Some(h) => h, None => return };
     // Clear existing items.
     while SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_DELETESTRING, 0, 0) > 0 {}
     let cfg = crate::CONFIG.read();
@@ -459,6 +458,7 @@ unsafe fn get_edit_text(hwnd: isize, id: usize) -> String {
     let len = GetWindowTextW(h, buf.as_mut_ptr(), 128);
     String::from_utf16_lossy(&buf[..len as usize])
 }
+#[allow(non_snake_case)]
 unsafe fn getDlgItem(hwnd: isize, id: usize) -> Option<isize> {
     let h = GetDlgItem(hwnd, id as i32);
     if h != 0 { Some(h) } else { None }
@@ -532,7 +532,9 @@ const IDC_LST_PROFILES: usize = 5001;
 const IDC_EDT_EXE: usize = 5002;
 const IDC_BTN_ADD: usize = 5003;
 const IDC_BTN_DEL: usize = 5004;
+#[allow(non_upper_case_globals)]
 const IDCProfiles_OK: usize = 5005;
+#[allow(non_upper_case_globals)]
 const IDCProfiles_CANCEL: usize = 5006;
 
 /// Open the per-app profiles management dialog.
@@ -565,6 +567,7 @@ pub fn open_profiles(parent: isize) {
     }
 }
 
+#[allow(non_upper_case_globals)]
 unsafe extern "system" fn profiles_wnd_proc(
     hwnd: isize, msg: u32, wparam: usize, _lparam: isize,
 ) -> isize {
@@ -632,7 +635,7 @@ unsafe extern "system" fn profiles_wnd_proc(
 }
 
 unsafe fn populate_profile_list(hwnd: isize) {
-    let hlist = match getDlgItem(hwnd, IDC_LST_PROFILES) { Some(h) => h, None => return };
+    let _hlist = match getDlgItem(hwnd, IDC_LST_PROFILES) { Some(h) => h, None => return };
     while SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_DELETESTRING, 0, 0) > 0 {}
     let cfg = crate::CONFIG.read();
     for p in &cfg.profiles {

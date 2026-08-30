@@ -18,7 +18,6 @@ use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_RAW_DPI};
 use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use crate::device::enumerate;
 use crate::device::hidpp::{self, feature};
-use crate::CONFIG;
 use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 
 /// `GetDeviceCaps` index for vertical logical DPI (LOGPIXELSY). Not re-exported

@@ -8,8 +8,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use crate::config::Config;
 use crate::scroll::curve::{BezierAccelCurve, HybridCurve};
 use crate::scroll::subpixel::SubPixelAccumulator;
-use crate::scroll::wheel_tracker::{ScrollAnalysis, WheelTracker, TIME_BETWEEN_TICKS_NONE, TICK_INTERVAL_MAX};
-use crate::scroll::engine::{base_carry_over_distance, carry_over_distance, WheelInput};
+use crate::scroll::wheel_tracker::WheelTracker;
+use crate::scroll::engine::WheelInput;
 /// Tick cadence (~125 Hz = 8 ms).
 const TICK_MS: u64 = 8;
 /// Milliseconds after last tick before coast begins.
@@ -55,6 +55,7 @@ impl Coast2D {
     ///
     /// Public so PR-C tests can exercise the EMA behaviour without
     /// constructing a full `ScrollInjector`.
+    #[allow(dead_code)]
     pub fn update_direction_ema(
         prev: (f64, f64),
         dy: i32,
@@ -79,6 +80,7 @@ impl Coast2D {
     }
 
     /// Integrate a tick into `self.direction` using the EMA helper above.
+    #[allow(dead_code)]
     fn update_direction(&mut self, dy: i32, dx: i32) {
         self.direction = Self::update_direction_ema(self.direction, dy, dx);
     }

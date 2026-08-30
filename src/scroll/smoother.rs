@@ -138,6 +138,7 @@ impl DoubleExponentialSmoother {
     ///
     /// # Panics
     /// Panics if fewer than 2 values have been fed (insufficient state).
+    #[allow(dead_code)]
     pub fn predict(&self, steps: usize) -> f64 {
         assert!(
             self.usage_count >= 2,
@@ -150,12 +151,14 @@ impl DoubleExponentialSmoother {
     ///
     /// # Panics
     /// Panics if no values have been fed.
+    #[allow(dead_code)]
     pub fn last_smoothed(&self) -> f64 {
         assert!(self.usage_count >= 1, "last_smoothed() requires at least 1 value");
         self.Lprev
     }
 
     /// Whether `predict()` can be called (i.e. at least 2 values have been fed).
+    #[allow(dead_code)]
     pub fn can_predict(&self) -> bool {
         self.usage_count >= 2
     }

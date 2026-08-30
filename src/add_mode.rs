@@ -124,6 +124,7 @@ pub fn on_scroll_event(active_mods: &ActiveModifiers) -> bool {
 }
 
 /// Consume a drag event in add mode.
+#[allow(dead_code)]
 pub fn on_drag_event(active_mods: &ActiveModifiers) -> bool {
     if !is_active() {
         return false;

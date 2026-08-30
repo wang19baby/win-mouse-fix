@@ -7,16 +7,16 @@ use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, ShellExecuteW,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
-    DeleteDC, DeleteObject, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DrawTextW, EndPaint, FillRect,
-    GetDC, GetStockObject, HBRUSH, PAINTSTRUCT, ReleaseDC, SelectObject, SetBkMode,
-    SetTextColor, TRANSPARENT, WHITE_BRUSH, BLACK_BRUSH,
+    CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
+    DeleteDC, DeleteObject, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, FillRect,
+    GetDC, ReleaseDC, SelectObject, SetBkMode,
+    SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, CreateIconFromResourceEx,
-    CreateIconIndirect, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, GetClientRect,
+    CreateIconIndirect, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow,
     DrawIcon, GetCursorPos, GetSystemMetrics, ICONINFO, IDC_ARROW,
     IDI_APPLICATION, KillTimer, LoadCursorW, LoadIconW, MB_ICONINFORMATION, MB_OK,
     MessageBoxW, IDYES, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, PostQuitMessage,
@@ -25,10 +25,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_DESTROY, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_SYSMENU,
     WS_VISIBLE, MB_YESNO, MB_ICONQUESTION,
     BS_AUTORADIOBUTTON, WS_GROUP, WS_TABSTOP,
-    HWND_TOP, SetWindowPos, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-    GetDlgItem, PostMessageW, WM_CLOSE,
-    SendDlgItemMessageW, BM_SETCHECK, BM_GETCHECK,
-    GetMessageW, TranslateMessage, DispatchMessageW, MSG,
+    GetMessageW, TranslateMessage, DispatchMessageW,
+    SendDlgItemMessageW, BM_GETCHECK,
 };
 
 const BST_CHECKED: u32 = 0x0001;
@@ -52,6 +50,7 @@ const ID_DPI: usize = 1007;
 const ID_REMOTE: usize = 1008;
 const ID_SETTINGS: usize = 1009;
 const ID_PROFILES: usize = 1010;
+const ID_HELP: usize = 1011;
 static FW_DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const ID_TIMER_ADDMODE: usize = 3001;
@@ -263,7 +262,7 @@ pub fn create() -> Result<(), String> {
 
     /// Draw the battery percentage onto a copy of `base`, returning a new HICON.
     /// Falls back to `base` on any GDI failure (so the icon is never broken).
-    unsafe fn make_battery_icon(base: isize, percent: u8, low: bool) -> isize {
+    unsafe fn make_battery_icon(base: isize, percent: u8, _low: bool) -> isize {
         let size = GetSystemMetrics(SM_CXICON);
         if size <= 0 {
             return base;
@@ -441,6 +440,7 @@ unsafe fn show_menu(hwnd: isize) {
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_SETTINGS, to_wide("设置").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_PROFILES, to_wide("配置文件").as_ptr());
+    AppendMenuW(menu, MF_STRING, ID_HELP, to_wide("帮助").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_ABOUT, to_wide("关于").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_EXIT, to_wide("退出").as_ptr());
 
@@ -485,6 +485,9 @@ unsafe fn show_menu(hwnd: isize) {
         }
         ID_ABOUT => {
             show_about();
+        }
+        ID_HELP => {
+            show_help();
         }
         ID_SETTINGS => {
             crate::gui::open_settings(hwnd);
@@ -634,6 +637,46 @@ unsafe fn show_addmode_message(hwnd: isize, payload: &crate::add_mode::AddModePa
 }
 
 /// Interactive About box.
+fn show_help() {
+    let help_text = "\
+Win Mouse Fix 使用说明
+
+基本操作：
+• 滚轮：平滑滚动（可关闭）
+• 中键双击：切换虚拟桌面
+• 按键重映射：在「设置」中配置
+
+手机妙控板：
+1. 确保手机和电脑在同一局域网
+2. 扫描托盘二维码连接
+3. 手指在手机屏幕上滑动 = 移动光标
+4. 单指点击 = 左键，双指点击 = 右键
+5. 双指滑动 = 滚动
+6. 三指上滑 = 任务视图
+7. 点击 🎤 按钮可语音输入文字到 PC
+
+快捷手势：
+• 三指上滑：任务视图 (Win+Tab)
+• 四指下滑：显示桌面 (Win+D)
+• 三/四指左右滑：切换应用/虚拟桌面
+
+配置文件：
+• 右键托盘 → 设置 → 编辑 config.toml
+• 支持按应用自动切换配置
+
+问题反馈：
+• 日志文件：config.toml 同目录下的 win-mouse-fix.log
+• 崩溃日志：exe 同目录下的 crash.log";
+    unsafe {
+        MessageBoxW(
+            0,
+            to_wide(help_text).as_ptr(),
+            to_wide("Win Mouse Fix 帮助").as_ptr(),
+            0x00000040, // MB_OK | MB_ICONINFORMATION
+        );
+    }
+}
+
 fn show_about() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| unsafe {
@@ -727,7 +770,7 @@ unsafe extern "system" fn about_wnd_proc(
 
 /// Show a modal dialog letting the user choose which effect to assign to the
 /// captured trigger. Returns the selected `Effect`, or `None` on cancel.
-unsafe fn show_effect_dialog(payload: &crate::add_mode::AddModePayload) -> Option<crate::remap::Effect> {
+unsafe fn show_effect_dialog(_payload: &crate::add_mode::AddModePayload) -> Option<crate::remap::Effect> {
     // Register dialog class once.
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {

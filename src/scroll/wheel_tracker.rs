@@ -28,6 +28,7 @@ pub const TICK_INTERVAL_MIN: f64 = 0.001;
 pub const TICK_INTERVAL_MAX: f64 = 0.160;
 
 /// Time used to initialise the time smoother on the first tick of a swipe.
+#[allow(dead_code)]
 const SWIPE_INIT_INTERVAL: f64 = TICK_INTERVAL_MAX;
 
 // ─── Direction ────────────────────────────────────────────────────────────────
@@ -71,22 +72,27 @@ fn direction_changed(prev: Direction, curr: Direction) -> bool {
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollAnalysis {
     /// Number of consecutive ticks in the current swipe sequence.
+    #[allow(dead_code)]
     pub tick_count: u32,
     /// Number of fast-flick bursts detected in the current swipe sequence.
     /// Passed to [`ScrollSpeedupCurve`] to compute the fast-scroll multiplier.
     pub swipe_count: f64,
     /// Whether the scroll direction changed relative to the previous tick.
     /// When true the animator must cancel any in-progress animation.
+    #[allow(dead_code)]
     pub direction_changed: bool,
     /// Smoothed seconds between the previous tick and the current one.
     /// `TIME_BETWEEN_TICKS_NONE` (= f64::MAX) when this is the first tick
     /// of a swipe — the acceleration pipeline substitutes `interval_max`.
+    #[allow(dead_code)]
     pub time_between_ticks: f64,
     /// Raw (unsmoothed) time between ticks, unclipped.
     /// Mac: `DEBUG_timeBetweenTicksRaw = secondsSinceLastTick` — unclipped.
+    #[allow(dead_code)]
     pub time_between_ticks_raw: f64,
     /// Number of ticks accumulated in the current consecutive swipe sequence.
     /// Used to compute tick-speed for the `consecutiveScrollSwipeMinTickSpeed` gate.
+    #[allow(dead_code)]
     pub ticks_in_swipe_sequence: u32,
     /// True when this tick started a new swipe sequence (gap > TICK_INTERVAL_MAX).
     pub is_new_swipe: bool,
@@ -220,6 +226,7 @@ pub struct ScrollAnalyzer {
     /// sequence — i.e., when the gap since the last tick exceeds `TICK_INTERVAL_MAX`,
     /// OR when the direction has changed from the previous tick.
     /// Mirrors `ScrollAnalyzer.peekIsFirstConsecutiveTickWithTickOccuringAt:` (Mac line 98-113).
+    #[allow(dead_code)]
     pub fn peek_is_first_consecutive_tick(&self, now: Instant, direction: Direction) -> bool {
         // mac checks direction_changed FIRST (line 103)
         if direction_changed(self.last_dir, direction) {
@@ -332,6 +339,7 @@ pub struct ScrollAnalyzer {
     /// Returns the [`ScrollAnalysis`] from the most recent [`on_tick`] call.
     ///
     /// Returns `None` if no tick has been analyzed yet.
+    #[allow(dead_code)]
     pub fn last_analysis(&self) -> Option<ScrollAnalysis> {
         self.last_result
     }
@@ -341,6 +349,7 @@ pub struct ScrollAnalyzer {
     /// Mirrors the `_ticksInCurrentConsecutiveSwipeSequence` update in `ScrollAnalyzer.m`.
     ///
     /// Returns the updated `ticks_in_swipe_sequence` count.
+    #[allow(dead_code)]
     pub fn advance_swipe_sequence(&mut self) {
         self.ticks_in_swipe_sequence += 1;
     }
@@ -348,6 +357,7 @@ pub struct ScrollAnalyzer {
     /// Called when a swipe sequence completes (enough ticks, enough speed,
     /// within the max interval). Increments the swipe counter.
     /// Mirrors `consecutiveScrollSwipeCounter++` in `ScrollAnalyzer.m`.
+    #[allow(dead_code)]
     pub fn complete_swipe(&mut self) {
         self.swipe_counter += 1;
     }
@@ -365,11 +375,13 @@ pub struct ScrollAnalyzer {
     }
 
     /// Current swipe count (for reading by the acceleration pipeline).
+    #[allow(dead_code)]
     pub fn swipe_count(&self) -> u32 {
         self.swipe_counter
     }
 
     /// Current tick count within the swipe sequence.
+    #[allow(dead_code)]
     pub fn tick_count(&self) -> u32 {
         self.tick_counter
     }
@@ -491,11 +503,13 @@ impl WheelTracker {
     }
 
     /// Access the underlying [`ScrollAnalysis`] analyzer (mutable).
+    #[allow(dead_code)]
     pub fn analyzer_mut(&mut self) -> &mut ScrollAnalyzer {
         &mut self.analyzer
     }
 
     /// Access the underlying [`ScrollAnalysis`] analyzer (immutable).
+    #[allow(dead_code)]
     pub fn analyzer(&self) -> &ScrollAnalyzer {
         &self.analyzer
     }
@@ -513,27 +527,32 @@ impl WheelTracker {
     }
 
     /// Reset all internal state.
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.analyzer.reset();
         self.axis.reset();
     }
 
     /// Whether the axis is currently active (has momentum to emit).
+    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.axis.is_active()
     }
 
     /// Feed a raw wheel delta into the scroll axis (for velocity tracking).
+    #[allow(dead_code)]
     pub fn feed(&mut self, delta: i32, now: Instant) {
         self.axis.on_wheel(delta, now);
     }
 
     /// Advance the axis by one tick, returning the integer wheel delta to emit.
+    #[allow(dead_code)]
     pub fn tick(&mut self, now: Instant) -> i32 {
         self.axis.tick(now)
     }
 
     /// Add a value to the SubPixelAccumulator, returning the integer delta.
+    #[allow(dead_code)]
     pub fn subpixel_add(&mut self, value: f64) -> i32 {
         self.axis.subpixel_add(value)
     }
