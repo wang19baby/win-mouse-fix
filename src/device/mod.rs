@@ -22,21 +22,22 @@ pub fn log_battery_status() {
     }
     let mut lines = Vec::new();
     for d in &devices {
-        // Try both device indices for robustness.
-        let result = battery::read_battery(&d.path)
-            .or_else(|| battery::read_battery_with_index(&d.path, 0xFF));
-        let line = match result {
-            Some(s) if !s.level_invalid => {
-                format!(
+        let mut found = false;
+        for &idx in &[0x01u8, 0xFF] {
+            if let Some((level, charging)) = battery::read_battery_hidpp(&d.path, idx) {
+                lines.push(format!(
                     "{} (pid={:04X}): {}%{}",
-                    d.path, d.pid, s.level,
-                    if s.charging { " 充电中" } else { "" },
-                )
+                    d.path, d.pid, level,
+                    if charging { " 充电中" } else { "" },
+                ));
+                crate::log::write(&format!("battery: pid={:04X} idx=0x{:02X} → {}%{}", d.pid, idx, level, if charging { " charging" } else { "" }));
+                found = true;
+                break;
             }
-            _ => format!("{} (pid={:04X}): 无法读取", d.path, d.pid),
-        };
-        crate::log::write(&format!("battery: {line}"));
-        lines.push(line);
+        }
+        if !found {
+            lines.push(format!("{} (pid={:04X}): 无法读取", d.path, d.pid));
+        }
     }
     show_battery_msg(&lines.join("\n"));
 }
