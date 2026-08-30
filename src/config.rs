@@ -772,4 +772,28 @@ enabled = false
         assert_eq!(d.max_dpi, 4000);
     }
 
+    #[test]
+    fn source_config_toml_parses_and_has_sensible_defaults() {
+        // Validates the shipped config.toml is well-formed and sets the key
+        // features a new user expects out of the box.
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let path = std::path::Path::new(&manifest).join("config.toml");
+        let content = std::fs::read_to_string(&path)
+            .expect("config.toml must exist at project root");
+        let cfg: Config = toml::from_str(&content)
+            .expect("config.toml must parse without errors");
+
+        // Core features enabled
+        assert!(cfg.scroll.enabled, "smooth scroll must be on");
+        assert!(cfg.scroll.smooth, "smooth mode must be on");
+        assert!(cfg.buttons.enabled, "button remapping must be on");
+        assert!(cfg.buttons.window_switcher, "middle-click window switcher must be on");
+        assert!(cfg.drag.enabled, "drag gestures must be on");
+        assert!(cfg.accel.enabled, "pointer acceleration must be on");
+
+        // Advanced remaps present (Shift+scroll horizontal, Ctrl+scroll precision)
+        assert!(cfg.buttons.advanced.len() >= 2,
+            "at least 2 advanced remaps expected (Shift+scroll, Ctrl+scroll)");
+    }
+
 }

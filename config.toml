@@ -1,7 +1,7 @@
 [general]
 start_hidden = true
 # Optional rolling log file. Uncomment to capture output when run headless.
-log_path = "D:/work_space/personal_workspace/win-mouse-fix/win-mouse-fix.log"
+# log_path = "D:/work_space/personal_workspace/win-mouse-fix/win-mouse-fix.log"
 
 [scroll]
 enabled = true
@@ -15,31 +15,20 @@ drag_exponent = 1.05   # Drag exponent `b`. Higher = shorter coast.
 drag_coefficient = 15.0 # Drag coefficient `a`. Higher = faster decay.
 stop_speed = 30.0     # units/sec; below this scrolling stops (inertia end)
 step = 120            # Max wheel units per tick (subdivision cap for smoothness)
-# Shift-to-accelerate: hold Shift to scroll faster (MMF-style).
-shift_speedup = 1.0    # Speed multiplier when Shift is held; 1.0 = no change.
 
 # ── Shift nonlinear accelerator (PR-B) ──────────────────────────────────────
 # When shift_speedup_linear = false (default), Shift becomes a "throttle":
 # light tap → ~1× speed; sustained hold → up to the curve's y_max.
-# 8-element flat array = [x0,y0, x1,y1, x2,y2, x3,y3]. x in [0,1] is normalised
-# hold time; y is the scroll speed multiplier. x must be monotonically increasing.
 shift_speedup_curve = [0.0, 1.0, 0.25, 1.8, 0.7, 4.0, 1.0, 6.0]
 shift_speedup_max_hold = 0.6   # seconds to reach the curve's right endpoint (x=1)
-shift_speedup_linear = false   # true ⇒ ignore curve; use scalar `shift_speedup` above
+shift_speedup_linear = false   # true ⇒ ignore curve; use scalar shift_speedup
 
 # ── Tick interval clamping ─────────────────────────────────────────────────
-# Ticks faster than tick_interval_min or slower than tick_interval_max
-# are clamped to the boundary rather than rejected.
 tick_interval_min = 0.001    # seconds; prevents acceleration overflow on fast wheels
 tick_interval_max = 0.160    # seconds; gap > this starts a new swipe
 
 # ── Acceleration curve ────────────────────────────────────────────────────
-# Tick interval (seconds) at which the BezierAccelCurve saturates.
-# Below this interval, the curve is in the pre-line (flat) region.
 tick_interval_accel_end = 0.015
-# BezierAccelCurve params: speed-in → multiplier-out curve (tick/s → px/tick).
-# x_min/x_max: input range (tick/s); y_min/y_max: output range (px/tick multiplier).
-# curvature: degree-1 of the bezier (higher = sharper saturation knee).
 accel_x_min = 6.25     # tick/s; below this, no acceleration
 accel_x_max = 66.667   # tick/s; above this, capped at y_max
 accel_y_min = 30.0     # px/tick; minimum multiplier at x_min
@@ -47,8 +36,6 @@ accel_y_max = 120.0    # px/tick; maximum multiplier at x_max
 accel_curvature = 3.0  # bezier degree-1; controls saturation shape
 
 # ── Fast-scroll speedup ────────────────────────────────────────────────────
-# Multi-burst swipe detection: after several quick swipe bursts, the
-# multiplier ramps up to make long fast scrolls easier.
 fast_scroll_threshold = 3
 fast_scroll_initial = 1.33   # multiplier at first ramp step
 fast_scroll_exponential = 7.5 # asymptotic multiplier ceiling
@@ -58,75 +45,39 @@ swipe_threshold_ticks = 2    # ticks in a burst before counting toward fast-scro
 swipe_max_ticks = 11          # max ticks per burst counted toward fast-scroll ramp
 
 # ── Base phase timing ──────────────────────────────────────────────────────
-# Duration of the base (gesture-driven) phase per wheel tick in milliseconds.
-# -1 means use the curve-derived duration; set a fixed value to override.
 base_ms_per_step = -1.0
 
 # ── Advanced: time & velocity smoothing ──────────────────────────────────
-# Exponential smoothing weight for time-between-ticks (WheelTracker).
-# Higher = more responsive/jittery; lower = smoother/more lag.
-# MMF default ~0.5.
 time_smoothing_weight = 0.5
-
-# Double-exponential smoother params for implied velocity.
-# Set both to 1.0 to disable velocity smoothing.
-# Lower values make the scroll speed react more sluggishly to changes.
 velocity_a = 1.0     # Data weight `a`. 1.0 = off, lower = smoother.
 velocity_y = 1.0     # Trend weight `y`. 1.0 = off, lower = smoother.
 
 [buttons]
 enabled = true
-# Middle-button window-switcher gesture: double-click middle → Alt+Tab held open,
-# wheel up/down navigates, middle again confirms. Single middle click is preserved
-# via delayed replay, so the plain middle-button function is unaffected.
 window_switcher = true
 
-# ── Legacy button remaps ───────────────────────────────────────────────────────
-# Simple source → target remapping. The source button event is consumed and
-# the target action is synthesized instead.
-# [[buttons.remaps]]
-# source = "right"          # Source button: left, right, middle, x1, x2
-# action = "button"         # Action type: "button", "key", or "disabled"
-# target = "left"           # Target button (for action = "button")
-# vk = 0x23                # Virtual key code (for action = "key")
+# ── Default remaps (edit to taste) ────────────────────────────────────────────
+# Shift+scroll → horizontal scroll
+[[buttons.advanced]]
+modifiers = { keyboard = 0x200 }
+trigger = { type = "scroll" }
+effect = { type = "modified_scroll", data = { modification = "horizontal" } }
 
-# ── Advanced button remaps ────────────────────────────────────────────────────
-# Trigger + Effect remapping with modifier support. The ClickCycleTracker
-# tracks click counts (1-click, 2-click, 3-click) and hold duration.
-# A "hold" action fires on button down; "click" fires on button up.
-#
-# Modifier flags (keyboard):  0x100 = Ctrl, 0x200 = Shift, 0x400 = Alt, 0x800 = Cmd
-# Modifier flags (buttons):   right = "button held as modifier" (use advanced.buttons)
-#
-# Example: Right-click single-click → Alt+Tab
-# [[buttons.advanced]]
-# trigger = { type = "button", button = "right", level = 1, duration = "click" }
-# effect = { type = "symbolic_hotkey", keycode = 0x23, flags = 0x800 }
-#
-# Example: Right-click double-click → forward navigation (Alt+→)
-# [[buttons.advanced]]
-# trigger = { type = "button", button = "right", level = 2, duration = "click" }
-# effect = { type = "navigation_swipe", direction = "forward" }
-#
-# Example: Right-click held → Ctrl (right-click acts as a modifier while held)
-# [[buttons.advanced]]
-# trigger = { type = "button", button = "right", level = 1, duration = "hold" }
-# effect = { type = "symbolic_hotkey", keycode = 0x11, flags = 0x100 }  # Ctrl
-#
-# Example: Ctrl+scroll → precision mode (cursor movement instead of scroll)
-# [[buttons.advanced]]
-# modifiers = { keyboard = 0x100 }  # Ctrl held
-# trigger = { type = "scroll" }
-# effect = { type = "modified_scroll", modification = "precision" }
-#
-# Example: Shift+scroll → horizontal scroll
-# [[buttons.advanced]]
-# modifiers = { keyboard = 0x200 }  # Shift held
-# trigger = { type = "scroll" }
-# effect = { type = "modified_scroll", modification = "horizontal" }
-#
-# Example: Three-finger swipe drag
-# [[buttons.advanced]]
-# trigger = { type = "drag" }
-# effect = { type = "modified_drag", drag_type = "three_finger_swipe" }
+# Ctrl+scroll → precision mode (cursor-centered zoom-like scrolling)
+[[buttons.advanced]]
+modifiers = { keyboard = 0x100 }
+trigger = { type = "scroll" }
+effect = { type = "modified_scroll", data = { modification = "precision" } }
+
+# Drag gestures enabled (left-click drag = move window / scroll / navigate)
+[drag]
+enabled = true
+button = "left"
+
+# Pointer acceleration (subtle; adjusts mouse sensitivity by movement speed)
+[accel]
+enabled = true
+sensitivity = 1000.0
+min_factor = 1.0
+max_factor = 2.0
 
