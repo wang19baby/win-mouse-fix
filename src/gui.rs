@@ -5,6 +5,10 @@
 
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Registry::{
+    RegOpenKeyExW, RegSetValueExW, RegDeleteValueW, RegCloseKey,
+    HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ, REG_SZ,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow,
     LoadCursorW, RegisterClassExW, ShowWindow,
@@ -31,6 +35,7 @@ const IDC_CHK_REMOTE: usize = 3002;
 const IDC_CHK_DPI_AUTO: usize = 3003;
 const IDC_LBL_DPI_BASE: usize = 3004;
 const IDC_EDT_DPI_BASE: usize = 3005;
+const IDC_CHK_AUTOSTART: usize = 3006;
 
 // Scroll tab (tab 1)
 const IDC_CHK_SMOOTH: usize = 3101;
@@ -65,6 +70,7 @@ const CTRL_TABLE: &[CtrlDef] = &[
     CtrlDef { id: IDC_CHK_DPI_AUTO,    tab: 0 },
     CtrlDef { id: IDC_LBL_DPI_BASE,    tab: 0 },
     CtrlDef { id: IDC_EDT_DPI_BASE,    tab: 0 },
+    CtrlDef { id: IDC_CHK_AUTOSTART,   tab: 0 },
     CtrlDef { id: IDC_CHK_SMOOTH,      tab: 1 },
     CtrlDef { id: IDC_LBL_DURATION,    tab: 1 },
     CtrlDef { id: IDC_EDT_DURATION,    tab: 1 },
@@ -162,6 +168,7 @@ unsafe extern "system" fn settings_wnd_proc(
             create_checkbox(hwnd, hmod, IDC_CHK_DPI_AUTO, "跨屏时自动调整鼠标 DPI", 30, 112);
             create_label(hwnd, hmod, IDC_LBL_DPI_BASE, "基准 DPI:", 30, 142);
             create_edit(hwnd, hmod, IDC_EDT_DPI_BASE, "800", 160, 139, 80);
+            create_checkbox(hwnd, hmod, IDC_CHK_AUTOSTART, "开机自动启动", 30, 170);
 
             // ── Scroll tab ──
             create_checkbox(hwnd, hmod, IDC_CHK_SMOOTH, "启用平滑滚动", 30, 56);
@@ -367,6 +374,7 @@ unsafe fn load_config_to_controls(hwnd: isize) {
     set_check(hwnd, IDC_CHK_REMOTE, cfg.remote.enabled);
     set_check(hwnd, IDC_CHK_DPI_AUTO, cfg.dpi.auto_switch);
     set_edit_text(hwnd, IDC_EDT_DPI_BASE, &cfg.dpi.base_dpi.to_string());
+    set_check(hwnd, IDC_CHK_AUTOSTART, is_autostart_enabled());
     set_check(hwnd, IDC_CHK_SMOOTH, cfg.scroll.smooth);
     set_edit_text(hwnd, IDC_EDT_DURATION, &cfg.scroll.speed.to_string());
     set_edit_text(hwnd, IDC_EDT_DISTANCE, &cfg.scroll.step.to_string());
@@ -383,6 +391,7 @@ unsafe fn save_config_from_controls(hwnd: isize) -> Result<(), String> {
         if let Ok(v) = get_edit_text(hwnd, IDC_EDT_DPI_BASE).parse::<u16>() {
             cfg.dpi.base_dpi = v;
         }
+        set_autostart(get_check(hwnd, IDC_CHK_AUTOSTART));
         cfg.scroll.smooth = get_check(hwnd, IDC_CHK_SMOOTH);
         if let Ok(v) = get_edit_text(hwnd, IDC_EDT_DURATION).parse::<f64>() {
             cfg.scroll.speed = v;
@@ -431,3 +440,57 @@ unsafe fn get_parent_hwnd(hwnd: isize) -> Option<isize> {
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
+
+// ─── Auto-start registry helpers ────────────────────────────────────────────
+
+const AUTOSTART_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const AUTOSTART_NAME: &str = "WinMouseFix";
+
+/// Check if the auto-start registry key is set.
+fn is_autostart_enabled() -> bool {
+    unsafe {
+        let mut key: isize = 0;
+        let wide_key = to_wide(AUTOSTART_KEY);
+        if RegOpenKeyExW(HKEY_CURRENT_USER, wide_key.as_ptr(), 0, KEY_READ, &mut key) != 0 {
+            return false;
+        }
+        let mut buf = [0u16; 260];
+        let mut buf_len = (buf.len() * 2) as u32;
+        let wide_name = to_wide(AUTOSTART_NAME);
+        let rc = RegQueryValueExW(key, wide_name.as_ptr(), null_mut(), null_mut(), buf.as_mut_ptr() as *mut u8, &mut buf_len);
+        RegCloseKey(key);
+        rc == 0 && buf_len > 0
+    }
+}
+
+/// Set or clear the auto-start registry key.
+fn set_autostart(enabled: bool) {
+    unsafe {
+        let mut key: isize = 0;
+        let wide_key = to_wide(AUTOSTART_KEY);
+        if RegOpenKeyExW(HKEY_CURRENT_USER, wide_key.as_ptr(), 0, KEY_ALL_ACCESS, &mut key) != 0 {
+            return;
+        }
+        let wide_name = to_wide(AUTOSTART_NAME);
+        if enabled {
+            // Get current exe path.
+            let mut exe_buf = [0u16; 260];
+            let len = windows_sys::Win32::System::LibraryLoader::GetModuleFileNameW(
+                0, exe_buf.as_mut_ptr(), 260,
+            );
+            if len == 0 { RegCloseKey(key); return; }
+            let exe_path = &exe_buf[..len as usize];
+            let data_len = (exe_len(exe_path) + 2) as u32; // +2 for null terminator bytes
+            RegSetValueExW(key, wide_name.as_ptr(), 0, REG_SZ, exe_path.as_ptr() as *const u8, data_len);
+        } else {
+            RegDeleteValueW(key, wide_name.as_ptr());
+        }
+        RegCloseKey(key);
+    }
+}
+
+fn exe_len(buf: &[u16]) -> usize {
+    buf.iter().position(|&c| c == 0).unwrap_or(buf.len()) * 2
+}
+
+use windows_sys::Win32::System::Registry::RegQueryValueExW;
