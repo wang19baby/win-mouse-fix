@@ -186,3 +186,81 @@ pub fn build_remap_entry(
         effect,
     }
 }
+
+/// Append a `RemapEntry` to `config.toml` as a new `[[buttons.advanced]]` section.
+/// Returns `Ok(())` on success, or an error message on failure.
+pub fn save_to_config(entry: &RemapEntry) -> Result<(), String> {
+    use crate::config::config_path;
+
+    let path = config_path();
+    let mut content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("读取 config.toml 失败: {e}"))?;
+
+    // Build TOML text for the new entry.
+    let trigger_str = match &entry.trigger {
+        Trigger::Button { button, level, duration } => {
+            let btn = match button {
+                MouseButton::Left => "left",
+                MouseButton::Right => "right",
+                MouseButton::Middle => "middle",
+                MouseButton::X1 => "x1",
+                MouseButton::X2 => "x2",
+            };
+            let dur = match duration {
+                crate::remap::ClickDuration::Click => "click",
+                crate::remap::ClickDuration::Hold => "hold",
+            };
+            format!("trigger = {{ type = \"button\", button = \"{}\", level = {}, duration = \"{}\" }}", btn, level, dur)
+        }
+        Trigger::Scroll => "trigger = { type = \"scroll\" }".to_string(),
+        Trigger::Drag => "trigger = { type = \"drag\" }".to_string(),
+    };
+
+    let mod_str = if entry.modifiers.keyboard != 0 || !entry.modifiers.buttons.is_empty() {
+        format!("\nmodifiers = {{ keyboard = 0x{:x} }}", entry.modifiers.keyboard)
+    } else {
+        String::new()
+    };
+
+    let effect_str = match &entry.effect {
+        Effect::PassThrough => "effect = { type = \"pass_through\" }".to_string(),
+        Effect::Disabled => "effect = { type = \"disabled\" }".to_string(),
+        Effect::TaskView => "effect = { type = \"task_view\" }".to_string(),
+        Effect::ShowDesktop => "effect = { type = \"show_desktop\" }".to_string(),
+        Effect::NavigationSwipe { direction } => {
+            let d = match direction {
+                crate::remap::SwipeDirection::Back => "back",
+                crate::remap::SwipeDirection::Forward => "forward",
+            };
+            format!("effect = {{ type = \"navigation_swipe\", data = {{ direction = \"{}\" }} }}", d)
+        }
+        Effect::SymbolicHotkey { keycode, flags } => {
+            format!("effect = {{ type = \"symbolic_hotkey\", data = {{ keycode = {}, flags = {} }} }}", keycode, flags)
+        }
+        Effect::MouseButtonClicks { button, n_of_clicks } => {
+            let btn = match button {
+                MouseButton::Left => "left",
+                MouseButton::Right => "right",
+                MouseButton::Middle => "middle",
+                MouseButton::X1 => "x1",
+                MouseButton::X2 => "x2",
+            };
+            format!("effect = {{ type = \"mouse_button_clicks\", data = {{ button = \"{}\", n_of_clicks = {} }} }}", btn, n_of_clicks)
+        }
+        _ => "effect = { type = \"pass_through\" }".to_string(),
+    };
+
+    let new_section = format!("\n[[buttons.advanced]]\n{}\n{}\n{}\n", trigger_str, mod_str, effect_str);
+
+    // Ensure trailing newline, then append.
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&new_section);
+
+    std::fs::write(&path, &content)
+        .map_err(|e| format!("写入 config.toml 失败: {e}"))?;
+
+    crate::log::write(&format!("AddMode: appended entry to {}", path.display()));
+    Ok(())
+}

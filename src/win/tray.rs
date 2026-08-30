@@ -16,21 +16,22 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, CreateIconFromResourceEx,
-    CreateIconIndirect, DefWindowProcW, DestroyIcon,     DestroyMenu, DestroyWindow, GetClientRect,
+    CreateIconIndirect, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, GetClientRect,
     DrawIcon, GetCursorPos, GetSystemMetrics, ICONINFO, IDC_ARROW,
     IDI_APPLICATION, KillTimer, LoadCursorW, LoadIconW, MB_ICONINFORMATION, MB_OK,
-
-
-
     MessageBoxW, IDYES, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, PostQuitMessage,
     RegisterClassExW, SetForegroundWindow, SetTimer, ShowWindow, SM_CXICON, SW_SHOW,
     TrackPopupMenu, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CREATE,
     WM_DESTROY, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_SYSMENU,
-
-
-
     WS_VISIBLE, MB_YESNO, MB_ICONQUESTION,
+    BS_AUTORADIOBUTTON, WS_GROUP, WS_TABSTOP,
+    HWND_TOP, SetWindowPos, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    GetDlgItem, PostMessageW, WM_CLOSE,
+    SendDlgItemMessageW, BM_SETCHECK, BM_GETCHECK,
+    GetMessageW, TranslateMessage, DispatchMessageW, MSG,
 };
+
+const BST_CHECKED: u32 = 0x0001;
 
 use windows_sys::Win32::System::DataExchange::{
     OpenClipboard, EmptyClipboard, CloseClipboard, SetClipboardData,
@@ -62,6 +63,21 @@ const ID_TIMER_DPI: usize = 3005;
 const DPI_POLL_MS: u32 = 250;
 
 const ABOUT_CLASS: &str = "WinMouseFixAboutClass";
+const ADDMODE_DIALOG_CLASS: &str = "WinMouseFixAddModeDialog";
+
+// AddMode dialog control IDs (must not collide with menu IDs).
+const IDC_EFFECT_PROMPT: usize = 2001;
+const IDC_RADIO_PASSTHROUGH: usize = 2002;
+const IDC_RADIO_NAVSWIPE: usize = 2003;
+const IDC_RADIO_TASKVIEW: usize = 2004;
+const IDC_RADIO_SHOWDESKTOP: usize = 2005;
+const IDC_RADIO_XCLICK: usize = 2006;
+const IDC_OK: usize = 2007;
+const IDC_CANCEL: usize = 2008;
+
+/// Selected effect after dialog closes. Static because the dialog runs in its own modal loop.
+static SELECTED_EFFECT: std::sync::OnceLock<std::sync::Mutex<Option<crate::remap::Effect>>> =
+    std::sync::OnceLock::new();
 const ABOUT_OK_ID: usize = 2002;
 const REPO_URL: &str = "https://github.com/wang19baby/win-mouse-fix";
 
@@ -524,7 +540,7 @@ unsafe fn poll_addmode_capture(hwnd: isize) {
     }
 }
 
-/// Show a message box with captured trigger info and placeholder effect entry.
+/// Show effect selection dialog and save the chosen mapping to config.toml.
 unsafe fn show_addmode_message(hwnd: isize, payload: &crate::add_mode::AddModePayload) {
     let trigger_desc = if payload.scroll_captured {
         "scroll"
@@ -541,24 +557,46 @@ unsafe fn show_addmode_message(hwnd: isize, payload: &crate::add_mode::AddModePa
         }
     };
 
-    let msg = format!(
-        "捕获到触发器: {}\n点击次数: {}\n修饰键: 0x{:x}\n\n\
-         当前效果设置为 PassThrough。\n\
-         请在 config.toml 的 [[buttons.advanced]] 中编辑 effect 字段。",
-        trigger_desc, payload.click_count, payload.active_mods.keyboard,
-    );
+    // Show effect selection dialog (modal — blocks until user chooses).
+    let chosen_effect = show_effect_dialog(payload);
 
-    MessageBoxW(
-        hwnd,
-        to_wide(&msg).as_ptr(),
-        to_wide("录制完成 — Win Mouse Fix").as_ptr(),
-        MB_OK | MB_ICONINFORMATION,
-    );
+    match chosen_effect {
+        Some(effect) => {
+            let entry = crate::add_mode::build_remap_entry(payload, effect.clone());
+            crate::log::write(&format!("AddMode entry: {:?}", entry));
 
-    // Log the RemapEntry for easy copy-paste into config.
-    let entry =
-        crate::add_mode::build_remap_entry(payload, crate::remap::Effect::PassThrough);
-    crate::log::write(&format!("AddMode entry: {:?}", entry));
+            // Write to config.toml.
+            match crate::add_mode::save_to_config(&entry) {
+                Ok(()) => {
+                    let msg = format!(
+                        "映射已保存到 config.toml\n\n\
+                         触发器: {}\n点击次数: {}\n修饰键: 0x{:x}\n\n\
+                         重启程序后生效。",
+                        trigger_desc, payload.click_count, payload.active_mods.keyboard,
+                    );
+                    MessageBoxW(
+                        hwnd,
+                        to_wide(&msg).as_ptr(),
+                        to_wide("录制完成 — Win Mouse Fix").as_ptr(),
+                        MB_OK | MB_ICONINFORMATION,
+                    );
+                }
+                Err(e) => {
+                    let msg = format!("保存失败: {e}\n\n已记录到日志，请手动添加到 config.toml。");
+                    MessageBoxW(
+                        hwnd,
+                        to_wide(&msg).as_ptr(),
+                        to_wide("录制完成 — Win Mouse Fix").as_ptr(),
+                        MB_OK | MB_ICONINFORMATION,
+                    );
+                }
+            }
+        }
+        None => {
+            crate::log::write("AddMode: user cancelled effect selection");
+        }
+    }
+
     let _ = crate::add_mode::disable();
 }
 
@@ -649,6 +687,156 @@ unsafe extern "system" fn about_wnd_proc(
         }
         WM_DESTROY => 0,
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+// ─── AddMode effect selection dialog ──────────────────────────────────────────
+
+/// Show a modal dialog letting the user choose which effect to assign to the
+/// captured trigger. Returns the selected `Effect`, or `None` on cancel.
+unsafe fn show_effect_dialog(payload: &crate::add_mode::AddModePayload) -> Option<crate::remap::Effect> {
+    // Register dialog class once.
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let hmod = GetModuleHandleW(null());
+        let class_name = to_wide(ADDMODE_DIALOG_CLASS);
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: 0,
+            lpfnWndProc: Some(addmode_dialog_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hmod,
+            hIcon: 0,
+            hCursor: LoadCursorW(0, IDC_ARROW),
+            hbrBackground: 0,
+            lpszMenuName: null(),
+            lpszClassName: class_name.as_ptr(),
+            hIconSm: 0,
+        };
+        RegisterClassExW(&wc);
+    });
+
+    // Initialize selection state.
+    let sel = SELECTED_EFFECT.get_or_init(|| std::sync::Mutex::new(None));
+    *sel.lock().unwrap() = Some(crate::remap::Effect::PassThrough);
+
+    let hwnd = CreateWindowExW(
+        0,
+        to_wide(ADDMODE_DIALOG_CLASS).as_ptr(),
+        to_wide("选择效果 — Win Mouse Fix").as_ptr(),
+        WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        300, 250, 420, 300,
+        0, 0isize, GetModuleHandleW(null()), null_mut(),
+    );
+    if hwnd == 0 {
+        return None;
+    }
+    ShowWindow(hwnd, SW_SHOW);
+
+    // Modal message loop — blocks until the dialog is closed.
+    let mut msg: windows_sys::Win32::UI::WindowsAndMessaging::MSG = std::mem::zeroed();
+    while GetMessageW(&mut msg, hwnd, 0, 0) > 0 {
+        let _ = TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    sel.lock().unwrap().take()
+}
+
+unsafe extern "system" fn addmode_dialog_proc(
+    hwnd: isize, msg: u32, wparam: usize, _lparam: isize,
+) -> isize {
+    match msg {
+        WM_CREATE => {
+            let hmod = GetModuleHandleW(null());
+
+            // Prompt text.
+            CreateWindowExW(
+                0, to_wide("Static").as_ptr(),
+                to_wide("捕获到触发器 — 选择要映射的效果:").as_ptr(),
+                WS_CHILD | WS_VISIBLE | 0, // SS_LEFT = 0
+                20, 16, 380, 20,
+                hwnd, IDC_EFFECT_PROMPT as isize, hmod, null_mut(),
+            );
+
+            // Radio buttons.
+            let radios: &[(usize, &str)] = &[
+                (IDC_RADIO_PASSTHROUGH, "PassThrough（不映射）"),
+                (IDC_RADIO_NAVSWIPE,   "NavigationSwipe（前进/后退）"),
+                (IDC_RADIO_TASKVIEW,   "TaskView（Win+Tab）"),
+                (IDC_RADIO_SHOWDESKTOP,"ShowDesktop（Win+D）"),
+                (IDC_RADIO_XCLICK,     "XButton Click（X1/X2 点击）"),
+            ];
+            for (i, (id, label)) in radios.iter().enumerate() {
+                let style = (BS_AUTORADIOBUTTON as u32) | WS_CHILD | WS_VISIBLE
+                    | if i == 0 { WS_GROUP } else { 0 }
+                    | WS_TABSTOP;
+                CreateWindowExW(
+                    0, to_wide("Button").as_ptr(), to_wide(label).as_ptr(),
+                    style,
+                    30, 48 + (i as i32) * 28, 360, 24,
+                    hwnd, *id as isize, hmod, null_mut(),
+                );
+            }
+
+            // OK button.
+            CreateWindowExW(
+                0, to_wide("Button").as_ptr(), to_wide("确定").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                120, 210, 80, 28,
+                hwnd, IDC_OK as isize, hmod, null_mut(),
+            );
+            // Cancel button.
+            CreateWindowExW(
+                0, to_wide("Button").as_ptr(), to_wide("取消").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                220, 210, 80, 28,
+                hwnd, IDC_CANCEL as isize, hmod, null_mut(),
+            );
+
+            0
+        }
+        WM_COMMAND => {
+            let id = wparam & 0xFFFF;
+            match id {
+                IDC_OK => {
+                    // Read which radio is checked via BM_GETCHECK.
+                    let checked = |id: usize| -> bool {
+                        SendDlgItemMessageW(hwnd, id as i32, BM_GETCHECK, 0, 0) as u32 == BST_CHECKED
+                    };
+                    let effect = if checked(IDC_RADIO_NAVSWIPE) {
+                        crate::remap::Effect::NavigationSwipe {
+                            direction: crate::remap::SwipeDirection::Back,
+                        }
+                    } else if checked(IDC_RADIO_TASKVIEW) {
+                        crate::remap::Effect::TaskView
+                    } else if checked(IDC_RADIO_SHOWDESKTOP) {
+                        crate::remap::Effect::ShowDesktop
+                    } else if checked(IDC_RADIO_XCLICK) {
+                        crate::remap::Effect::MouseButtonClicks {
+                            button: crate::remap::MouseButton::X1,
+                            n_of_clicks: 1,
+                        }
+                    } else {
+                        crate::remap::Effect::PassThrough
+                    };
+                    *SELECTED_EFFECT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap() = Some(effect);
+                    DestroyWindow(hwnd);
+                }
+                IDC_CANCEL => {
+                    *SELECTED_EFFECT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap() = None;
+                    DestroyWindow(hwnd);
+                }
+                _ => {}
+            }
+            0
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, _lparam),
     }
 }
 
