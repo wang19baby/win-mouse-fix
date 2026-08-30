@@ -25,6 +25,42 @@ use windows_sys::Win32::UI::HiDpi::{
 pub static CONFIG: LazyLock<RwLock<Config>> = LazyLock::new(|| RwLock::new(Config::default()));
 
 fn main() {
+    // Install panic hook to write crash log before aborting.
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Box<dyn Any>".to_string()
+        };
+        let location = info.location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let crash = format!(
+            "=== CRASH ===\n\
+             thread: {thread_name}\n\
+             message: {msg}\n\
+             location: {location}\n\
+             {backtrace}\n"
+        );
+        // Write to stderr
+        eprintln!("{crash}");
+        // Write to crash.log next to the exe
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let path = dir.join("crash.log");
+                let _ = std::fs::write(&path, &crash);
+            }
+        }
+        // Also try to write to the regular log file
+        crate::log::write(&format!("CRASH: {msg} at {location}"));
+    }));
+
     // Enable per-monitor DPI awareness before any window/DPI query so density
     // detection (Phase 10) reports real per-monitor DPI instead of the 96 default.
     unsafe {
