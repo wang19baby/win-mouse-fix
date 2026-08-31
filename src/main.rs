@@ -10,6 +10,7 @@ mod accel;
 mod add_mode;
 mod device;
 mod remote;
+mod trackpad_gesture;
 mod gui;
 
 use parking_lot::RwLock;
