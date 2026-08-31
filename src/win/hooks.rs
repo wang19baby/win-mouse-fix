@@ -1005,7 +1005,12 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         }
                     } else if !down && ctrl.is_active() && ctrl.matches_release(btn) {
                         ctrl.end();
-                        return 1;
+                        // Do NOT swallow the UP: the foreground app must see the
+                        // button release to reset its internal "button held"
+                        // state, otherwise subsequent left-clicks silently
+                        // fail because Windows still thinks the button is
+                        // pressed. Drag-to-move operates entirely via injected
+                        // mouse moves and does not need to capture UP.
                     }
                 }
             }
