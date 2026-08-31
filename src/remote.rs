@@ -596,24 +596,27 @@ fn serve_page(stream: &mut TcpStream) {
     // build keeps replaying the broken HTML even after the server is
     // fixed, because regular browsers (Chrome/Edge) cache HTML by default
     // unless told otherwise.
+    // X-Build-Id surfaces the embedded TRACKPAD_HTML content length so the
+    // user (and any debug tool) can confirm the browser is talking to
+    // the version they expect rather than a cached copy.
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: text/html; charset=utf-8\r\n\
          Cache-Control: no-cache, no-store, must-revalidate\r\n\
          Pragma: no-cache\r\n\
          Expires: 0\r\n\
+         X-Build-Id: trackpad-html-bytes\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\
          \r\n",
-        body.len()
+         body.len()
     );
-
 
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(body);
 }
 
-fn serve_manifest(stream: &mut TcpStream) {
+ fn serve_manifest(stream: &mut TcpStream) {
     let body = MANIFEST_JSON.as_bytes();
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
