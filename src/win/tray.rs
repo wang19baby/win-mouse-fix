@@ -1027,6 +1027,7 @@ fn show_remote_qr(_owner: isize) {
                 .trim_end_matches('/');
             let qr_url = format!("{}/qr", base);
             copy_text_to_clipboard(&info.url);
+            crate::log::write(&format!("remote: opening QR page: {qr_url}"));
             let opened = unsafe {
                 let r = ShellExecuteW(
                     0,
