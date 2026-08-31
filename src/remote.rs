@@ -32,7 +32,10 @@ pub fn info() -> Option<RemoteInfo> {
 /// updates (PC battery, etc.) by walking this list. Removed on socket close.
 static ACTIVE: LazyLock<parking_lot::Mutex<Vec<Arc<parking_lot::Mutex<TcpStream>>>>> =
     LazyLock::new(|| parking_lot::Mutex::new(Vec::new()));
-
+/// Listening socket of the trackpad server. Held so stop_server() can drop it
+/// and break the listen thread out of `listener.incoming()`.
+static LISTENER: LazyLock<parking_lot::Mutex<Option<std::net::TcpListener>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(None));
 /// Start the trackpad server on a background thread.
 pub fn start_server() {
     let ip = match local_ip() {
@@ -59,14 +62,26 @@ pub fn start_server() {
         token: token.clone(),
     });
     crate::log::write(&format!("remote: trackpad ready -> {url}"));
-    std::thread::spawn(move || listen(ip, port, token));
+    let (listen_tx, listen_rx) = std::sync::mpsc::channel();
+    if let Ok(listener) = listen_rx.recv_timeout(Duration::from_secs(2)) {
+        *LISTENER.lock() = Some(listener);
+    } else {
+        crate::log::write("remote: listen thread did not report a listener in 2s");
+    }
 }
 
-// ─── listener / connection handling ─────────────────────────────────────────
+/// Shut down the trackpad server. Drops the listener so the accept loop exits
+/// and clears REMOTE so the tray menu shows the unchecked state.
+pub fn stop_server() {
+    // Drop the listening socket — the accept loop exits immediately.
+    *LISTENER.lock() = None;
+    *REMOTE.write() = None;
+    crate::log::write("remote: trackpad server stopped");
+}
 
-fn listen(ip: IpAddr, port: u16, token: String) {
+fn listen(ip: IpAddr, port: u16, token: String, listen_tx: std::sync::mpsc::Sender<std::net::TcpListener>) {
     let addr = SocketAddr::new(ip, port);
-    let listener = match TcpListener::bind(addr) {
+    let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
         Err(e) => {
             crate::log::write(&format!("remote: bind {addr} failed: {e}"));
@@ -75,6 +90,7 @@ fn listen(ip: IpAddr, port: u16, token: String) {
     };
     crate::log::write(&format!("remote: listening on {addr}"));
     add_firewall_rule(port); // best-effort (needs admin); non-fatal
+    let _ = listen_tx.send(listener.try_clone().expect("clone of just-bound TcpListener"));
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
@@ -83,25 +99,6 @@ fn listen(ip: IpAddr, port: u16, token: String) {
             }
             Err(_) => continue,
         }
-    }
-}
-
-
-
-/// Dedicated, config-independent debug log for the WS path (bypasses the
-/// buffered/optional app log so phone connection lifecycle is always captured).
-fn dbg_log(msg: &str) {
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("D:/work_space/personal_workspace/win-mouse-fix/ws_debug.log")
-    {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = std::io::Write::write_all(&mut f, format!("[{ts}] {msg}\n").as_bytes());
-        let _ = std::io::Write::flush(&mut f);
     }
 }
 
@@ -215,11 +212,23 @@ dbg_log(&format!("remote: ws handshake OK from {ip}"));
         serve_page(&mut stream);
     }
 }
-
-
-
+/// Dedicated, config-independent debug log for the WS path (bypasses the
+/// buffered/optional app log so phone connection lifecycle is always captured).
+fn dbg_log(msg: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("D:/work_space/personal_workspace/win-mouse-fix/ws_debug.log")
+    {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = std::io::Write::write_all(&mut f, format!("[{ts}] {msg}\n").as_bytes());
+        let _ = std::io::Write::flush(&mut f);
+    }
+}
 fn ws_handshake(stream: &mut TcpStream, key: &str, ext: &str) -> std::io::Result<()> {
-    let accept = ws_accept(key);
     // Do NOT echo `permessage-deflate`. We never compress/decompress frames, so
     // accepting the extension would make the client (esp. iOS Safari) expect
     // compressed server->client frames; our uncompressed `status`/`pong` frames
@@ -231,8 +240,8 @@ fn ws_handshake(stream: &mut TcpStream, key: &str, ext: &str) -> std::io::Result
             "remote: ws_handshake declining permessage-deflate (not implemented) from ext='{ext}'"
         ));
     }
-    let resp = format!(
-        "HTTP/1.1 101 Switching Protocols\r\n\
+    let accept = ws_accept(key);
+    let resp = format!(        "HTTP/1.1 101 Switching Protocols\r\n\
          Upgrade: websocket\r\n\
          Connection: Upgrade\r\n\
          Sec-WebSocket-Accept: {accept}\r\n\
@@ -956,7 +965,10 @@ mod integration {
         let token = "smoketoken";
         let port = 18999u16;
         std::thread::spawn(move || {
-            listen("127.0.0.1".parse().unwrap(), port, token.to_string())
+            listen("127.0.0.1".parse().unwrap(), port, token.to_string(), {
+                let (tx, _rx) = std::sync::mpsc::channel();
+                tx
+            })
         });
         std::thread::sleep(Duration::from_millis(300));
 
@@ -993,7 +1005,10 @@ mod integration {
     fn http_root_serves_trackpad_page() {
         let port = 18998u16;
         std::thread::spawn(move || {
-            listen("127.0.0.1".parse().unwrap(), port, "tok".to_string())
+            listen("127.0.0.1".parse().unwrap(), port, "tok".to_string(), {
+                let (tx, _rx) = std::sync::mpsc::channel();
+                tx
+            })
         });
         std::thread::sleep(Duration::from_millis(300));
         let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
@@ -1060,7 +1075,10 @@ mod integration {
         let token = "saftoken";
         let port = 18996u16;
         std::thread::spawn(move || {
-            listen("127.0.0.1".parse().unwrap(), port, token.to_string())
+            listen("127.0.0.1".parse().unwrap(), port, token.to_string(), {
+                let (tx, _rx) = std::sync::mpsc::channel();
+                tx
+            })
         });
         std::thread::sleep(Duration::from_millis(300));
 
@@ -1117,7 +1135,10 @@ mod integration {
         let token = "casetoken";
         let port = 18995u16;
         std::thread::spawn(move || {
-            listen("127.0.0.1".parse().unwrap(), port, token.to_string())
+            listen("127.0.0.1".parse().unwrap(), port, token.to_string(), {
+                let (tx, _rx) = std::sync::mpsc::channel();
+                tx
+            })
         });
         std::thread::sleep(Duration::from_millis(300));
 
@@ -1183,7 +1204,10 @@ mod integration {
         let token = "e2etoken";
         let port = 18997u16;
         std::thread::spawn(move || {
-            listen("127.0.0.1".parse().unwrap(), port, token.to_string())
+            listen("127.0.0.1".parse().unwrap(), port, token.to_string(), {
+                let (tx, _rx) = std::sync::mpsc::channel();
+                tx
+            })
         });
         std::thread::sleep(Duration::from_millis(300));
 
@@ -1253,7 +1277,10 @@ mod integration {
         let token = "cleanreject";
         let port = 18994u16;
         std::thread::spawn(move || {
-            listen("127.0.0.1".parse().unwrap(), port, token.to_string())
+            listen("127.0.0.1".parse().unwrap(), port, token.to_string(), {
+                let (tx, _rx) = std::sync::mpsc::channel();
+                tx
+            })
         });
         std::thread::sleep(Duration::from_millis(300));
 

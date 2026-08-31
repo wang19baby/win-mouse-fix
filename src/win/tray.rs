@@ -438,11 +438,9 @@ unsafe fn show_menu(hwnd: isize) {
 
     AppendMenuW(menu, MF_STRING, ID_BATTERY, to_wide("电池状态").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_DPI, to_wide("DPI 同步当前屏").as_ptr());
-    // Always show the trackpad entry. The server is bound to a specific LAN IP
-    // and only opened on first click (no LAN listener / firewall rule unless
-    // the user explicitly opts in). RemoteConfig.enabled is not consulted here
-    // so the menu is discoverable even with the default-off setting.
-    AppendMenuW(menu, MF_STRING, ID_REMOTE, to_wide("手机妙控板").as_ptr());
+    // Trackpad toggle: ✓ if server is running, blank if not.
+    let remote_flags = MF_STRING | if crate::remote::info().is_some() { MF_CHECKED } else { MF_UNCHECKED };
+    AppendMenuW(menu, remote_flags, ID_REMOTE, to_wide("手机妙控板").as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_SETTINGS, to_wide("设置").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_PROFILES, to_wide("配置文件").as_ptr());
@@ -552,7 +550,14 @@ unsafe fn show_menu(hwnd: isize) {
             }
         }
         ID_REMOTE => {
-            show_remote_qr(hwnd);
+            if crate::remote::info().is_some() {
+                // Server is running → stop it.
+                crate::remote::stop_server();
+            } else {
+                // Server not running → start it + show QR.
+                crate::remote::start_server();
+                show_remote_qr(hwnd);
+            }
         }
         _ => {}
     }
