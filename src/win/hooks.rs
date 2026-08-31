@@ -682,18 +682,26 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             // step() may detect that the OS dismissed the switcher (e.g. user
             // clicked away to a different window) — in that case it resets
             // mode and we fall through to the normal scroll path so the
-            // wheel isn't swallowed for no reason.
             if crate::win::window_switcher::is_active() {
                 let raw_delta = (ms.mouseData >> 16) as i16 as i32;
-                if crate::win::window_switcher::step(raw_delta < 0) {
+                let hwheel = ev == WM_MOUSEHWHEEL;
+                // Direction mapping:
+                //   WM_MOUSEHWHEEL: wheel right (delta > 0) -> forward/next (Tab)
+                //   WM_MOUSEWHEEL:  wheel down  (delta > 0) -> backward/prev.
+                //                   Vertical wheel maps to the horizontal axis of
+                //                   Alt+Tab (UI is laid out horizontally); user expects
+                //                   wheel down to move selection to the right.
+                let forward = if hwheel { raw_delta > 0 } else { raw_delta < 0 };
+                crate::log::write(&format!("wheel: ev={} hwheel={} raw_delta={} -> step({})",
+                    ev, hwheel, raw_delta, forward));
+                if crate::win::window_switcher::step(forward) {
                     return 1; // swallowed: drove the switcher
                 }
-                // step() returned false: switcher was dismissed by OS, fall through.
             }
             if scroll_on {
                 let raw_delta = (ms.mouseData >> 16) as i16 as i32;
-                let horizontal = ev == WM_MOUSEHWHEEL;
                 let cfg = CONFIG.read();
+                let horizontal = ev == WM_MOUSEHWHEEL;
                 let injected = process_wheel(raw_delta, horizontal, &cfg);
                 if injected.is_some() {
                     return 1; // swallowed: injector will replay it smoothly
@@ -701,7 +709,6 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                 // smooth is off: fall through to pass raw event to system
             }
         }
-
         // ── Mousemove ────────────────────────────────────────────────────────────
         if ev == WM_MOUSEMOVE {
             // Window-drag gesture: behaviour depends on cfg.drag.mode.
