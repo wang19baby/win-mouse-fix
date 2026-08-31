@@ -591,9 +591,17 @@ fn dispatch(
 
 fn serve_page(stream: &mut TcpStream) {
     let body = TRACKPAD_HTML.as_bytes();
+    // Cache-Control: no-cache forces the browser to revalidate on every
+    // load. Without this, a PC browser that visited once during a broken
+    // build keeps replaying the broken HTML even after the server is
+    // fixed, because regular browsers (Chrome/Edge) cache HTML by default
+    // unless told otherwise.
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: text/html; charset=utf-8\r\n\
+         Cache-Control: no-cache, no-store, must-revalidate\r\n\
+         Pragma: no-cache\r\n\
+         Expires: 0\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\
          \r\n",
@@ -697,6 +705,9 @@ fn serve_qr_page(stream: &mut TcpStream) {
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: text/html; charset=utf-8\r\n\
+         Cache-Control: no-cache, no-store, must-revalidate\r\n\
+         Pragma: no-cache\r\n\
+         Expires: 0\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\
          \r\n",
