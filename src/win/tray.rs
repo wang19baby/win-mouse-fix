@@ -1010,13 +1010,8 @@ fn ensure_firewall_rule(owner: isize, port: u16) {
 }
 
 fn show_remote_qr(_owner: isize) {
-    // Lazy-start the server on first menu click. Default-off setting keeps
-    // the app from binding a LAN port until the user explicitly opens this
-    // menu item; once started the server stays up for the rest of the
-    // process lifetime.
-    if crate::remote::info().is_none() {
-        crate::remote::start_server();
-    }
+    // Caller is responsible for start_server(). This function only displays
+    // an already-running server's QR page (or surfaces the failure case).
     match crate::remote::info() {
         Some(info) => {
             // Open the in-service QR page in the default browser. The page itself
