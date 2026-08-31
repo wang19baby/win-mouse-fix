@@ -83,8 +83,6 @@
 +  var MIN_GESTURE_FINGERS = isAndroid ? 4 : 3;
 
   var params = new URLSearchParams(location.search);
-
-  var params = new URLSearchParams(location.search);
   var token = params.get('t') || '';
 
   var ws = null, authed = false, backoff = 500;

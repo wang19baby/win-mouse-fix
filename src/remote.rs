@@ -956,6 +956,77 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         stop_server();
     }
+
+    /// Regression: the served trackpad HTML must be syntactically valid JS,
+    /// otherwise every phone browser throws 'SyntaxError: Unexpected token'
+    /// and the trackpad silently fails (no tap, no scroll). We can't run a
+    /// JS parser here, so we approximate: scan for the most common copy-paste
+    /// error — duplicate top-level `var name = ...` declarations.
+    #[test]
+    fn trackpad_html_has_no_duplicate_top_level_vars() {
+        // A duplicate `var params = ...` was hand-edited in by mistake and
+        // broke the whole page until a user opened devtools. Catch it here
+        // before the binary ships.
+        let html = TRACKPAD_HTML;
+        // Walk every top-level `<script>` block; within each one, a name must
+        // not be declared with `var` twice.
+        let mut start = 0usize;
+        while let Some(open) = html[start..].find("<script") {
+            let block_start = start + open;
+            let body_start = html[block_start..]
+                .find('>')
+                .map(|o| block_start + o + 1)
+                .unwrap_or(block_start);
+            let close = match html[body_start..].find("</script>") {
+                Some(c) => body_start + c,
+                None => break,
+            };
+            let body = &html[body_start..close];
+            // Count `var <name> =` declarations (rough heuristic, skips
+            // re-declarations of same name in different scopes which are
+            // legal in JS).
+            let mut counts: std::collections::HashMap<&str, u32> =
+                std::collections::HashMap::new();
+            let bytes = body.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"var " {
+                    // Find identifier end.
+                    let id_start = i + 4;
+                    let mut j = id_start;
+                    while j < bytes.len()
+                        && (bytes[j].is_ascii_alphanumeric()
+                            || bytes[j] == b'_'
+                            || bytes[j] == b'$')
+                    {
+                        j += 1;
+                    }
+                    if j > id_start && j < bytes.len() && bytes[j] == b'=' {
+                        let name = &body[id_start..j];
+                        *counts.entry(name).or_insert(0) += 1;
+                    }
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            }
+            for (name, n) in counts {
+                // `var` is function-scoped so re-declaration is legal, but
+                // our trackpad.js (IIFE) wraps everything in one function,
+                // so duplicates at the same indent are a copy-paste error.
+                if n > 1 {
+                    // Allow `var i` / `var j` style loop counters (common).
+                    if name == "i" || name == "j" || name == "k" {
+                        continue;
+                    }
+                    panic!(
+                        "trackpad.html: top-level `var {name}` declared {n} times — likely a copy-paste error"
+                    );
+                }
+            }
+            start = close + "</script>".len();
+        }
+    }
 }
 
 #[cfg(test)]
