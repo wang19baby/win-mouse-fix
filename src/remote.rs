@@ -188,7 +188,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                     is_diag = req_path == "/diag";
                     is_report = req_path.starts_with("/report");
                     is_manifest = req_path == "/manifest.json";
-                    is_sw = req_path == "/sw.js";
+                    is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
                     break;
                 }
                 if buf.len() > 16384 {

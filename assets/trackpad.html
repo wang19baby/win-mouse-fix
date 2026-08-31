@@ -543,7 +543,11 @@
 
   // Register Service Worker for offline caching
   if('serviceWorker' in navigator){
-    navigator.serviceWorker.register('/sw.js').catch(function(){});
+    // ?v=3 busts the HTTP cache for sw.js itself so the browser actually
+    // picks up the new v2 SW on the next page load. Without the bust, a
+    // browser that has cached sw.js once will keep using the old copy even
+    // after the server ships a fix.
+    navigator.serviceWorker.register('/sw.js?v=3').catch(function(){});
   }
 })();
 </script>
