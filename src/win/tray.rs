@@ -259,8 +259,10 @@ pub fn create() -> Result<(), String> {
         let len = wtip.len().min(nid.szTip.len());
         std::ptr::copy_nonoverlapping(wtip.as_ptr(), nid.szTip.as_mut_ptr(), len);
         Shell_NotifyIconW(NIM_MODIFY, &nid);
+        // Push the latest status (PC battery, etc.) to any connected phone so
+        // its HUD updates without a reconnect.
+        crate::remote::broadcast_status();
     }
-
     /// Draw the battery percentage onto a copy of `base`, returning a new HICON.
     /// Falls back to `base` on any GDI failure (so the icon is never broken).
     unsafe fn make_battery_icon(base: isize, percent: u8, _low: bool) -> isize {

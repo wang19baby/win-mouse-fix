@@ -5,16 +5,15 @@
 //! phone feels identical to a real mouse. Single handshake-only WS server,
 //! no SSE (status rides the same socket). LAN-only; bound to a specific NIC IP.
 
-use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
-use std::sync::LazyLock;
-use std::time::Duration;
+use std::sync::Arc;
 
+ use std::io::{Read, Write};
+ use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+ use std::sync::LazyLock;
+use std::time::Duration;
 
 use parking_lot::RwLock;
 use qrcode::{Color, QrCode};
-
-/// Connect URL + pairing token, populated at startup so the tray QR window can read it.
 #[derive(Clone)]
 pub struct RemoteInfo {
     pub url: String,
@@ -29,8 +28,12 @@ pub fn info() -> Option<RemoteInfo> {
     (*REMOTE.read()).clone()
 }
 
-/// Start the trackpad server on a background thread. Best-effort: any failure
-/// is logged and the tray keeps running.
+/// Authenticated, currently-connected WS streams. The tray broadcasts status
+/// updates (PC battery, etc.) by walking this list. Removed on socket close.
+static ACTIVE: LazyLock<parking_lot::Mutex<Vec<Arc<parking_lot::Mutex<TcpStream>>>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(Vec::new()));
+
+/// Start the trackpad server on a background thread.
 pub fn start_server() {
     let ip = match local_ip() {
         Some(ip) => ip,
@@ -261,60 +264,59 @@ dbg_log(&format!("remote: ws loop start {ip}"));
             Ok(Some((opcode, payload))) => {
                 failed_probes = 0;
                 match opcode {
-                0x1 => {
-                    // text frame
-                    let was = authed;
-                    if dispatch(&payload, token, &mut authed, &mut stream).is_err() {
-                        
- dbg_log(&format!("remote: ws {ip} dispatch err -> drop"));
+                    0x1 => {
+                        // text frame
+                        let was = authed;
+                        if dispatch(&payload, token, &mut authed, &mut stream).is_err() {
+                            dbg_log(&format!("remote: ws {ip} dispatch err -> drop"));
+                            return;
+                        }
+                        if !was && authed {
+                            // Just authenticated: register this stream so the
+                            // tray can broadcast status updates to it. try_clone
+                            // on a freshly-accepted socket is infallible.
+                            let clone = stream
+                                .try_clone()
+                                .expect("clone of just-accepted TcpStream");
+                            ACTIVE.lock().push(Arc::new(parking_lot::Mutex::new(clone)));
+                            dbg_log(&format!("remote: ws {ip} authed -> status sent"));
+                        }
+                    }
+                    0x8 => {
+                        // close
+                        dbg_log(&format!("remote: ws {ip} close frame from peer"));
+                        let _ = write_frame(&mut stream, 0x8, &[]);
                         return;
                     }
-                    if !was && authed {
-                        
- dbg_log(&format!("remote: ws {ip} authed -> status sent"));
+                    0x9 => {
+                        // ping -> pong
+                        let _ = write_frame(&mut stream, 0xA, &payload);
                     }
+                    _ => {} // pong / other: ignore
                 }
-                0x8 => {
-                    // close
-                    
- dbg_log(&format!("remote: ws {ip} close frame from peer"));
-                    let _ = write_frame(&mut stream, 0x8, &[]);
-                    return;
-                }
-                0x9 => {
-                    // ping -> pong
-                    let _ = write_frame(&mut stream, 0xA, &payload);
-                }
-                _ => {} // pong / other: ignore
-            }},
-
+            }
             Ok(None) => {
-                
- dbg_log(&format!("remote: ws {ip} EOF (peer gone)"));
+                dbg_log(&format!("remote: ws {ip} EOF (peer gone)"));
                 return;
             }
             Err(_) => {
-                // Read error (idle timeout now surfaces here from read_frame).
+                // Read error (idle timeout surfaces here from read_frame).
                 // Probe with a WebSocket ping; if we can't write it the peer is
                 // dead, otherwise keep the channel alive — browsers auto-pong.
                 if write_frame(&mut stream, 0x9, &[]).is_err() {
-                    
- dbg_log(&format!("remote: ws {ip} read-err + probe write fail -> drop"));
+                    dbg_log(&format!("remote: ws {ip} read-err + probe write fail -> drop"));
                     return;
                 }
                 failed_probes += 1;
                 if failed_probes > 3 {
-                    
- dbg_log(&format!("remote: ws {ip} {failed_probes} probes unanswered -> drop"));
+                    dbg_log(&format!("remote: ws {ip} {failed_probes} probes unanswered -> drop"));
                     return;
                 }
-                
- dbg_log(&format!("remote: ws {ip} read-err -> ping probe sent ({failed_probes})"));
+                dbg_log(&format!("remote: ws {ip} read-err -> ping probe sent ({failed_probes})"));
             }
         }
     }
 }
-
 
 /// Read exactly `buf` bytes. Returns:
 /// - `Ok(true)` on success,
@@ -409,6 +411,61 @@ fn close_clean(stream: &mut TcpStream, code: u16) {
     let _ = write_frame(stream, 0x8, &body);
 }
 
+/// Build the current status JSON: touch config + PC battery + connection flag.
+/// Used both on initial auth (per-connection) and by `broadcast_status` for
+/// periodic updates. Safe to call from any thread; takes only the CONFIG read
+/// lock and the BATTERY read lock briefly.
+fn build_status_json() -> String {
+    let cfg = crate::CONFIG.read();
+    let touch = &cfg.touch;
+    let pc_battery = crate::device::cache::BATTERY.read().map(|b| {
+        serde_json::json!({
+            "percent": b.percent,
+            "charging": b.charging,
+            "low": b.low,
+        })
+    });
+    let json = serde_json::json!({
+        "t": "status",
+        "conn": true,
+        "pc_battery": pc_battery,
+        "touch": {
+            "gain": touch.gain,
+            "accel_ref": touch.accel_ref,
+            "accel_slope": touch.accel_slope,
+            "accel_max_mult": touch.accel_max_mult,
+            "move_ema": touch.move_ema,
+            "scroll_gain": touch.scroll_gain,
+            "tap_ms": touch.tap_ms,
+            "tap_px": touch.tap_px,
+            "swipe_px": touch.swipe_px,
+            "decide_px": touch.decide_px,
+            "pinch_bias": touch.pinch_bias,
+            "diag_min": touch.diag_min,
+            "diag_ratio": touch.diag_ratio,
+            "longpress_ms": touch.longpress_ms,
+        }
+    });
+    json.to_string()
+}
+
+/// Push the latest status JSON to every currently-authenticated WS client.
+/// Best-effort: a client whose socket is no longer writable is silently
+/// dropped from ACTIVE so the list does not grow unboundedly.
+pub fn broadcast_status() {
+    if ACTIVE.lock().is_empty() {
+        return;
+    }
+    let payload = build_status_json();
+    ACTIVE.lock().retain(|stream| {
+        let mut s = stream.lock();
+        match write_frame(&mut s, 0x1, payload.as_bytes()) {
+            Ok(()) => true,
+            Err(_) => false,
+        }
+    });
+}
+
 /// Dispatch a text frame. Returns `Err` to close the socket (auth failure).
 fn dispatch(
     payload: &[u8],
@@ -430,40 +487,9 @@ fn dispatch(
             let ok = v.get("token").and_then(|x| x.as_str()) == Some(token);
             if ok {
                 *authed = true;
-                // Build status with touch config and PC battery from current config
-                let cfg = crate::CONFIG.read();
-                let touch = &cfg.touch;
-                let pc_battery = crate::device::cache::BATTERY.read().map(|b| {
-                    serde_json::json!({
-                        "percent": b.percent,
-                        "charging": b.charging,
-                        "low": b.low,
-                    })
-                });
-                let status = serde_json::json!({
-                    "t": "status",
-                    "conn": true,
-                    "pc_battery": pc_battery,
-                    "touch": {
-                        "gain": touch.gain,
-                        "accel_ref": touch.accel_ref,
-                        "accel_slope": touch.accel_slope,
-                        "accel_max_mult": touch.accel_max_mult,
-                        "move_ema": touch.move_ema,
-                        "scroll_gain": touch.scroll_gain,
-                        "tap_ms": touch.tap_ms,
-                        "tap_px": touch.tap_px,
-                        "swipe_px": touch.swipe_px,
-                        "decide_px": touch.decide_px,
-                        "pinch_bias": touch.pinch_bias,
-                        "diag_min": touch.diag_min,
-                        "diag_ratio": touch.diag_ratio,
-                        "longpress_ms": touch.longpress_ms,
-                    }
-                }).to_string();
+                let status = build_status_json();
                 let _ = write_frame(stream, 0x1, status.as_bytes());
             } else {
-                // Tell the client WHY (clean reject), then a proper close frame so
                 // the browser delivers the reject message and stops retrying
                 // instead of surfacing a bare 1006 and reconnecting forever.
                 let _ = write_frame(stream, 0x1, br#"{"t":"reject","reason":"bad_token"}"#);
