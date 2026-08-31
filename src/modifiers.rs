@@ -42,7 +42,17 @@ pub fn set_vk(vk: u32, down: bool) {
         _ => return,
     };
     if bit == SHIFT && down {
-        SHIFT_PRESSED_AT_NANOS.store(now_nanos(), Ordering::SeqCst);
+        // Force-init the epoch BEFORE reading now_nanos: the first time we run,
+        // LazyLock::new(Instant::now) would set epoch == now and now_nanos
+        // would return 0, which shift_hold_secs() interprets as "never
+        // pressed". Touching the LazyLock here anchors the epoch to this
+        // instant and then we read the same instant again, guaranteeing a
+        // positive nanosecond delta on every press.
+        let _ = *SHIFT_PRESSED_EPOCH;
+        let pressed = now_nanos();
+        // Guard against the (extremely unlikely) case where two consecutive
+        // Instant::now() calls return the same value within one press.
+        SHIFT_PRESSED_AT_NANOS.store(pressed.max(1), Ordering::SeqCst);
     }
     let mut cur = STATE.load(Ordering::SeqCst);
     if down {
