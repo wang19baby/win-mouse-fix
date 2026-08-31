@@ -38,6 +38,17 @@ static LISTENER: LazyLock<parking_lot::Mutex<Option<std::net::TcpListener>>> =
     LazyLock::new(|| parking_lot::Mutex::new(None));
 /// Start the trackpad server on a background thread.
 pub fn start_server() {
+    // Fire-and-forget: do all the slow work (IP discovery, port pick, bind,
+    // firewall rule, listener storage) on a background thread so the tray
+    // WM_COMMAND handler returns immediately. Previously this function did a
+    // 2-second recv_timeout on the caller (tray thread), which starved the
+    // WM_TIMER queue — click_tick + window_switcher::tick() stopped firing
+    // for up to 2s after toggling the menu, which the user perceived as
+    // mouse/click hangs.
+    std::thread::spawn(start_server_impl);
+}
+
+fn start_server_impl() {
     let ip = match local_ip() {
         Some(ip) => ip,
         None => {
@@ -52,22 +63,15 @@ pub fn start_server() {
             return;
         }
     };
-    // Persist the pairing token so it stays STABLE across restarts. Without this
-    // every restart mints a fresh token, the printed QR becomes invalid, and the
-    // phone falls into a bad-token -> 1006 -> reconnect loop.
     let token = load_or_create_token();
     let url = format!("http://{ip}:{port}/?t={token}");
     *REMOTE.write() = Some(RemoteInfo {
         url: url.clone(),
         token: token.clone(),
     });
-    let (listen_tx, listen_rx) = std::sync::mpsc::channel();
+    crate::log::write(&format!("remote: trackpad ready -> {url}"));
+    let (listen_tx, _listen_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || listen(ip, port, token, listen_tx));
-    if let Ok(listener) = listen_rx.recv_timeout(Duration::from_secs(2)) {
-        *LISTENER.lock() = Some(listener);
-    } else {
-        crate::log::write("remote: listen thread did not report a listener in 2s");
-    }
 }
 
 /// Shut down the trackpad server. Drops the listener so the accept loop exits
@@ -79,7 +83,7 @@ pub fn stop_server() {
     crate::log::write("remote: trackpad server stopped");
 }
 
-fn listen(ip: IpAddr, port: u16, token: String, listen_tx: std::sync::mpsc::Sender<std::net::TcpListener>) {
+fn listen(ip: IpAddr, port: u16, token: String, _listen_tx: std::sync::mpsc::Sender<std::net::TcpListener>) {
     let addr = SocketAddr::new(ip, port);
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
@@ -88,10 +92,33 @@ fn listen(ip: IpAddr, port: u16, token: String, listen_tx: std::sync::mpsc::Send
             return;
         }
     };
+    // Tests bypass the global LISTENER + firewall rule so parallel unit
+    // tests don't race on the shared static or pay 175ms per test for netsh.
+    if std::cfg!(test) {
+        for stream in listener.incoming() {
+            match stream {
+                Ok(s) => {
+                    let tok = token.clone();
+                    std::thread::spawn(move || handle_conn(s, tok));
+                }
+                Err(_) => continue,
+            }
+        }
+        return;
+    }
+    // Store the listener BEFORE the firewall call so stop_server() can drop
+    // it (and break the accept loop) even while netsh is still running.
+    *LISTENER.lock() = Some(listener);
     crate::log::write(&format!("remote: listening on {addr}"));
     add_firewall_rule(port); // best-effort (needs admin); non-fatal
-    let _ = listen_tx.send(listener.try_clone().expect("clone of just-bound TcpListener"));
-    for stream in listener.incoming() {
+    let owned = match LISTENER.lock().take() {
+        Some(l) => l,
+        None => {
+            crate::log::write("remote: stopped during firewall rule, exiting listen thread");
+            return;
+        }
+    };
+    for stream in owned.incoming() {
         match stream {
             Ok(s) => {
                 let tok = token.clone();
@@ -907,6 +934,27 @@ mod tests {
         // RFC 6455 example: key "dGhlIHNhbXBsZSBub25jZQ==" -> "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         let got = ws_accept("dGhlIHNhbXBsZSBub25jZQ==");
         assert_eq!(got, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    }
+
+    /// Regression: start_server() must return immediately so the tray
+    /// WM_COMMAND handler doesn't block the WM_TIMER queue (which would
+    /// freeze click_tick + window_switcher::tick() for ~2s, making the
+    /// mouse and click-cycle feel unresponsive).
+    #[test]
+    fn start_server_returns_immediately() {
+        use std::time::Instant;
+        let t0 = Instant::now();
+        start_server();
+        let elapsed = t0.elapsed();
+        // Fire-and-forget should return in well under 10ms.
+        assert!(
+            elapsed.as_millis() < 50,
+            "start_server blocked for {elapsed:?} -- must be fire-and-forget"
+        );
+        // Clean up the background thread's port so we don't leak it.
+        // Give the impl a moment to bind, then stop.
+        std::thread::sleep(Duration::from_millis(200));
+        stop_server();
     }
 }
 
