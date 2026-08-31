@@ -61,8 +61,8 @@ pub fn start_server() {
         url: url.clone(),
         token: token.clone(),
     });
-    crate::log::write(&format!("remote: trackpad ready -> {url}"));
     let (listen_tx, listen_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || listen(ip, port, token, listen_tx));
     if let Ok(listener) = listen_rx.recv_timeout(Duration::from_secs(2)) {
         *LISTENER.lock() = Some(listener);
     } else {

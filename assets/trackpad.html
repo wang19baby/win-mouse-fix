@@ -39,7 +39,7 @@
   #micBtn.recording{background:#e44;animation:pulse 1s infinite;}
   #sendBtn{background:#3a7;color:#fff;border:none;border-radius:10px;padding:10px 14px;font:14px system-ui;cursor:pointer;white-space:nowrap;}
   #sendBtn:active{background:#2a6;}
-  #inputToggle{position:fixed;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);right:10px;background:#222;color:#8a8a8a;border:1px solid #444;border-radius:50%;width:44px;height:44px;font:20px system-ui;z-index:15;display:flex;align-items:center;justify-content:center;}
+  #inputToggle{position:fixed;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);right:10px;background:#222;color:#8a8a8a;border:1px solid #444;border-radius:50%;width:44px;height:44px;font:20px system-ui;z-index:20;display:flex;align-items:center;justify-content:center;}
   #inputToggle.on{background:#3a7;color:#fff;border-color:#3a7;}
   @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.5;}}
 </style>
@@ -78,7 +78,11 @@
   // 双指时区分"滚动"与"缩放"：累计两种信号，谁占优就锁定谁，避免滚动被误判成缩放。
   var DECIDE_PX = 12;       // 累计位移超过此值才判定手势类型（防抖）
   var PINCH_BIAS = 1.5;     // 缩放信号需明显强于滚动才会被判为捏合
-  var LONGPRESS_MS = 400;   // 长按触发窗口拖拽的时长（ms）
++  // Android: 三指下滑会触发系统截图，改为四指操作
++  var isAndroid = /Android/i.test(navigator.userAgent);
++  var MIN_GESTURE_FINGERS = isAndroid ? 4 : 3;
+
+  var params = new URLSearchParams(location.search);
 
   var params = new URLSearchParams(location.search);
   var token = params.get('t') || '';
@@ -249,15 +253,12 @@
       if(p.x<minx) minx=p.x; if(p.y<miny) miny=p.y;
       if(p.x>maxx) maxx=p.x; if(p.y>maxy) maxy=p.y;
     }
-    return Math.hypot(maxx-minx, maxy-miny);
+  function labelFor(n){
+    if(n===MIN_GESTURE_FINGERS) return isAndroid ? '四指导航' : '三指导航';
+    if(n>=MIN_GESTURE_FINGERS+1) return isAndroid ? '五指桌面' : '四指桌面';
+    return n + '指';
   }
 
-  function labelFor(n){
-    if(n<=1) return '指针';
-    if(n===2) return '滚动/缩放';
-    if(n===3) return '三指导航';
-    return '四指窗口';
-  }
   function updateHud(n, label){
     if(fingersEl) fingersEl.textContent = n + '指 · ' + label;
   }
@@ -381,7 +382,7 @@
         // Diagonal when both axes travelled far and neither clearly dominates.
         var diag = ax > DIAG_MIN && ay > DIAG_MIN && ax < ay*DIAG_RATIO && ay < ax*DIAG_RATIO;
         var name;
-        if(g.committedCount >= 4){
+        if(g.committedCount >= MIN_GESTURE_FINGERS){
           // 四指：窗口吸附（含四角吸附）
           if(diag){ name = (ady < 0 ? 'snap_up' : 'snap_down') + (adx < 0 ? '_l' : '_r'); }
           else if(ax >= ay){ name = adx < 0 ? 'snap_l' : 'snap_r'; }
@@ -416,8 +417,8 @@
       if(!g.swipeFired && !g.anyMoved && quick && list.length === 0){
         if(count === 1 && authed){ send({t:'tap', b:'left'}); ripple(p.startX, p.startY); }
         else if(count === 2 && authed){ send({t:'tap', b:'right'}); ripple(p.startX, p.startY); }
-        else if(count === 3 && authed){ send({t:'gesture', g:'taskview'}); }
-        else if(count >= 4 && authed){ send({t:'gesture', g:'showdesktop'}); }
+        else if(count === MIN_GESTURE_FINGERS && authed){ send({t:'gesture', g:'taskview'}); }
+        else if(count >= MIN_GESTURE_FINGERS + 1 && authed){ send({t:'gesture', g:'showdesktop'}); }
       }
       // Re-baseline a 2-finger scroll when a finger lifts, to avoid a jump.
       if(g.committedCount === 2 && list.length > 0){ g.lastC = centroid(list); }
