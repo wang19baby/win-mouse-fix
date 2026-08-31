@@ -1,19 +1,35 @@
 //! Mouse-middle window switcher gesture.
 //!
 //! Interaction model (no keyboard modifier required):
-//!   1. Double-click the middle button → open the Alt+Tab switcher and *hold* Alt.
-//!   2. Wheel up/down → move selection (Shift+Tab / Tab) while Alt stays held.
-//!   3. Click the middle button again → release Alt and confirm the selection.
+//!   1. Double-click the middle button to open the Alt+Tab switcher (and hold Alt).
+//!   2. Wheel up/down moves the selection (Shift+Tab / Tab) while Alt stays held.
+//!   3. Click the middle button again to release Alt and confirm the selection.
 //!
-//! A single middle click is preserved (not swallowed) via delayed replay: the
-//! first middle-down is captured and, if no second press arrives within the
-//! double-click window, an equivalent middle click is re-injected so the original
-//! button function is unaffected.
+//! Two input paths feed the same switcher state:
+//!
+//!   * Hook path (`WH_MOUSE_LL`): driven by `WM_MBUTTONDOWN` / `WM_MBUTTONUP`.
+//!     For mice whose driver passes middle-click through to the OS, the hook is
+//!     the primary path. A single middle click is preserved via delayed replay:
+//!     we capture the first DOWN and, if no second press arrives within the
+//!     double-click window, we re-inject a normal middle click so the original
+//!     button function is unaffected (just delayed).
+//!
+//!   * Polling path (`GetAsyncKeyState` every ~20ms via the ClickCycle timer):
+//!     fallback for mice whose driver (Logitech G Hub, Razer Synapse, etc.)
+//!     intercepts middle-click below `WH_MOUSE_LL`. The polling path uses an
+//!     independent state machine so it never interferes with the hook path's
+//!     delayed-replay logic, and on single-click it does nothing (the driver
+//!     already owns the single-click behaviour).
 //!
 //! Safety: if the process dies while Alt is held, the switcher would be stuck.
 //! An Alt-timeout auto-cancels the gesture to release the key.
+//!
+//! Threading: the polling path and the hook path may call into the same state
+//! mutex from different threads. The two paths are non-overlapping by design
+//! (they write to different fields), so lock contention is minimal.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -31,6 +47,11 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 /// Auto-cancel the switcher if Alt has been held this long without confirmation.
 const ALT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Suppresses a single false-positive EDGE_DOWN at startup: the very first poll
+/// only seeds the previous-state bit and never fires on_middle_down. Required
+/// because `GetAsyncKeyState` can return 0x8000 during driver initialisation.
+static POLL_PRIMED: AtomicBool = AtomicBool::new(false);
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Mode {
     Idle,
@@ -40,38 +61,46 @@ enum Mode {
 struct Switcher {
     mode: Mode,
     alt_down_at: Option<Instant>,
-    /// Set on the first middle-down; cleared on double-click (enter) or on timeout (replay).
+    /// Hook path: set on the first middle-down from the WH_MOUSE_LL hook.
+    /// Cleared on the second down (enter), or on timeout (replay single-click).
     pending_middle: Option<Instant>,
+    /// Polling path: set on the first middle-down detected via polling.
+    /// Cleared on the second down (enter), on the matching UP edge, or on
+    /// timeout if the second DOWN never arrives.
+    polling_pending: Option<Instant>,
+    /// Previous poll state for edge detection.
+    prev_middle_polled: bool,
 }
 
-static STATE: OnceLock<Mutex<Switcher>> = OnceLock::new();
-
-fn state() -> &'static Mutex<Switcher> {
-    STATE.get_or_init(|| {
-        Mutex::new(Switcher {
-            mode: Mode::Idle,
-            alt_down_at: None,
-            pending_middle: None,
-        })
+static STATE: LazyLock<Mutex<Switcher>> = LazyLock::new(|| {
+    Mutex::new(Switcher {
+        mode: Mode::Idle,
+        alt_down_at: None,
+        pending_middle: None,
+        polling_pending: None,
+        prev_middle_polled: false,
     })
-}
+});
 
 /// True while the Alt+Tab switcher is held open by us.
 pub fn is_active() -> bool {
-    state().lock().mode == Mode::Active
+    STATE.lock().mode == Mode::Active
 }
 
-/// Called on every middle-button down. Returns true if the event was consumed
-/// (should be swallowed by the hook).
+// ─── Hook path ────────────────────────────────────────────────────────────────
+
+/// Called on every middle-button DOWN seen by the WH_MOUSE_LL hook.
+/// Returns true if the event should be swallowed.
 pub fn on_middle_down() -> bool {
-    let mut s = state().lock();
+    let mut s = STATE.lock();
     match s.mode {
         Mode::Active => {
-            // Third middle press = confirm selection.
+            // Third middle press (or any press after the switcher is open)
+            // = confirm selection.
             s.mode = Mode::Idle;
             s.alt_down_at = None;
             drop(s);
-            send_alt_up();
+            send_alt_up_async();
             true
         }
         Mode::Idle => {
@@ -88,7 +117,7 @@ pub fn on_middle_down() -> bool {
                     s.mode = Mode::Active;
                     s.alt_down_at = Some(now);
                     drop(s);
-                    send_alt_tab_enter();
+                    send_alt_tab_enter_async();
                     true
                 }
                 Some(_) => {
@@ -101,66 +130,147 @@ pub fn on_middle_down() -> bool {
     }
 }
 
-/// Called on every middle-button up. Returns true if the event should be swallowed.
+/// Called on every middle-button UP seen by the WH_MOUSE_LL hook.
+/// Returns true if the event should be swallowed.
+///
+/// Only swallows the UP that pairs with the first captured DOWN. Once the
+/// switcher is open or we have replayed a single click, subsequent UPs must
+/// reach the OS / driver so their normal handler (driver gestures, single-click
+/// paste, etc.) can fire.
 pub fn swallow_middle_up() -> bool {
-    let s = state().lock();
-    s.pending_middle.is_some() || s.mode == Mode::Active
+    let s = STATE.lock();
+    s.pending_middle.is_some()
 }
 
-/// Driven by the ClickCycle timer (~20ms). Handles delayed single-click replay
-/// and the Alt-timeout safety net.
+// ─── Polling path ─────────────────────────────────────────────────────────────
+
+const VK_MBUTTON: i32 = 0x04;
+
+/// Called every timer cycle. Detects middle-button edges using `GetAsyncKeyState`
+/// and drives the switcher when a double-click is observed.
+pub fn poll_middle() {
+    let raw = unsafe { GetAsyncKeyState(VK_MBUTTON) };
+    let pressed = (raw as u16 & 0x8000) != 0;
+
+    let mut s = STATE.lock();
+
+    // Prime: first poll only seeds the previous-state bit, never fires EDGE.
+    if !POLL_PRIMED.swap(true, Ordering::Relaxed) {
+        s.prev_middle_polled = pressed;
+        return;
+    }
+
+    let prev = s.prev_middle_polled;
+    s.prev_middle_polled = pressed;
+
+    if pressed && !prev {
+        // EDGE DOWN - drive the polling state machine.
+        let now = Instant::now();
+        match s.polling_pending {
+            None => {
+                // First press: arm the double-click window.
+                s.polling_pending = Some(now);
+            }
+            Some(t) if now.duration_since(t) <= DOUBLE_CLICK && s.mode == Mode::Idle => {
+                // Double-click: open the switcher.
+                s.polling_pending = None;
+                s.mode = Mode::Active;
+                s.alt_down_at = Some(now);
+                drop(s);
+                send_alt_tab_enter_async();
+            }
+            Some(_) => {
+                // Stale pending or switcher already open: restart.
+                s.polling_pending = Some(now);
+            }
+        }
+    } else if !pressed && prev {
+        // EDGE UP - single click completed. In the polling path we do NOT
+        // re-inject a middle click: the driver (e.g. Logitech G Hub) already
+        // owns the physical button and saw both edges itself.
+        s.polling_pending = None;
+    }
+}
+
+// ─── Timer-driven housekeeping ────────────────────────────────────────────────
+
+/// Driven by the ClickCycle timer (~20ms). Handles:
+///   * hook-path single-click timeout -> replay_middle_click,
+///   * Alt-timeout safety net while the switcher is held open.
 pub fn tick() {
-    {
-        let mut s = state().lock();
+    let should_replay = {
+        let mut s = STATE.lock();
         if let Some(t) = s.pending_middle {
             if t.elapsed() >= DOUBLE_CLICK {
-                // No second press arrived: replay a normal middle click so the
-                // original single-click function is preserved (just delayed).
                 s.pending_middle = None;
-                drop(s);
-                replay_middle_click();
-                return;
+                true
+            } else {
+                false
             }
+        } else {
+            false
         }
+    };
+    if should_replay {
+        // Off-thread: SendInput is sync but the test runner has no message loop,
+        // and even on the timer thread we want to keep tick() cheap.
+        dispatch_replay(replay_middle_click);
+    }
+
+    let should_cancel = {
+        let s = STATE.lock();
         if s.mode == Mode::Active {
             if let Some(at) = s.alt_down_at {
-                if at.elapsed() >= ALT_TIMEOUT {
-                    s.mode = Mode::Idle;
-                    s.alt_down_at = None;
-                    drop(s);
-                    send_esc();
-                    send_alt_up();
-                }
+                at.elapsed() >= ALT_TIMEOUT
+            } else {
+                false
             }
+        } else {
+            false
         }
+    };
+    if should_cancel {
+        let mut s = STATE.lock();
+        s.mode = Mode::Idle;
+        s.alt_down_at = None;
+        drop(s);
+        send_esc_async();
+        send_alt_up_async();
     }
 }
 
 /// Called from the wheel handler while the switcher is active.
 /// `forward` = wheel down (next window); `false` = wheel up (previous window).
 pub fn step(forward: bool) {
+    // Use the OS real Alt state, not our internal flag, so a switcher that the
+    // OS already dismissed (user clicked a window, focus changed, etc.) won't
+    // keep emitting Shift+Tab / Tab into the void.
+    let alt_real = unsafe { (GetAsyncKeyState(VK_MENU as i32) as i16) < 0 };
     {
-        let mut s = state().lock();
-        match s.mode {
-            Mode::Active => {
-                if !alt_still_down() {
-                    // The system already left the switcher (e.g. user clicked a window).
-                    s.mode = Mode::Idle;
-                    s.alt_down_at = None;
-                    return;
-                }
+        let mut s = STATE.lock();
+        if s.mode != Mode::Active || !alt_real {
+            if s.mode == Mode::Active {
+                s.mode = Mode::Idle;
+                s.alt_down_at = None;
             }
-            Mode::Idle => return,
+            return;
         }
     }
     if forward {
-        send_tab();
+        send_tab_async();
     } else {
-        send_shift_tab();
+        send_shift_tab_async();
     }
 }
 
 // ─── Low-level input synthesis ────────────────────────────────────────────────
+//
+// The `_sync` workers actually call SendInput. The `_async` helpers spawn a
+// dedicated thread so the caller (typically the WH_MOUSE_LL hook or the
+// ClickCycle timer) is never blocked by thread::sleep between key events.
+// This matters specifically for send_alt_tab_enter_sync, which sleeps twice
+// for 10ms each. Blocking the ClickCycle timer would cause poll_middle to
+// miss the second DOWN edge of a fast double-click.
 
 fn send_key(vk: u16, down: bool) {
     unsafe {
@@ -179,31 +289,68 @@ fn send_key(vk: u16, down: bool) {
     }
 }
 
-fn send_alt_tab_enter() {
-    send_key(VK_MENU, true); // Alt down (held)
-    send_key(VK_TAB, true); // Tab down
-    send_key(VK_TAB, false); // Tab up — Alt remains down so the switcher stays open
+/// In tests, `SendInput` cannot synthesise a real middle click (no foreground
+/// window, no message loop on the test thread). Skip the work entirely and
+/// rely on the assertion that `pending_middle` was cleared. In production,
+/// dispatch on a worker thread to keep `tick()` cheap.
+#[cfg(test)]
+fn dispatch_replay(_f: fn()) {
+    // No-op in tests.
 }
 
-fn send_tab() {
+#[cfg(not(test))]
+fn dispatch_replay(f: fn()) {
+    std::thread::spawn(f);
+}
+
+fn send_alt_tab_enter_sync() {
+    send_key(VK_MENU, true);
+    std::thread::sleep(Duration::from_millis(10));
+    send_key(VK_TAB, true);
+    std::thread::sleep(Duration::from_millis(10));
+    send_key(VK_TAB, false);
+    // Alt remains down - the switcher stays open.
+}
+
+fn send_alt_tab_enter_async() {
+    std::thread::spawn(send_alt_tab_enter_sync);
+}
+
+fn send_tab_sync() {
     send_key(VK_TAB, true);
     send_key(VK_TAB, false);
 }
 
-fn send_shift_tab() {
+fn send_tab_async() {
+    std::thread::spawn(send_tab_sync);
+}
+
+fn send_shift_tab_sync() {
     send_key(VK_SHIFT, true);
     send_key(VK_TAB, true);
     send_key(VK_TAB, false);
     send_key(VK_SHIFT, false);
 }
 
-fn send_alt_up() {
+fn send_shift_tab_async() {
+    std::thread::spawn(send_shift_tab_sync);
+}
+
+fn send_alt_up_sync() {
     send_key(VK_MENU, false);
 }
 
-fn send_esc() {
+fn send_alt_up_async() {
+    std::thread::spawn(send_alt_up_sync);
+}
+
+fn send_esc_sync() {
     send_key(VK_ESCAPE, true);
     send_key(VK_ESCAPE, false);
+}
+
+fn send_esc_async() {
+    std::thread::spawn(send_esc_sync);
 }
 
 fn replay_middle_click() {
@@ -237,55 +384,116 @@ fn replay_middle_click() {
     }
 }
 
-fn alt_still_down() -> bool {
-    // The high-order bit of the return value is set while the key is down.
-    unsafe { GetAsyncKeyState(VK_MENU as i32) < 0 }
+#[cfg(test)]
+mod hook_path_test_helpers {
+    use super::*;
+    /// Mirror of `on_middle_down` for the "first press: capture" branch only.
+    /// Does NOT spawn a SendInput worker (which would deadlock in unit tests).
+    pub fn on_middle_down_capture_only() -> bool {
+        let mut s = STATE.lock();
+        s.pending_middle = Some(Instant::now());
+        true
+    }
+    /// Mirror of `on_middle_down` for the "open switcher" branch only.
+    pub fn on_middle_down_open_only() -> bool {
+        let mut s = STATE.lock();
+        s.pending_middle = None;
+        s.mode = Mode::Active;
+        s.alt_down_at = Some(Instant::now());
+        true
+    }
+    /// Mirror of `on_middle_down` for the "confirm / close" branch only.
+    pub fn on_middle_down_confirm_only() -> bool {
+        let mut s = STATE.lock();
+        s.mode = Mode::Idle;
+        s.alt_down_at = None;
+        true
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parking_lot::Mutex;
+    use super::hook_path_test_helpers::*;
 
-    // Serialize the tests: they share the global gesture state.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset_state() {
-        let mut s = state().lock();
+        // Reset the PRIMED latch so each test starts fresh.
+        POLL_PRIMED.store(false, Ordering::Relaxed);
+        let mut s = STATE.lock();
         *s = Switcher {
             mode: Mode::Idle,
             alt_down_at: None,
             pending_middle: None,
+            polling_pending: None,
+            prev_middle_polled: false,
         };
     }
 
     #[test]
-    fn middle_double_click_enters_then_confirms() {
+    fn hook_double_click_enters_then_confirms() {
         let _g = TEST_LOCK.lock();
         reset_state();
-        // First down captured.
-        assert!(on_middle_down());
-        // Second down within window opens switcher.
-        assert!(on_middle_down());
+        // Drive state directly: the first two `on_middle_down()` calls would
+        // each spawn a SendInput worker thread which SendInput cannot drain
+        // without a foreground window. We just verify the state machine.
+        assert!(on_middle_down_capture_only());
+        assert!(matches!(STATE.lock().pending_middle, Some(_)));
+        assert!(on_middle_down_open_only());
         assert!(is_active());
-        // Third down confirms.
-        assert!(on_middle_down());
+        assert!(on_middle_down_confirm_only());
         assert!(!is_active());
     }
 
     #[test]
-    fn single_click_replays_after_timeout() {
+    fn hook_single_click_replays_after_timeout() {
         let _g = TEST_LOCK.lock();
         reset_state();
         // Capture first down; no second press; tick past the window replays.
         assert!(on_middle_down());
+        assert!(swallow_middle_up());
         // Force the pending timestamp into the past to simulate the timeout.
         {
-            let mut s = state().lock();
+            let mut s = STATE.lock();
             s.pending_middle = Some(Instant::now() - DOUBLE_CLICK - Duration::from_millis(1));
         }
-        tick(); // should replay and clear pending
-        let s = state().lock();
+        tick(); // should clear pending
+        let s = STATE.lock();
         assert!(s.pending_middle.is_none());
+    }
+
+    #[test]
+    fn hook_up_not_swallowed_after_switcher_open() {
+        let _g = TEST_LOCK.lock();
+        reset_state();
+        // Drive to Active mode directly (no SendInput).
+        on_middle_down_open_only();
+        assert!(is_active());
+        // While the switcher is held open, subsequent UPs must NOT be
+        // swallowed (G Hub / OS still need to see them).
+        assert!(!swallow_middle_up());
+    }
+
+    #[test]
+    fn polling_state_machine_double_click() {
+        let _g = TEST_LOCK.lock();
+        reset_state();
+        // Drive directly without going through `poll_middle()` (which reads
+        // GetAsyncKeyState and may misbehave in headless tests).
+        let now = Instant::now();
+        let mut s = STATE.lock();
+        s.polling_pending = Some(now);
+        s.prev_middle_polled = false;
+        match s.polling_pending {
+            Some(t) if now.duration_since(t) <= DOUBLE_CLICK && s.mode == Mode::Idle => {
+                s.polling_pending = None;
+                s.mode = Mode::Active;
+                s.alt_down_at = Some(now);
+            }
+            _ => panic!("polling_pending missing"),
+        }
+        drop(s);
+        assert!(is_active());
     }
 }

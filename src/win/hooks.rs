@@ -1059,6 +1059,10 @@ fn stop_click_timer() {
 /// Runs tick() on the tracker and fires any hold effects that have expired.
 /// Invoked from the tray window's `wnd_proc` (the LL mouse hook never sees WM_TIMER).
 pub(crate) fn run_click_tick() {
+    // Poll middle-button state via GetAsyncKeyState as a fallback for mice
+    // whose driver blocks WM_MBUTTONDOWN from reaching WH_MOUSE_LL.
+    crate::win::window_switcher::poll_middle();
+
     // Drive the window-switcher gesture (delayed replay + Alt-timeout) regardless
     // of whether any ClickCycle remap is currently active.
     crate::win::window_switcher::tick();
