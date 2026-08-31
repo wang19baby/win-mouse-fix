@@ -157,6 +157,7 @@ pub fn poll_middle() {
     // Prime: first poll only seeds the previous-state bit, never fires EDGE.
     if !POLL_PRIMED.swap(true, Ordering::Relaxed) {
         s.prev_middle_polled = pressed;
+        crate::log::write(&format!("poll_middle: PRIMED (pressed={})", pressed));
         return;
     }
 
@@ -166,29 +167,49 @@ pub fn poll_middle() {
     if pressed && !prev {
         // EDGE DOWN - drive the polling state machine.
         let now = Instant::now();
+        crate::log::write(&format!("poll_middle: EDGE DOWN prev={} raw=0x{:04x}", prev, raw as u16));
+        // If the switcher is already open, this EDGE DOWN means "confirm
+        // and close" — same semantics as the hook-path on_middle_down()
+        // Mode::Active branch.
+        if s.mode == Mode::Active {
+            s.mode = Mode::Idle;
+            s.alt_down_at = None;
+            s.polling_pending = None;
+            drop(s);
+            crate::log::write("poll_middle: EDGE DOWN active -> confirm close");
+            send_alt_up_async();
+        } else {
         match s.polling_pending {
             None => {
                 // First press: arm the double-click window.
                 s.polling_pending = Some(now);
+                crate::log::write("poll_middle: armed polling_pending");
             }
-            Some(t) if now.duration_since(t) <= DOUBLE_CLICK && s.mode == Mode::Idle => {
+            Some(t) if now.duration_since(t) <= DOUBLE_CLICK => {
                 // Double-click: open the switcher.
                 s.polling_pending = None;
                 s.mode = Mode::Active;
                 s.alt_down_at = Some(now);
                 drop(s);
+                crate::log::write("poll_middle: EDGE DOWN #2 -> open switcher");
                 send_alt_tab_enter_async();
             }
             Some(_) => {
-                // Stale pending or switcher already open: restart.
+                // Stale pending: restart the window.
                 s.polling_pending = Some(now);
+                crate::log::write("poll_middle: EDGE DOWN stale -> restart");
             }
+        }
         }
     } else if !pressed && prev {
         // EDGE UP - single click completed. In the polling path we do NOT
         // re-inject a middle click: the driver (e.g. Logitech G Hub) already
         // owns the physical button and saw both edges itself.
-        s.polling_pending = None;
+        // We deliberately do NOT clear polling_pending here: a real
+        // double-click is DOWN-UP-DOWN-UP within 500ms. The UP fires
+        // immediately and would otherwise wipe the first DOWN from state.
+        // Cleanup of stale polling_pending happens on a DOWN edge when the
+        // gap since the first DOWN exceeds DOUBLE_CLICK.
     }
 }
 
@@ -241,26 +262,36 @@ pub fn tick() {
 
 /// Called from the wheel handler while the switcher is active.
 /// `forward` = wheel down (next window); `false` = wheel up (previous window).
-pub fn step(forward: bool) {
+///
+/// Returns `true` when a Tab / Shift+Tab was sent (caller should swallow the
+/// wheel). Returns `false` when the switcher was no longer actually held by
+/// the OS (e.g. user clicked away to a different window and the Alt+Tab UI
+/// dismissed itself) — in that case the caller should fall through to the
+/// normal scroll path so the wheel isn't silently swallowed.
+pub fn step(forward: bool) -> bool {
     // Use the OS real Alt state, not our internal flag, so a switcher that the
     // OS already dismissed (user clicked a window, focus changed, etc.) won't
     // keep emitting Shift+Tab / Tab into the void.
     let alt_real = unsafe { (GetAsyncKeyState(VK_MENU as i32) as i16) < 0 };
     {
         let mut s = STATE.lock();
+        let mode = s.mode;
         if s.mode != Mode::Active || !alt_real {
             if s.mode == Mode::Active {
                 s.mode = Mode::Idle;
                 s.alt_down_at = None;
             }
-            return;
+            crate::log::write(&format!("step: skip mode={:?} alt_real={} forward={}", mode, alt_real, forward));
+            return false;
         }
     }
+    crate::log::write(&format!("step: ACTIVE forward={} alt_real=true, send Tab", forward));
     if forward {
         send_tab_async();
     } else {
         send_shift_tab_async();
     }
+    true
 }
 
 // ─── Low-level input synthesis ────────────────────────────────────────────────

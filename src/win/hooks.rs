@@ -679,10 +679,16 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         // ── Wheel events ──────────────────────────────────────────────────────────
         if ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL {
             // Window-switcher gesture: wheel navigates the Alt+Tab list while held.
+            // step() may detect that the OS dismissed the switcher (e.g. user
+            // clicked away to a different window) — in that case it resets
+            // mode and we fall through to the normal scroll path so the
+            // wheel isn't swallowed for no reason.
             if crate::win::window_switcher::is_active() {
                 let raw_delta = (ms.mouseData >> 16) as i16 as i32;
-                crate::win::window_switcher::step(raw_delta < 0);
-                return 1; // swallowed: drives the switcher, never scrolls
+                if crate::win::window_switcher::step(raw_delta < 0) {
+                    return 1; // swallowed: drove the switcher
+                }
+                // step() returned false: switcher was dismissed by OS, fall through.
             }
             if scroll_on {
                 let raw_delta = (ms.mouseData >> 16) as i16 as i32;
