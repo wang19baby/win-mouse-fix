@@ -436,10 +436,11 @@ unsafe fn show_menu(hwnd: isize) {
 
     AppendMenuW(menu, MF_STRING, ID_BATTERY, to_wide("电池状态").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_DPI, to_wide("DPI 同步当前屏").as_ptr());
-    if crate::CONFIG.read().remote.enabled {
-        AppendMenuW(menu, MF_STRING, ID_REMOTE, to_wide("手机妙控板").as_ptr());
-    }
-
+    // Always show the trackpad entry. The server is bound to a specific LAN IP
+    // and only opened on first click (no LAN listener / firewall rule unless
+    // the user explicitly opts in). RemoteConfig.enabled is not consulted here
+    // so the menu is discoverable even with the default-off setting.
+    AppendMenuW(menu, MF_STRING, ID_REMOTE, to_wide("手机妙控板").as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_SETTINGS, to_wide("设置").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_PROFILES, to_wide("配置文件").as_ptr());
@@ -1002,8 +1003,14 @@ fn ensure_firewall_rule(owner: isize, port: u16) {
 }
 
 fn show_remote_qr(_owner: isize) {
+    // Lazy-start the server on first menu click. Default-off setting keeps
+    // the app from binding a LAN port until the user explicitly opens this
+    // menu item; once started the server stays up for the rest of the
+    // process lifetime.
+    if crate::remote::info().is_none() {
+        crate::remote::start_server();
+    }
     match crate::remote::info() {
-
         Some(info) => {
             // Open the in-service QR page in the default browser. The page itself
             // renders the QR + copyable address, so no Win32 window is needed.
@@ -1047,8 +1054,10 @@ fn show_remote_qr(_owner: isize) {
         None => unsafe {
             MessageBoxW(
                 _owner,
-
-                to_wide("手机妙控板服务尚未启动,请重启程序后重试。").as_ptr(),
+                to_wide(
+                    "手机妙控板服务启动失败。\n请检查防火墙设置或日志。",
+                )
+                .as_ptr(),
                 to_wide("手机妙控板").as_ptr(),
                 MB_OK | MB_ICONINFORMATION,
             );
