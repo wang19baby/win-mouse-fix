@@ -11,6 +11,9 @@ use std::sync::Arc;
  use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
  use std::sync::LazyLock;
 use std::time::Duration;
+use std::os::windows::process::CommandExt;
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 use parking_lot::RwLock;
 use qrcode::{Color, QrCode};
@@ -784,6 +787,7 @@ fn add_firewall_rule(port: u16) {
             "protocol=TCP",
             &format!("localport={port}"),
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
     match out {
         Ok(o) if o.status.success() => crate::log::write("remote: firewall rule added"),

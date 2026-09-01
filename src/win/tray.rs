@@ -1,5 +1,8 @@
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
+use std::os::windows::process::CommandExt;
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 
 use windows_sys::Win32::UI::Shell::{
@@ -424,6 +427,9 @@ unsafe fn show_menu(hwnd: isize) {
 
     AppendMenuW(menu, smooth_flags, ID_SMOOTH, to_wide("平滑滚动").as_ptr());
     AppendMenuW(menu, remap_flags, ID_REMAP, to_wide("按键重映射").as_ptr());
+    // Trackpad toggle: ✓ if server is running, blank if not.
+    let remote_flags = MF_STRING | if crate::remote::info().is_some() { MF_CHECKED } else { MF_UNCHECKED };
+    AppendMenuW(menu, remote_flags, ID_REMOTE, to_wide("手机妙控板").as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
 
     let addmode_active = crate::add_mode::is_active();
@@ -438,9 +444,6 @@ unsafe fn show_menu(hwnd: isize) {
 
     AppendMenuW(menu, MF_STRING, ID_BATTERY, to_wide("电池状态").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_DPI, to_wide("DPI 同步当前屏").as_ptr());
-    // Trackpad toggle: ✓ if server is running, blank if not.
-    let remote_flags = MF_STRING | if crate::remote::info().is_some() { MF_CHECKED } else { MF_UNCHECKED };
-    AppendMenuW(menu, remote_flags, ID_REMOTE, to_wide("手机妙控板").as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_SETTINGS, to_wide("设置").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_PROFILES, to_wide("配置文件").as_ptr());
@@ -956,6 +959,7 @@ fn firewall_rule_exists(port: u16) -> bool {
     let name = format!("WinMouseFix-Trackpad-{port}");
     let out = std::process::Command::new("netsh")
         .args(["advfirewall", "firewall", "show", "rule", &format!("name={name}")])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
     match out {
         Ok(o) => o.status.success() && String::from_utf8_lossy(&o.stdout).contains(&name),
