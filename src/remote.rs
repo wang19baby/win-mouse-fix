@@ -64,7 +64,15 @@ fn start_server_impl() {
         }
     };
     let token = load_or_create_token();
-    let url = format!("http://{ip}:{port}/?t={token}");
+    // Append a build nonce so the URL is unique per restart. PC browsers
+    // (Chrome/Edge) that previously cached a broken version will fetch a
+    // fresh response instead of replaying the stale cache, because the
+    // URL key differs.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let url = format!("http://{ip}:{port}/?t={token}&v={nonce}");
     *REMOTE.write() = Some(RemoteInfo {
         url: url.clone(),
         token: token.clone(),
