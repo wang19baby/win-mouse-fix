@@ -425,7 +425,6 @@ mod tests {
         for _ in 0..3 {
             dir = Coast2D::update_direction_ema(dir, 100, 100);
         }
-        let before = dir;
         dir = Coast2D::update_direction_ema(dir, 100, 0);
         assert!(dir.1 > 0.2, "single vertical tick should not erase prior dx");
         assert!(dir.0 > dir.1);

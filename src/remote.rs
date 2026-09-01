@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
  use std::io::{Read, Write};
- use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+ use std::net::{IpAddr, SocketAddr, TcpStream};
  use std::sync::LazyLock;
 use std::time::Duration;
 use std::os::windows::process::CommandExt;
@@ -1062,7 +1062,6 @@ mod tests {
     /// least verify the braces balance and every `name` referenced as
     /// identifier is declared somewhere in the same script block.
     #[test]
-    #[test]
     fn trackpad_html_is_syntactically_valid() {
         let html = TRACKPAD_HTML;
         let mut start = 0usize;
@@ -1077,7 +1076,6 @@ mod tests {
                 None => break,
             };
             let body = &html[body_start..close];
-            let body_str = std::str::from_utf8(body.as_bytes()).unwrap_or("");
             let bytes = body.as_bytes();
 
             // 1) Brace / paren / bracket balance.

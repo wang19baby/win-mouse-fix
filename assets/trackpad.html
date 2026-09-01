@@ -87,7 +87,7 @@
   var ACCEL_REF = 10;       // 每帧位移低于此值不加速(px/帧)
   var ACCEL_SLOPE = 10;     // 超过 ACCEL_REF 后，每多这么多 px/帧 加速 +1 倍
   var ACCEL_MAX_MULT = 2.0; // 最大加速倍数
-  var MOVE_EMA = 0.35;      // 速度平滑系数(越小越平滑, 抑制颤动)
+  var MOVE_EMA = 0.25;      // 速度平滑系数(越小越平滑, 抑制颤动)
   var SCROLL_GAIN = 5.5;    // 滚动像素 -> 轮子单位（调高 = 更快、更跟手）
   var TAP_MS = 220, TAP_PX = 10;
   var SWIPE_PX = 45;        // 三/四指滑动触发距离（质心位移）
@@ -95,11 +95,11 @@
   var DIAG_RATIO = 1.6;     // 某方向超过另一方向 DIAG_RATIO 倍则视为正方向（非斜向）
   var SETTLE_MS = 120;      // 手指落下后等待稳定，再锁定指数量
   var COMMIT_EARLY_PX = 10; // 或位移超过此值立即锁定（更跟手）
-  var ZOOM_STEP_PX = 30;    // 捏合每变化这么多 px 触发一档缩放（更大=更不易误触）
+  var ZOOM_STEP_PX = 20;    // 捏合每变化这么多 px 触发一档缩放（更灵敏）
   var ZOOM_DELTA = 100;     // 每档缩放强度（轮子单位）
   // 双指时区分"滚动"与"缩放"：累计两种信号，谁占优就锁定谁，避免滚动被误判成缩放。
-  var DECIDE_PX = 12;       // 累计位移超过此值才判定手势类型（防抖）
-  var PINCH_BIAS = 1.5;     // 缩放信号需明显强于滚动才会被判为捏合
+  var DECIDE_PX = 20;       // 累计位移超过此值才判定手势类型（提高防抖）
+  var PINCH_BIAS = 1.8;     // 缩放信号需明显强于滚动才会被判为捏合
   var LONGPRESS_MS = 400;   // 长按拖拽触发窗口拖拽的时长（ms）
   var isAndroid = /Android/i.test(navigator.userAgent);
   var MIN_GESTURE_FINGERS = isAndroid ? 4 : 3;
@@ -132,6 +132,15 @@
   // Smoothed speed estimate (EMA) used to drive pointer acceleration without
   // frame-to-frame gain jitter.
   var moveSpeedEma = 0;
+
+  // rAF batching: accumulate sub-pixel deltas, flush once per frame.
+  var pendingDx = 0, pendingDy = 0, rafPending = false;
+
+  // Two-finger scroll smoothing (EMA).
+  var scrollSmoothX = 0, scrollSmoothY = 0, SCROLL_EMA = 0.3;
+
+  // Two-finger zoom continuous accumulator (sub-pixel).
+  var zoomAccum = 0;
 
   // Live multi-touch gesture state. The finger COUNT is locked ("committed")
   // once the fingers have settled (or movement forces an early commit), so a
@@ -244,8 +253,23 @@
   // Drive one relative move from a single pointer delta. The acceleration gain is
   // derived from a *smoothed* speed (EMA of per-event magnitude) so it changes
   // gradually instead of jittering frame-to-frame (which read as "trembling").
+  // Events are batched via rAF: sub-pixel deltas accumulate and flush once per
+  // display frame, eliminating quantization jitter and halving WS traffic.
   function emitMove(dx, dy){
     if(!authed) return;
+    pendingDx += dx;
+    pendingDy += dy;
+    if(!rafPending){
+      rafPending = true;
+      requestAnimationFrame(flushMove);
+    }
+  }
+
+  function flushMove(){
+    rafPending = false;
+    var dx = pendingDx, dy = pendingDy;
+    pendingDx = 0; pendingDy = 0;
+    if(dx === 0 && dy === 0) return;
     var mag = Math.hypot(dx, dy);
     moveSpeedEma = moveSpeedEma * MOVE_EMA + mag * (1 - MOVE_EMA);
     var factor = moveSpeedEma <= ACCEL_REF ? 1 : 1 + (moveSpeedEma - ACCEL_REF) / ACCEL_SLOPE;
@@ -288,6 +312,9 @@
   function newGesture(list){
     var c = centroid(list);
     moveSpeedEma = 0; // fresh speed estimate each gesture, no stale boost
+    pendingDx = 0; pendingDy = 0; // flush any leftover move deltas
+    scrollSmoothX = 0; scrollSmoothY = 0; // reset scroll smoothing
+    zoomAccum = 0; // reset zoom accumulator
     g = {
       startT: performance.now(),
       settleUntil: performance.now() + SETTLE_MS,
@@ -317,6 +344,7 @@
     var c = centroid(list);
     g.startC = c; g.lastC = c; g.pinch0 = pinchMetric(list);
     g.scrollAccum = 0; g.pinchAccum = 0; g.twoDecided = null;
+    scrollSmoothX = 0; scrollSmoothY = 0; zoomAccum = 0;
     updateHud(g.committedCount, labelFor(g.committedCount));
   }
 
@@ -332,6 +360,7 @@
       g.settleMove = 0;
       g.committed = false;
       g.scrollAccum = 0; g.pinchAccum = 0; g.twoDecided = null;
+      scrollSmoothX = 0; scrollSmoothY = 0; zoomAccum = 0;
       cancelLongpressTimer();
       updateHud(list.length, '…');
     }
@@ -359,8 +388,9 @@
 
     if(g.committedCount === 1){
       // Defer until it's a drag (past the tap threshold); a pure tap teleports on
-      // release instead. Once dragging, emit every pointer event at full sample
-      // rate (no rAF batching) and let emitMove smooth the acceleration gain.
+      // release instead. Once dragging, accumulate sub-pixel deltas and flush via
+      // rAF (one send per display frame) — this eliminates quantization jitter
+      // and halves WS traffic.
       if(authed && g.anyMoved){ emitMove(dx, dy); }
     } else if(g.committedCount === 2){
       var c = centroid(list);
@@ -382,13 +412,20 @@
 
       if(authed){
         if(g.twoDecided === 'pinch'){
-          // Deliberate spread/contract -> zoom only.
-          if(dz > ZOOM_STEP_PX){ send({t:'zoom', delta: ZOOM_DELTA}); g.pinch0 += ZOOM_STEP_PX; }
-          else if(dz < -ZOOM_STEP_PX){ send({t:'zoom', delta:-ZOOM_DELTA}); g.pinch0 -= ZOOM_STEP_PX; }
+          // Deliberate spread/contract -> zoom only (continuous interpolation).
+          zoomAccum += dz;
+          if(Math.abs(zoomAccum) >= ZOOM_STEP_PX){
+            var steps = Math.trunc(zoomAccum / ZOOM_STEP_PX);
+            zoomAccum -= steps * ZOOM_STEP_PX;
+            send({t:'zoom', delta: steps * ZOOM_DELTA});
+          }
         } else {
-          // scroll / undecided -> scroll only (baseline tracks live so a later
-          // genuine pinch still registers its delta from the current spread).
-          if(sdx !== 0 || sdy !== 0) send({t:'scroll', dx:Math.round(-sdx*SCROLL_GAIN), dy:Math.round(-sdy*SCROLL_GAIN)});
+          // scroll / undecided -> scroll only (EMA-smoothed centroid deltas)
+          // (baseline tracks live so a later genuine pinch still registers its
+          // delta from the current spread).
+          scrollSmoothX = scrollSmoothX * SCROLL_EMA + sdx * (1 - SCROLL_EMA);
+          scrollSmoothY = scrollSmoothY * SCROLL_EMA + sdy * (1 - SCROLL_EMA);
+          if(scrollSmoothX !== 0 || scrollSmoothY !== 0) send({t:'scroll', dx:Math.round(-scrollSmoothX*SCROLL_GAIN), dy:Math.round(-scrollSmoothY*SCROLL_GAIN)});
           g.pinch0 = pd;
         }
       }
@@ -443,7 +480,7 @@
         else if(count >= MIN_GESTURE_FINGERS + 1 && authed){ send({t:'gesture', g:'showdesktop'}); }
       }
       // Re-baseline a 2-finger scroll when a finger lifts, to avoid a jump.
-      if(g.committedCount === 2 && list.length > 0){ g.lastC = centroid(list); }
+      if(g.committedCount === 2 && list.length > 0){ g.lastC = centroid(list); scrollSmoothX = 0; scrollSmoothY = 0; zoomAccum = 0; }
       if(list.length === 0){ g = null; updateHud(0, '待机'); }
     }
     e.preventDefault();
