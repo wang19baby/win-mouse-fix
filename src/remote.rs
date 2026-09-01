@@ -1150,6 +1150,26 @@ mod tests {
         }
     }
 
+    /// Required DOM ids that the JS expects to bind to.
+    /// regression where the `<div id="banner">` was accidentally
+    /// deleted during a hand-edit, leaving bannerText === null and
+    /// crashing on the first ws.onopen message.
+    #[test]
+    fn trackpad_html_has_required_dom_ids() {
+        let html = TRACKPAD_HTML;
+        for id in &[
+            "pad", "status", "batteries", "fingers",
+            "banner", "bannerText",
+            "inputToggle", "inputBar", "textField",
+            "charCount", "collapseBtn", "sendBtn",
+        ] {
+            let needle = format!("id=\"{id}\"");
+            assert!(
+                html.contains(&needle),
+                "trackpad.html: required DOM id `{id}` is missing. JS will throw 'Cannot set properties of null' when the page loads."
+            );
+        }
+    }
 }
 
 #[cfg(test)]
