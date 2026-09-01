@@ -78,7 +78,7 @@
   // 双指时区分"滚动"与"缩放"：累计两种信号，谁占优就锁定谁，避免滚动被误判成缩放。
   var DECIDE_PX = 12;       // 累计位移超过此值才判定手势类型（防抖）
   var PINCH_BIAS = 1.5;     // 缩放信号需明显强于滚动才会被判为捏合
-  // Android: 三指下滑会触发系统截图，改为四指操作
+  var LONGPRESS_MS = 400;   // 长按拖拽触发窗口拖拽的时长（ms）
   var isAndroid = /Android/i.test(navigator.userAgent);
   var MIN_GESTURE_FINGERS = isAndroid ? 4 : 3;
   var params = new URLSearchParams(location.search);

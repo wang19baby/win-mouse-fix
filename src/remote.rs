@@ -1049,6 +1049,107 @@ mod tests {
             start = close + "</script>".len();
         }
     }
+
+    /// The previous four hand-edits shipped trackpad.html with JS that
+    /// crashed at runtime — duplicate var params, literal '+' prefix on
+    /// declarations, unclosed pinchMetric() brace, missing LONGPRESS_MS
+    /// const. Each was caught only by the user opening devtools in their
+    /// phone browser. We don't have a JS parser in Rust, but we can at
+    /// least verify the braces balance and every `name` referenced as
+    /// identifier is declared somewhere in the same script block.
+    #[test]
+    #[test]
+    fn trackpad_html_is_syntactically_valid() {
+        let html = TRACKPAD_HTML;
+        let mut start = 0usize;
+        while let Some(open) = html[start..].find("<script") {
+            let block_start = start + open;
+            let body_start = html[block_start..]
+                .find('>')
+                .map(|o| block_start + o + 1)
+                .unwrap_or(block_start);
+            let close = match html[body_start..].find("</script>") {
+                Some(c) => body_start + c,
+                None => break,
+            };
+            let body = &html[body_start..close];
+            let body_str = std::str::from_utf8(body.as_bytes()).unwrap_or("");
+            let bytes = body.as_bytes();
+
+            // 1) Brace / paren / bracket balance.
+            let mut depth: [i32; 3] = [0, 0, 0];
+            let mut in_str: Option<u8> = None;
+            let mut in_line_com = false;
+            let mut in_block_com = false;
+            let mut i = 0;
+            while i < bytes.len() {
+                let c = bytes[i];
+                let next = bytes.get(i + 1).copied();
+                if in_line_com {
+                    if c == b'\n' { in_line_com = false; }
+                } else if in_block_com {
+                    if c == b'*' && next == Some(b'/') { in_block_com = false; i += 1; }
+                } else if let Some(q) = in_str {
+                    if c == b'\\' { i += 1; }
+                    else if c == q { in_str = None; }
+                } else {
+                    match c {
+                        b'/' if next == Some(b'/') => { in_line_com = true; i += 1; }
+                        b'/' if next == Some(b'*') => { in_block_com = true; i += 1; }
+                        b'"' | b'\'' | b'`' => { in_str = Some(c); }
+                        b'{' => depth[0] += 1,
+                        b'}' => depth[0] -= 1,
+                        b'(' => depth[1] += 1,
+                        b')' => depth[1] -= 1,
+                        b'[' => depth[2] += 1,
+                        b']' => depth[2] -= 1,
+                        _ => {}
+                    }
+                }
+                i += 1;
+            }
+            assert_eq!(
+                depth, [0, 0, 0],
+                "trackpad.html: unbalanced braces/parens/brackets in <script> at byte {block_start}: depth={depth:?}"
+            );
+
+            // 2) Every config constant the touch payload overrides must be
+            //    declared as a `var NAME = ...` (or `var A = ..., NAME = ...`)
+            //    somewhere in this script block. Catches the LONGPRESS_MS bug.
+            let required = [
+ & "SENS", "ACCEL_REF", "ACCEL_SLOPE", "ACCEL_MAX_MULT",
+ & "MOVE_EMA", "SCROLL_GAIN", "TAP_MS", "TAP_PX",
+ & "SWIPE_PX", "DECIDE_PX", "PINCH_BIAS", "DIAG_MIN",
+ & "DIAG_RATIO", "LONGPRESS_MS",
+ ];
+            // Manual word-boundary check: find every occurrence of `name`
+            // and ensure neither side is an identifier character.
+            let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+            for name in required {
+                let needle = name.as_bytes();
+                let mut j = 0usize;
+                let mut hit = false;
+                while j + needle.len() <= bytes.len() {
+                    if &bytes[j..j + needle.len()] == needle {
+                        let prev_ok = j == 0 || !is_ident(bytes[j - 1]);
+                        let next_ok = j + needle.len() == bytes.len()
+                            || !is_ident(bytes[j + needle.len()]);
+                        if prev_ok && next_ok {
+                            hit = true;
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                assert!(
+                    hit,
+                    "trackpad.html: config var `{name}` referenced in tc.* handler is missing a declaration in this <script> block"
+                );
+            }
+            start = close + "</script>".len();
+        }
+    }
+
 }
 
 #[cfg(test)]
