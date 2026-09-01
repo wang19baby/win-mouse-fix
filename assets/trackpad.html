@@ -250,7 +250,10 @@
       if(p.x<minx) minx=p.x; if(p.y<miny) miny=p.y;
       if(p.x>maxx) maxx=p.x; if(p.y>maxy) maxy=p.y;
     }
-  function labelFor(n){
+    return Math.hypot(maxx-minx, maxy-miny);
+  }
+
+   function labelFor(n){
     if(n===MIN_GESTURE_FINGERS) return isAndroid ? '四指导航' : '三指导航';
     if(n>=MIN_GESTURE_FINGERS+1) return isAndroid ? '五指桌面' : '四指桌面';
     return n + '指';
