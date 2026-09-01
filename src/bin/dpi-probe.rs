@@ -1,5 +1,6 @@
 //! G502 HERO DPI diagnostic — probes HID++ 0x2201 AdjustableDpi
 //! function codes against a real device and prints raw bytes.
+#![allow(dead_code)]
 
 use std::ptr::null_mut;
 

@@ -10,6 +10,7 @@ mod accel;
 mod add_mode;
 mod device;
 mod remote;
+#[cfg(test)]
 mod trackpad_gesture;
 mod gui;
 

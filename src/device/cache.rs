@@ -53,6 +53,7 @@ pub fn update_dpi(base_dpi: u16, ref_dpi: i32, min_dpi: u16, max_dpi: u16) -> Op
 
 /// Re-read the battery from the device and refresh the cache. Returns the
 /// fresh value (or `None` if no device responded).
+#[allow(dead_code)]
 pub fn update() -> Option<BatteryInfo> {
     let info = crate::device::battery::read_first_battery();
     *BATTERY.write() = info;
