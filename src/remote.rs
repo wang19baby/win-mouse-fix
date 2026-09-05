@@ -513,6 +513,21 @@ pub fn broadcast_status() {
     });
 }
 
+/// Broadcast a JSON string to all authenticated WS clients. Used by window_list.rs
+/// to push thumb updates after the initial window_list reply.
+pub fn broadcast_message(msg: &str) {
+    if ACTIVE.lock().is_empty() {
+        return;
+    }
+    ACTIVE.lock().retain(|stream| {
+        let mut s = stream.lock();
+        match write_frame(&mut s, 0x1, msg.as_bytes()) {
+            Ok(()) => true,
+            Err(_) => false,
+        }
+    });
+}
+
 /// Dispatch a text frame. Returns `Err` to close the socket (auth failure).
 fn dispatch(
     payload: &[u8],
@@ -595,6 +610,31 @@ fn dispatch(
                 }
             }
         }
+        "window_list" => {
+            crate::log::write("dispatch: received window_list request");
+            // User requested window list from phone — enumerate and reply.
+            let windows = crate::win::window_list::enumerate_windows();
+            let desktops = crate::win::window_list::enumerate_desktops();
+            let json = serde_json::json!({
+                "t": "window_list",
+                "windows": windows,
+                "desktops": desktops,
+            });
+            crate::log::write(&format!("dispatch: sending window_list reply windows={}", windows.len()));
+            let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
+        }
+        "switch_window" => {
+            if let Some(hwnd_val) = v.get("hwnd") {
+                if let Some(hwnd) = hwnd_val.as_i64() {
+                    crate::win::window_list::focus_window(hwnd as isize);
+                }
+            }
+        }
+        "switch_desktop" => {
+            if let Some(idx) = v.get("index").and_then(|x| x.as_u64()) {
+                crate::win::window_list::switch_to_desktop(idx as u32);
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -606,28 +646,21 @@ fn serve_page(stream: &mut TcpStream) {
     // load. Without this, a PC browser that visited once during a broken
     // build keeps replaying the broken HTML even after the server is
     // fixed, because regular browsers (Chrome/Edge) cache HTML by default
-    // unless told otherwise.
-    // X-Build-Id surfaces the embedded TRACKPAD_HTML content length so the
-    // user (and any debug tool) can confirm the browser is talking to
-    // the version they expect rather than a cached copy.
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
-         Content-Type: text/html; charset=utf-8\r\n\
-         Cache-Control: no-cache, no-store, must-revalidate\r\n\
-         Pragma: no-cache\r\n\
-         Expires: 0\r\n\
-         X-Build-Id: trackpad-html-bytes\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n",
-         body.len()
+        Content-Type: text/html; charset=utf-8\r\n\
+        Cache-Control: no-cache\r\n\
+        X-Build-Id: trackpad-html-bytes\r\n\
+        Content-Length: {}\r\n\
+        Connection: close\r\n\
+        \r\n",
+        body.len()
     );
-
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(body);
 }
 
- fn serve_manifest(stream: &mut TcpStream) {
+fn serve_manifest(stream: &mut TcpStream) {
     let body = MANIFEST_JSON.as_bytes();
     let header = format!(
         "HTTP/1.1 200 OK\r\n\

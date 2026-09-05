@@ -1003,6 +1003,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             }
 
             // Window-drag takes precedence over remap for its trigger button.
+            // NOTE: do NOT swallow on button-down — that would eat ordinary clicks.
+            // The drag activates lazily on mousemove once movement is detected.
             {
                 let mut drag = DRAG.write();
                 if let Some(ctrl) = drag.as_mut() {
@@ -1012,8 +1014,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                     {
                         if let Some(hwnd) = crate::win::window::window_at_cursor(&ms.pt) {
                             if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                                // Store hwnd + offset; swallowing happens in mousemove.
                                 ctrl.begin(hwnd, ms.pt.x - rect.left, ms.pt.y - rect.top, ms.pt.x, ms.pt.y);
-                                return 1;
                             }
                         }
                     } else if !down && ctrl.is_active() && ctrl.matches_release(btn) {

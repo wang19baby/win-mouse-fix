@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trackpad-v2';
+const CACHE_NAME = 'trackpad-v4';
 const PRECACHE = [
   '/',
   '/manifest.json',
@@ -28,6 +28,12 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.pathname === '/ws' || url.pathname.startsWith('/report')) {
     return; // Let WebSocket + diagnostic requests pass through
+  }
+  // Never cache trackpad.html — always serve fresh so UI updates land immediately.
+  const isHtml = url.pathname === '/' || url.pathname === '/index.html' || url.pathname.endsWith('.html');
+  if (isHtml) {
+    e.respondWith(fetch(e.request).then(resp => resp.ok ? resp : caches.match(e.request)));
+    return;
   }
   e.respondWith(
     fetch(e.request).then(resp => {
