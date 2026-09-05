@@ -241,6 +241,7 @@ var isConnecting = false;
   }
 
   function send(obj){ if(ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+  window.send = send; // expose to module-level window_list code
 
   // Battery display
   var batteriesEl = document.getElementById('batteries');
