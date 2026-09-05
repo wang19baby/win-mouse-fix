@@ -13,6 +13,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Accessibility",
     "Win32_System_LibraryLoader",
     "Win32_System_Com",
     "Win32_Graphics_Gdi",
@@ -26,16 +27,18 @@ windows-sys = { version = "0.52", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    "Win32_System_Threading",
 ] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 parking_lot = "0.12"
 qrcode = "0.14.1"
 serde_json = "1.0.151"
-tungstenite = { version = "0.18.0" }
+tungstenite = { version = "0.18.0", features = ["url"] }
 url = "2.5.8"
 http = "1.5.0"
-
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 [profile.release]
 opt-level = 3
 lto = true
