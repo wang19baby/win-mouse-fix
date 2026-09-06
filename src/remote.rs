@@ -165,7 +165,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
     let is_diag;
     let is_report;
     let is_manifest;
-    let is_sw;
+    let _is_sw;
     let is_winlist;
     loop {
         match stream.read(&mut tmp) {
@@ -194,7 +194,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                     is_diag = req_path == "/diag";
                     is_report = req_path.starts_with("/report");
                     is_manifest = req_path == "/manifest.json";
-                    is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
+                    _is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
                     is_winlist = req_path == "/winlist.html" || req_path.starts_with("/winlist.html?");
                     break;
                 }

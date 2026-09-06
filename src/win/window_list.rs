@@ -576,6 +576,7 @@ pub fn capture_window_thumb(hwnd: isize, max_w: u32, max_h: u32) -> Option<Vec<u
     }
     result
 }
+#[allow(unexpected_cfgs)]
 pub(crate) unsafe fn capture_window_thumb_inner(hwnd: isize, max_w: u32, max_h: u32) -> Option<Vec<u8>> {
 
     // Phase B.1: DWM extended frame bounds (strips the Win11 shadow margin).
@@ -1227,6 +1228,7 @@ static mut WINEVENT_HOOKS: [HWINEVENTHOOK; 2] = [0, 0];
 
 /// WinEvent callback — 7 parameters per WINEVENTPROC signature.
 #[allow(non_snake_case)]
+#[allow(non_snake_case)]
 unsafe extern "system" fn win_event_callback(
     _hEventHook: HWINEVENTHOOK,
     event: u32,
@@ -1316,6 +1318,7 @@ pub fn stop_win_event_hooks() {
         crate::log::write("window_list: WinEvent hooks uninstalled");
     }
 }
+#[allow(unused_imports)]
 #[allow(unused_imports)]
 mod tests {
 
