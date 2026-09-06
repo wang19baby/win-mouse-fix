@@ -615,6 +615,7 @@ pub(crate) unsafe fn capture_window_thumb_inner(hwnd: isize, max_w: u32, max_h: 
     let hdc_mem = CreateCompatibleDC(hdc_screen);
     let hbmp_src = CreateCompatibleBitmap(hdc_screen, src_w as i32, src_h as i32);
     let old_bmp = SelectObject(hdc_mem, hbmp_src);
+    #[allow(unexpected_cfgs, unused_assignments)]
     let mut used_bitblt_fallback = false;
     #[cfg(feature = "Win32_Storage_Xps")]
     {
@@ -1225,6 +1226,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 static mut WINEVENT_HOOKS: [HWINEVENTHOOK; 2] = [0, 0];
 
 /// WinEvent callback — 7 parameters per WINEVENTPROC signature.
+#[allow(non_snake_case)]
 unsafe extern "system" fn win_event_callback(
     _hEventHook: HWINEVENTHOOK,
     event: u32,
@@ -1314,8 +1316,8 @@ pub fn stop_win_event_hooks() {
         crate::log::write("window_list: WinEvent hooks uninstalled");
     }
 }
+#[allow(unused_imports)]
 mod tests {
-    use super::*;
 
     #[test]
     fn enumerate_windows_returns_visible_windows() {
