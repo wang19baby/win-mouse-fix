@@ -424,7 +424,7 @@
 
   // ── Back button ─────────────────────────────────────────────
   document.getElementById('winListBackBtn').addEventListener('click', function(){
-    window.location.href = '/?t=' + encodeURIComponent(token);
+    window.open('/?t=' + encodeURIComponent(token), '_blank', 'noopener');
   });
   // ── Keyboard nav (Tab trapping) ─────────────────────────────
   document.getElementById('winListMode').addEventListener('keydown', function(e){
