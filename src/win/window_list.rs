@@ -1267,9 +1267,11 @@ unsafe extern "system" fn win_event_callback(
 
 /// Start the WinEvent hooks. Safe to call multiple times (idempotent).
 pub fn start_win_event_hooks() {
+    crate::log::write("[winlist] start_win_event_hooks: called");
     unsafe {
         // Only install if not already installed
         if WINEVENT_HOOKS[0] != 0 || WINEVENT_HOOKS[1] != 0 {
+            crate::log::write("[winlist] start_win_event_hooks: already installed, skipping");
             return;
         }
 
@@ -1284,6 +1286,7 @@ pub fn start_win_event_hooks() {
             0,   // all threads
             0,   // WINEVENT_OUTOFCONTEXT
         );
+        crate::log::write(&format!("[winlist] SetWinEventHook EVENT_SYSTEM_FOREGROUND returned={:#x}", hook1));
 
         let hook2 = SetWinEventHook(
             EVENT_OBJECT_CREATE,
@@ -1294,6 +1297,7 @@ pub fn start_win_event_hooks() {
             0,
             0,
         );
+        crate::log::write(&format!("[winlist] SetWinEventHook EVENT_OBJECT_CREATE/DESTROY returned={:#x}", hook2));
 
         WINEVENT_HOOKS = [hook1, hook2];
         crate::log::write(&format!(

@@ -92,8 +92,9 @@ pub fn stop_server() {
     *LISTENER.lock() = None;
     *REMOTE.write() = None;
     // Stop the WinEvent hooks so they no longer fire when remote is off.
+    // Signal the main thread to stop the WinEvent hooks.
     crate::win::window_list::REMOTE_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
-    crate::win::window_list::stop_win_event_hooks();
+    crate::win::message_loop::request_hook_uninstall();
     crate::log::write("remote: trackpad server stopped");
 }
 
@@ -325,8 +326,12 @@ dbg_log(&format!("remote: ws loop start {ip}"));
 
                             // Activate window list push updates and start WinEvent hooks
                             // (idempotent — calling twice is safe).
+                            // Activate window list push updates and request WinEvent hooks
+                            // to be installed on the main thread (where the message pump runs).
+                            // The main thread's message loop will process this request and call
+                            // start_win_event_hooks() on the correct thread.
                             crate::win::window_list::REMOTE_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
-                            crate::win::window_list::start_win_event_hooks();
+                            crate::win::message_loop::request_hook_install();
 
                             // Push the full window list immediately so the
                             // winlist page doesn't have to wait for a round-trip.
