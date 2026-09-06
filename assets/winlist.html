@@ -108,13 +108,14 @@
 <body>
 
 <div id="winListMode" role="dialog" aria-label="窗口列表" aria-hidden="true">
-    <button id="winListBackBtn">&#x2190; 切换回妙控板</button>
-    <span>选择窗口</span>
-  </div>
-  <div id="winDesktopBar" class="desktop-bar" role="tablist" style="display:none;"></div>
-  <div class="desktops-view" id="winDesktopsView">
-    <div class="desktops-view-inner" id="winDesktopsViewInner"></div>
-  </div>
+    <div class="winlist-header">
+        <button id="winListBackBtn">&#x2190; 切换回妙控板</button>
+        <span>选择窗口</span>
+    </div>
+    <div id="winDesktopBar" class="desktop-bar" role="tablist" style="display:none;"></div>
+    <div class="desktops-view" id="winDesktopsView">
+        <div class="desktops-view-inner" id="winDesktopsViewInner"></div>
+    </div>
 </div>
 
 <div id="banner"><span id="bannerText"></span></div>
@@ -148,16 +149,20 @@
     };
 
     ws.onmessage = function(e){
-      var m; try { m = JSON.parse(e.data); } catch(_) { return; }
+      console.log('[winlist] ws.onmessage', e.data);
+      var m; try { m = JSON.parse(e.data); } catch(_) { console.warn('[winlist] parse error'); return; }
+      console.log('[winlist] msg type:', m.t, 'authed:', authed);
       if(m.t === 'status'){
         authed = true; stopReconnect = false;
         // Connected — request window list immediately
+        console.log('[winlist] sending get_windows');
         send({t:'get_windows'});
       } else if(m.t === 'reject'){
         showBanner('认证失败' + (m.reason ? ': ' + m.reason : ''));
         stopReconnect = true;
         try { ws.close(); } catch(_) {}
       } else if(m.t === 'window_list'){
+        console.log('[winlist] handleWindowList called, windows:', (m.windows || []).length);
         handleWindowList(m);
       } else if(m.t === 'thumb_update'){
         handleThumbUpdate(m);

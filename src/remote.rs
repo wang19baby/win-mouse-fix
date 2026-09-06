@@ -51,7 +51,7 @@ pub fn start_server() {
     std::thread::spawn(start_server_impl);
 }
 
-fn start_server_impl() {
+	fn start_server_impl() {
     let ip = match local_ip() {
         Some(ip) => ip,
         None => {
@@ -192,7 +192,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                     is_report = req_path.starts_with("/report");
                     is_manifest = req_path == "/manifest.json";
                     is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
-                    is_winlist = req_path == "/winlist.html";
+                    is_winlist = req_path == "/winlist.html" || req_path.starts_with("/winlist.html?");
                     break;
                 }
                 if buf.len() > 16384 {
@@ -528,6 +528,7 @@ fn dispatch(
     authed: &mut bool,
     stream: &mut TcpStream,
 ) -> std::io::Result<()> {
+    dbg_log(&format!("dispatch: raw payload len={} text={:.200}", payload.len(), String::from_utf8_lossy(payload)));
     let v: serde_json::Value = match serde_json::from_slice(payload) {
         Ok(v) => v,
         Err(_) => return Ok(()), // ignore malformed
@@ -544,6 +545,16 @@ fn dispatch(
                 *authed = true;
                 let status = build_status_json();
                 let _ = write_frame(stream, 0x1, status.as_bytes());
+                // Push window_list immediately after auth so winlist.html doesn't need to request it
+                let windows = crate::win::window_list::enumerate_windows();
+                let desktops = crate::win::window_list::enumerate_desktops();
+                let json = serde_json::json!({
+                    "t": "window_list",
+                    "windows": windows,
+                    "desktops": desktops,
+                });
+                dbg_log(&format!("dispatch: window_list pushed to client ({} windows)", windows.len()));
+                let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
             } else {
                 // the browser delivers the reject message and stops retrying
                 // instead of surfacing a bare 1006 and reconnecting forever.
@@ -616,11 +627,17 @@ fn dispatch(
             let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
         }
         "switch_window" => {
-            if let Some(hwnd_val) = v.get("hwnd") {
+            let ok = if let Some(hwnd_val) = v.get("hwnd") {
                 if let Some(hwnd) = hwnd_val.as_i64() {
-                    crate::win::window_list::focus_window(hwnd as isize);
+                    crate::win::window_list::focus_window(hwnd as isize)
+                } else {
+                    false
                 }
-            }
+            } else {
+                false
+            };
+            let json = serde_json::json!({"t": "switch_result", "ok": ok});
+            let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
         }
         "switch_desktop" => {
             if let Some(idx) = v.get("index").and_then(|x| x.as_u64()) {

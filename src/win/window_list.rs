@@ -647,23 +647,16 @@ unsafe fn classify_alt_tab_window(hwnd: HWND) -> Result<(), FilterReject> {
     }
 
     // Cloaked windows (e.g. background UWP, non-current virtual desktop)
-    // DwmGetWindowAttribute requires Win32_Graphics_Dwm feature; guard it.
+    // DwmGetWindowAttribute is in Win32_Graphics_Dwm feature
     let mut cloaked: i32 = 0;
-    #[cfg(feature = "Win32_Graphics_Dwm")]
-    {
-        let hr = windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute(
-            hwnd,
-            14u32, // DWMWA_CLOAKED
-            &mut cloaked as *mut i32 as *mut _,
-            std::mem::size_of::<i32>() as u32,
-        );
-        if hr >= 0 && cloaked != 0 {
-            return Err(FilterReject::Cloaked);
-        }
-    }
-    #[cfg(not(feature = "Win32_Graphics_Dwm"))]
-    {
-        let _ = cloaked; // suppress unused warning
+    let hr = windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute(
+        hwnd,
+        14u32, // DWMWA_CLOAKED
+        &mut cloaked as *mut i32 as *mut _,
+        std::mem::size_of::<i32>() as u32,
+    );
+    if hr >= 0 && cloaked != 0 {
+        return Err(FilterReject::Cloaked);
     }
 
     // Desktop window
@@ -682,29 +675,20 @@ unsafe fn classify_alt_tab_window(hwnd: HWND) -> Result<(), FilterReject> {
 
     // For windows with WS_EX_APPWINDOW, trust Windows' own alt-tab decision.
     if is_app {
-        // Secondary sanity: require sensible client-area size to avoid
-        // tiny utility windows (clock, chat bubbles) being surfaced.
-        let mut cr = std::mem::zeroed::<RECT>();
-        if windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut cr) != 0
-            && (cr.right - cr.left) >= 100
-            && (cr.bottom - cr.top) >= 80
-        {
-            return Ok(());
-        }
-        return Err(FilterReject::ToolWindow);
+        return Ok(());
     }
 
     // Owner chain check (only for non-WS_EX_APPWINDOW windows)
     let root_owner = GetAncestor(hwnd, GA_ROOTOWNER);
-    if root_owner == 0 {
-        return Err(FilterReject::OwnerHidden);
-    }
-    let last_popup = GetLastActivePopup(root_owner);
-    if last_popup == 0 {
-        return Err(FilterReject::OwnerHidden);
-    }
-    if last_popup != hwnd && IsWindowVisible(last_popup) == 0 {
-        return Err(FilterReject::OwnerHidden);
+    // root_owner == 0 means this is a top-level window with no owner - allow it
+    if root_owner != 0 {
+        let last_popup = GetLastActivePopup(root_owner);
+        if last_popup == 0 {
+            return Err(FilterReject::OwnerHidden);
+        }
+        if last_popup != hwnd && IsWindowVisible(last_popup) == 0 {
+            return Err(FilterReject::OwnerHidden);
+        }
     }
 
     // Blacklist
@@ -728,37 +712,6 @@ unsafe fn classify_alt_tab_window(hwnd: HWND) -> Result<(), FilterReject> {
     if BLACKLIST.iter().any(|&b| b == class) {
         return Err(FilterReject::BlacklistedClass);
     }
-
-    // Fullscreen shell UI: window fills its own monitor (not just primary).
-    // Use the window's monitor via MonitorFromWindow — SM_CXSCREEN/SM_CYSCREEN
-    // only reflect the primary display, causing maximized windows on secondary
-    // monitors to be incorrectly filtered as "fullscreen shell overlay".
-    let mut cr2 = std::mem::zeroed::<RECT>();
-    if windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut cr2) != 0 {
-        let cw = (cr2.right - cr2.left) as u32;
-        let ch = (cr2.bottom - cr2.top) as u32;
-        let hmonitor = MonitorFromWindow(hwnd, 2u32); // MONITOR_DEFAULTTONEAREST
-        if hmonitor != 0 {
-            #[repr(C)]
-            struct MONITORINFO {
-                cbSize: u32,
-                rcMonitor: RECT,
-                rcWork: RECT,
-                dwFlags: u32,
-            }
-            let mut mi: MONITORINFO = std::mem::zeroed();
-            mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-            if GetMonitorInfoW(hmonitor, &mut mi as *mut _ as *mut _) != 0 {
-                let mw = (mi.rcWork.right - mi.rcWork.left) as u32;
-                let mh = (mi.rcWork.bottom - mi.rcWork.top) as u32;
-                // ≥99% of the window's own monitor work-area → fullscreen shell overlay
-                if mw > 0 && mh > 0 && cw * 100 >= mw * 99 && ch * 100 >= mh * 99 {
-                    return Err(FilterReject::FullscreenShellUi);
-                }
-            }
-        }
-    }
-
     Ok(())
 }
 
@@ -968,27 +921,15 @@ pub fn capture_window_thumb(hwnd: isize, max_w: u32, max_h: u32) -> Option<Vec<u
 pub(crate) unsafe fn capture_window_thumb_inner(hwnd: isize, max_w: u32, max_h: u32) -> Option<Vec<u8>> {
 
     // Phase B.1: DWM extended frame bounds (strips the Win11 shadow margin).
-    // Requires Win32_Graphics_Dwm feature; fall back to GetWindowRect if unavailable.
+    // Falls back to GetWindowRect if DwmGetWindowAttribute fails.
     let mut rc: RECT = std::mem::zeroed();
-    #[cfg(feature = "Win32_Graphics_Dwm")]
-    {
-        let hr = windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute(
-            hwnd as isize,
-            9u32, // DWMWA_EXTENDED_FRAME_BOUNDS
-            &mut rc as *mut _ as *mut _,
-            std::mem::size_of::<RECT>() as u32,
-        );
-        if hr < 0 || rc.right <= rc.left || rc.bottom <= rc.top {
-            if GetWindowRect(hwnd as isize, &mut rc) == 0 {
-                return None;
-            }
-            if rc.right <= rc.left || rc.bottom <= rc.top {
-                return None;
-            }
-        }
-    }
-    #[cfg(not(feature = "Win32_Graphics_Dwm"))]
-    {
+    let hr = windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute(
+        hwnd as isize,
+        9u32, // DWMWA_EXTENDED_FRAME_BOUNDS
+        &mut rc as *mut _ as *mut _,
+        std::mem::size_of::<RECT>() as u32,
+    );
+    if hr < 0 || rc.right <= rc.left || rc.bottom <= rc.top {
         if GetWindowRect(hwnd as isize, &mut rc) == 0 {
             return None;
         }
