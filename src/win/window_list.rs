@@ -6,8 +6,7 @@
 //! updates over WebSocket.
 
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::atomic::AtomicBool;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use base64::Engine;
@@ -25,13 +24,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
     SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW, GA_ROOTOWNER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     GetWindowRect, IsZoomed, IsIconic,
-    EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
-    EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_LOCATIONCHANGE, WINEVENT_OUTOFCONTEXT,
     GetWindowLongPtrW,
     SendMessageW, WM_GETICON, ICON_SMALL2, ICON_SMALL, ICON_BIG,
-};
-use windows_sys::Win32::UI::Accessibility::{
-    SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK,
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -45,7 +39,7 @@ use windows_sys::core::GUID;
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-    VK_MENU, VK_LMENU, VK_RMENU, VK_TAB, VK_ESCAPE,
+    VK_MENU,
 };
 
 const OUR_MARKER: usize = crate::win::hooks::OUR_MARKER;
@@ -75,34 +69,6 @@ pub struct DesktopInfo {
     pub guid: Option<String>,
 }
 
-/// Messages sent from PC to phone via WebSocket for window-change events.
-/// Distinct from the internal _WindowEvent (WinEvent hook → tray → main → remote).
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum WinEventPush {
-    ForegroundChanged { hwnd: isize },
-    WindowCreated { hwnd: isize, title: String, proc_name: String },
-    WindowDestroyed { hwnd: isize },
-    TitleChanged { hwnd: isize, title: String },
-    DesktopChanged { desktop: u32 },
-}
-
-/// Events pushed when windows change.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum _WindowEvent {
-    ForegroundChanged { hwnd: isize },
-    WindowCreated {
-        _hwnd: isize,
-        _title: String,
-        _process_name: String,
-    },
-    WindowDestroyed(isize),
-    TitleChanged {
-        _hwnd: isize,
-        _title: String,
-    },
-}
 /// Controls whether WinEvent changes are pushed to the phone.
 /// Set to true when the remote server starts, false when it stops.
 pub static REMOTE_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -123,6 +89,10 @@ struct ThumbCacheEntry {
 
 static THUMB_CACHE: LazyLock<Mutex<ThumbCache>> =
     LazyLock::new(|| Mutex::new(ThumbCache::new()));
+/// Icon cache: process_name → base64 data URI string.
+/// Icons don't change at runtime, so we extract once per process.
+static ICON_CACHE: LazyLock<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 struct ThumbCache {
     map: std::collections::HashMap<isize, ThumbCacheEntry>,
@@ -205,331 +175,8 @@ pub fn thumb_cache_invalidate(hwnd: isize) {
     THUMB_CACHE.lock().pop(&hwnd);
 }
 
-// ─── WinEvent watcher ───────────────────────────────────────────────────────
-
-static _WINEVENT_TX: LazyLock<Mutex<Option<Sender<_WindowEvent>>>> =
-    LazyLock::new(|| Mutex::new(None));
-
-static _WINEVENT_HOOKS: LazyLock<Mutex<Vec<HWINEVENTHOOK>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
-
-/// Debounce state: coalesce rapid WinEvents into a single push. The 1s
-/// window here is matched by `_winevent_tick`'s flush interval (still 300ms)
-/// — when dirty, the next tick will flush exactly one ForegroundChanged
-/// event, but the *minimum interval* between foreground pushes is 1s to
-/// avoid WS chatter during fast Alt+Tab cycling or window title changes.
-const _DEBOUNCE_MS: u128 = 1000;
-static _LAST_PUSH: LazyLock<Mutex<Instant>> = LazyLock::new(|| Mutex::new(Instant::now()));
-static _DIRTY: AtomicBool = AtomicBool::new(false);
-
-/// Start the WinEvent watcher. Must be called from a thread with a message
-/// loop (or the main thread). The channel sender receives debounced events.
-pub fn _start_winevent_watcher(tx: Sender<_WindowEvent>) {
-    // Stop any existing hooks first
-    _stop_winevent_watcher();
-
-    *_WINEVENT_TX.lock() = Some(tx);
-
-    let mut hooks = _WINEVENT_HOOKS.lock();
-    unsafe {
-        let hook_id_foreground = SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND,
-            EVENT_SYSTEM_FOREGROUND,
-            0, // hmodule: 0 for out-of-context
-            Some(_winevent_callback),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
-
-        let hook_id_create = SetWinEventHook(
-            EVENT_OBJECT_CREATE,
-            EVENT_OBJECT_CREATE,
-            0,
-            Some(_winevent_callback),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
-
-        let hook_id_destroy = SetWinEventHook(
-            EVENT_OBJECT_DESTROY,
-            EVENT_OBJECT_DESTROY,
-            0,
-            Some(_winevent_callback),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
-
-        let hook_id_name = SetWinEventHook(
-            EVENT_OBJECT_NAMECHANGE,
-            EVENT_OBJECT_NAMECHANGE,
-            0,
-            Some(_winevent_callback),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
-
-        let hook_id_location = SetWinEventHook(
-            EVENT_OBJECT_LOCATIONCHANGE,
-            EVENT_OBJECT_LOCATIONCHANGE,
-            0,
-            Some(_winevent_callback),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-         );
-
-        if hook_id_foreground == 0
-            || hook_id_create == 0
-            || hook_id_destroy == 0
-            || hook_id_name == 0
-            || hook_id_location == 0
-        {
-            crate::log::write("window_list: failed to set one or more WinEvent hooks");
-        } else {
-            crate::log::write("window_list: WinEvent hooks installed");
-            hooks.push(hook_id_foreground);
-            hooks.push(hook_id_create);
-            hooks.push(hook_id_destroy);
-            hooks.push(hook_id_name);
-            hooks.push(hook_id_location);
-        }
-    }
-}
-
-pub fn _stop_winevent_watcher() {
-    // Clear the sender
-    *_WINEVENT_TX.lock() = None;
-
-    // Unhook all hooks
-    let mut hooks = _WINEVENT_HOOKS.lock();
-    for &hook in hooks.iter() {
-        unsafe {
-            UnhookWinEvent(hook);
-        }
-    }
-    hooks.clear();
-}
-
-unsafe extern "system" fn _winevent_callback(
-    _hook: HWINEVENTHOOK,
-    event: u32,
-    hwnd: HWND,
-    _id_object: i32,
-    _id_child: i32,
-    _event_thread: u32,
-    _time: u32,
-) {
-    if hwnd == 0 {
-        return;
-    }
-
-    // Phase: while the user is holding Alt (Alt+Tab, Alt held previews,
-    // shell menu navigation, etc.), the foreground window keeps changing
-    // as the user cycles. Don't push anything — it's all transient and
-    // the captured thumbs during this state are the switcher overlay.
-    if is_alt_tab_switcher_active() {
-        return;
-    }
-    // Log event type for debugging
-    let event_name = match event {
-        EVENT_SYSTEM_FOREGROUND => "FOREGROUND",
-        EVENT_OBJECT_CREATE => "CREATE",
-        EVENT_OBJECT_DESTROY => "DESTROY",
-        EVENT_OBJECT_NAMECHANGE => "NAMECHANGE",
-        EVENT_OBJECT_LOCATIONCHANGE => "LOCATIONCHANGE",
-        _ => "OTHER",
-    };
-    crate::log::write(&format!("winevent_callback: event={} hwnd={:#x}", event_name, hwnd));
-
-    // Phase C.5: invalidate cached thumbnail so the next capture is fresh.
-    // LOCATIONCHANGE is fire-hose-y (mouse drag etc.); only invalidate for
-    // alt-tab windows to avoid cache churn on resize handle / tooltip moves.
-    if event == EVENT_OBJECT_NAMECHANGE || event == EVENT_OBJECT_LOCATIONCHANGE {
-        if _is_top_level_window(hwnd) && is_alt_tab_window(hwnd) {
-            thumb_cache_invalidate(hwnd as isize);
-        }
-    }
-
-    let now = Instant::now();
-    let should_push = {
-        let mut last = _LAST_PUSH.lock();
-        let elapsed = now.duration_since(*last);
-        if elapsed >= Duration::from_millis(_DEBOUNCE_MS as u64) {
-            *last = now;
-            true
-        } else {
-            _DIRTY.store(true, Ordering::Relaxed);
-            false
-        }
-    };
-    let evt = match event {
-        EVENT_SYSTEM_FOREGROUND => Some(_WindowEvent::ForegroundChanged { hwnd: hwnd as isize }),
-        EVENT_OBJECT_CREATE => {
-            // Only care about top-level windows.
-            // NOTE: intentionally do NOT call get_window_info here.
-            // - get_window_title (GetWindowTextW) can trigger re-entrant NAMECHANGE
-            //   callbacks → stack overflow via the debounce re-entry path.
-            // - The window title may not be set yet at CREATE time anyway.
-            // Window info will be populated when the phone polls the full list.
-            if _is_top_level_window(hwnd) && is_alt_tab_window(hwnd) {
-                Some(_WindowEvent::WindowCreated {
-                    _hwnd: hwnd,
-                    _title: String::new(),
-                    _process_name: String::new(),
-                })
-            } else {
-                None
-            }
-        }
-        EVENT_OBJECT_DESTROY => {
-            if _is_top_level_window(hwnd) {
-                Some(_WindowEvent::WindowDestroyed(hwnd))
-            } else {
-                None
-            }
-        }
-        EVENT_OBJECT_NAMECHANGE => {
-            if _is_top_level_window(hwnd) && is_alt_tab_window(hwnd) {
-                // NOTE: intentionally do NOT call get_window_title here.
-                // GetWindowTextW triggers a new EVENT_OBJECT_NAMECHANGE,
-                // which would cause re-entry into this callback → stack overflow.
-                // The TitleChanged event is dead code (no receiver), so passing
-                // an empty title is safe.
-                Some(_WindowEvent::TitleChanged { _hwnd: hwnd, _title: String::new() })
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-
-    if let Some(evt) = evt {
-        if should_push {
-            if let Some(tx) = _WINEVENT_TX.lock().as_ref() {
-                crate::log::write(&format!("winevent: sending event (should_push=true)"));
-                let _ = tx.send(evt);
-            } else {
-                crate::log::write("winevent: no tx sender");
-            }
-        } else {
-            // Defer: mark dirty, check on next push window
-            crate::log::write(&format!("winevent: deferring event (should_push=false), setting dirty"));
-            _DIRTY.store(true, Ordering::Relaxed);
-        }
-    }
-}
-
-/// Called periodically
-pub fn _winevent_tick() {
-    if _DIRTY.swap(false, Ordering::Relaxed) {
-        // Phase — suppress all proactive refreshes while the user is holding
-        // Alt (likely the Alt+Tab switcher is open or they are in a Tab-stop
-        // gesture). During this state, foreground changes are fake previews
-        // and BitBlt screenshots would capture the switcher overlay itself.
-        // Just remember that we owe a refresh on release.
-        if is_alt_tab_switcher_active() {
-            crate::log::write("winevent_tick: Alt held (switcher active), deferring");
-            _DIRTY.store(true, Ordering::Relaxed);
-            return;
-        }
-        let mut last = _LAST_PUSH.lock();
-        let now = Instant::now();
-        let elapsed = now.duration_since(*last);
-        if elapsed >= Duration::from_millis(_DEBOUNCE_MS as u64) {
-            *last = now;
-            drop(last);
-            if REMOTE_ACTIVE.load(Ordering::Relaxed) {
-                if let Some(tx) = _WINEVENT_TX.lock().as_ref() {
-                    crate::log::write("winevent_tick: flushing dirty event");
-                    let fg = unsafe { GetForegroundWindow() };
-                    let _ = tx.send(_WindowEvent::ForegroundChanged { hwnd: fg as isize });
-                }
-            }
-        } else {
-            crate::log::write(&format!("winevent_tick: dirty but debounce active ({:?} since last push)", elapsed));
-        }
-    }
-}
-
-/// True when the user is holding Alt (left or right). Used as a heuristic to
-/// suppress window-list refreshes while Alt+Tab / Alt+Esc / similar Alt-
-/// modified gestures are in progress. Cheap (two virtual-key queries).
-pub fn is_alt_tab_switcher_active() -> bool {
-    unsafe {
-        let alt = (GetAsyncKeyState(VK_LMENU as i32) as u16 & 0x8000) != 0
-            || (GetAsyncKeyState(VK_RMENU as i32) as u16 & 0x8000) != 0;
-        if !alt { return false; }
-        // Alt + Tab or Alt + Esc — common switcher combos. Also covers
-        // Alt-only previews (the switcher shows a thumbnail of the next
-        // window as soon as Alt is held).
-        let tab = (GetAsyncKeyState(VK_TAB as i32) as u16 & 0x8000) != 0;
-        let esc = (GetAsyncKeyState(VK_ESCAPE as i32) as u16 & 0x8000) != 0;
-        tab || esc
-    }
-}
-
-/// Public hook called from the tray timer (or anywhere) to capture and push
-/// a fresh thumbnail for the foreground window. Phase C.5: keeps phone-side
-/// Cache of hwnds we believe are user-facing alt-tab windows. Refreshed by
-/// `enumerate_windows`; read by `recapture_foreground_thumb` to skip
-/// foreground shells (WindowsShellExperienceHost etc.) that we'd otherwise
-/// capture as a screen-wide shell-overlay thumb (which no card matches).
-static KNOWN_HWNDS: LazyLock<parking_lot::RwLock<std::collections::HashSet<isize>>> =
-    LazyLock::new(|| parking_lot::RwLock::new(std::collections::HashSet::new()));
-
-pub fn refresh_known_hwnds(list: &[WindowMeta]) {
-    let mut w = KNOWN_HWNDS.write();
-    w.clear();
-    for m in list { w.insert(m.hwnd); }
-}
-
-/// Public hook called from the tray timer (or anywhere) to capture and push
-/// a fresh thumbnail for the foreground window.
-pub fn recapture_foreground_thumb() -> bool {
-    if !REMOTE_ACTIVE.load(Ordering::Relaxed) {
-        return false;
-    }
-    if is_alt_tab_switcher_active() {
-        return false;
-    }
-    let fg = unsafe { GetForegroundWindow() };
-    if fg == 0 { return false; }
-    let hwnd = fg as isize;
-    // Skip if foreground is a shell host / message-only window we filtered
-    // out of our alt-tab list — capturing those would push a screen-wide
-    // shell-overlay thumb that no phone card matches.
-    if !KNOWN_HWNDS.read().contains(&hwnd) {
-        return false;
-    }
-    if thumb_cache_get(hwnd).is_some() {
-        return false;
-    }
-    crate::log::write(&format!("recapture_foreground_thumb: hwnd={hwnd:#x}"));
-    let jpeg = unsafe { capture_window_thumb_inner(hwnd, 320, 200) };
-    if let Some(bytes) = &jpeg {
-        thumb_cache_put(hwnd, bytes.clone());
-    }
-    let thumb_data = match jpeg {
-        Some(jpeg) => {
-            use base64::Engine;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
-            format!("data:image/jpeg;base64,{b64}")
-        }
-        None => return false,
-    };
-    let msg = serde_json::json!({
-        "t": "thumb_update",
-        "hwnd": hwnd,
-        "thumb": thumb_data,
-    });
-    let _ = crate::remote::broadcast_message(&msg.to_string());
-    true
-}
 // ─── Window enumeration ─────────────────────────────────────────────────────
+//
 
 /// Enumerate all Alt+Tab visible windows. Returns metadata only (no thumbnails).
 /// Performance: ~2-5ms for 10 windows.
@@ -546,8 +193,6 @@ pub fn enumerate_windows() -> Vec<WindowMeta> {
         w.is_current = w.hwnd == fg;
         w.desktop_id = get_window_desktop_id(w.hwnd);
     }
-
-    refresh_known_hwnds(&result);
     result
 }
 
@@ -564,20 +209,30 @@ pub fn enumerate_desktops() -> Vec<DesktopInfo> {
             guid: get_desktop_guid_string(i).ok(),
         })
         .collect()
-}
-
+    }
 unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let list = &mut *(lparam as *mut Vec<WindowMeta>);
     match classify_alt_tab_window(hwnd) {
         Ok(()) => {
             let (title, proc_name) = get_window_info(hwnd);
-            // Icon extraction with crash protection
-            let icon = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                extract_window_icon(hwnd as isize)
-            })).ok().flatten().and_then(|png| {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
-                Some(format!("data:image/png;base64,{b64}"))
-            });
+            // Icon extraction with cache: same process reuses the same icon
+            let icon = {
+                let mut cache = ICON_CACHE.lock();
+                if let Some(cached) = cache.get(&proc_name) {
+                    Some(cached.clone())
+                } else {
+                    let fresh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        extract_window_icon(hwnd as isize)
+                    })).ok().flatten().and_then(|jpeg_bytes| {
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+                        Some(format!("data:image/jpeg;base64,{b64}"))
+                    });
+                    if let Some(ref v) = fresh {
+                        cache.insert(proc_name.clone(), v.clone());
+                    }
+                    fresh
+                }
+            };
             list.push(WindowMeta {
                 hwnd,
                 title,
@@ -791,13 +446,15 @@ unsafe fn extract_window_icon_inner(hwnd: isize) -> Option<Vec<u8>> {
     // Render icon to a 32x32 RGB buffer
     let pixels = render_hicon_to_rgba(hwnd, hicon, 32)?;
 
-    // Convert RGBA -> RGBAImage and encode as PNG
+    // Convert RGBA -> RGBAImage and encode as JPEG quality 70
     let img = match image::RgbaImage::from_raw(32, 32, pixels) {
         Some(img) => image::DynamicImage::ImageRgba8(img),
         None => return None,
     };
     let mut buf = Cursor::new(Vec::new());
-    if img.write_to(&mut buf, image::ImageFormat::Png).is_err() {
+    // JPEG quality 70: ~3-5KB per 32x32 icon vs ~8-15KB PNG, visually identical at this size
+    if let Err(e) = img.write_to(&mut buf, image::ImageFormat::Jpeg) {
+        crate::log::write(&format!("icon: JPEG encode failed: {e}"));
         return None;
     }
     Some(buf.into_inner())
@@ -1552,7 +1209,111 @@ fn read_registry_value(key_path: &str, value_name: &str) -> Result<String, ()> {
     }
 }
 
-#[cfg(test)]
+// ─── WinEvent hooks for incremental window list updates ───────────────────────
+// These fire on window create/destroy/foreground-change and push lightweight
+// win_event messages to the phone, so the UI can update without a full poll.
+
+use windows_sys::Win32::UI::Accessibility::{
+    SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_DESTROY, EVENT_OBJECT_CREATE,
+    EVENT_OBJECT_FOCUS,
+};
+
+/// WinEvent hook handles — stored so we can uninstall on drop.
+static mut WINEVENT_HOOKS: [HWINEVENTHOOK; 2] = [0, 0];
+
+/// WinEvent callback — 7 parameters per WINEVENTPROC signature.
+unsafe extern "system" fn win_event_callback(
+    _hEventHook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    _idObject: i32,
+    _idChild: i32,
+    _ideventThread: u32,
+    _dwmEventTime: u32,
+) {
+    if !crate::win::window_list::REMOTE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+
+    // Only care about top-level windows
+    if hwnd == 0 {
+        return;
+    }
+
+    let event_name = match event {
+        EVENT_SYSTEM_FOREGROUND => "foreground_changed",
+        EVENT_OBJECT_DESTROY => "destroyed",
+        EVENT_OBJECT_CREATE => "created",
+        EVENT_OBJECT_FOCUS => "focus",
+        _ => return,
+    };
+
+    // Title for created/focused events (may be useful; None is fine)
+    let title = if event == EVENT_OBJECT_CREATE || event == EVENT_OBJECT_FOCUS || event == EVENT_SYSTEM_FOREGROUND {
+        Some(crate::win::window_list::get_window_title(hwnd))
+    } else {
+        None
+    };
+
+    // Push to all WS clients (does nothing if no clients are connected)
+    crate::remote::broadcast_win_event(event_name, hwnd as isize, title.as_deref());
+}
+
+/// Start the WinEvent hooks. Safe to call multiple times (idempotent).
+pub fn start_win_event_hooks() {
+    unsafe {
+        // Only install if not already installed
+        if WINEVENT_HOOKS[0] != 0 || WINEVENT_HOOKS[1] != 0 {
+            return;
+        }
+
+        // Hook foreground + window lifecycle events (process-wide, all threads)
+        // hmod = 0 (null HMODULE) and idprocess=idthread=0 means global hook
+        let hook1 = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            0isize,
+            Some(win_event_callback),
+            0,   // all processes
+            0,   // all threads
+            0,   // WINEVENT_OUTOFCONTEXT
+        );
+
+        let hook2 = SetWinEventHook(
+            EVENT_OBJECT_CREATE,
+            EVENT_OBJECT_DESTROY,
+            0isize,
+            Some(win_event_callback),
+            0,
+            0,
+            0,
+        );
+
+        WINEVENT_HOOKS = [hook1, hook2];
+        crate::log::write(&format!(
+            "window_list: WinEvent hooks installed hooks=[{:#x}, {:#x}]",
+            hook1, hook2
+        ));
+    }
+}
+
+/// Stop and uninstall the WinEvent hooks.
+pub fn stop_win_event_hooks() {
+    unsafe {
+        if WINEVENT_HOOKS[0] != 0 {
+            UnhookWinEvent(WINEVENT_HOOKS[0]);
+            WINEVENT_HOOKS[0] = 0;
+        }
+        if WINEVENT_HOOKS[1] != 0 {
+            UnhookWinEvent(WINEVENT_HOOKS[1]);
+            WINEVENT_HOOKS[1] = 0;
+        }
+        crate::log::write("window_list: WinEvent hooks uninstalled");
+    }
+}
 mod tests {
     use super::*;
 

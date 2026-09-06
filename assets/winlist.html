@@ -138,6 +138,9 @@
     ws = new WebSocket(proto + '://' + location.host + '/ws');
 
     ws.onopen = function(){
+      // Reset DOM state on reconnect so stale fast-path decisions are avoided
+      _domReady = false;
+      _lastWinCount = -1;
       ws.send(JSON.stringify({t:'auth', token:token}));
     };
 
@@ -147,9 +150,14 @@
       console.log('[winlist] msg type:', m.t, 'authed:', authed);
       if(m.t === 'status'){
         authed = true; stopReconnect = false;
-        // Connected — request window list immediately
-        console.log('[winlist] sending get_windows');
-        send({t:'get_windows'});
+        // Use win_count from periodic status as a fast-path trigger
+        // (avoids a full window_list round-trip just to check count)
+        if (m.win_count !== undefined && m.win_count === _lastWinCount && _domReady) {
+          // Count unchanged since last full list — only foreground may differ
+          // Foreground is handled by handleWinEvent pushes; nothing to do here
+        } else {
+          send({t:'get_windows'});
+        }
       } else if(m.t === 'reject'){
         showBanner('认证失败' + (m.reason ? ': ' + m.reason : ''));
         stopReconnect = true;
@@ -188,6 +196,14 @@
   var SWITCH_TIMEOUT_MS = 5000;
   var cardObserver = null;
 
+  // ── State reset on reconnect ──────────────────────────────────
+  // _domReady: true once the first full window_list has been rendered.
+  // _lastWinCount: last known window count used for the fast-path check.
+  // These are reset to false/-1 in ws.onopen before re-auth, preventing
+  // a stale session from skipping a needed full refresh.
+  var _domReady = false;
+  var _lastWinCount = -1;
+
   // ── Icon map ────────────────────────────────────────────────
   function getWindowIcon(procName) {
     var lower = (procName || '').toLowerCase();
@@ -201,6 +217,8 @@
   }
 
   // ── Render a single window card ──────────────────────────────
+  // NOTE: This is called ONLY for new cards. Existing cards are never
+  // re-rendered — their fields are patched in handleWindowList diff.
   function renderWindowCard(w){
     var card = document.createElement('div');
     card.className = 'win-card' + (w.is_current ? ' current' : '');
@@ -280,6 +298,8 @@
   }
 
   // ── Card visibility observer ────────────────────────────────
+  // Lazy thumbnail loading: fires when a card enters the viewport.
+  // thumbPending is cleared on thumb error so the card can retry.
   function setupCardObserver(){
     if(cardObserver) return;
     cardObserver = new IntersectionObserver(function(entries){
@@ -292,76 +312,138 @@
     }, { threshold: 0.3 });
   }
 
-  // ── Main window list handler (desktop-aware) ─────────────────
+  // ── Main window list handler (desktop-aware, incremental diff) ──
+  // Stable card state preserved across updates via data-hwnd identity.
+  // Only structural changes (card added/removed) cause DOM mutations;
+  // existing cards are patched in place (title, current, desktop).
   function handleWindowList(m){
+    var windows  = m.windows  || [];
     var desktops = m.desktops || [];
-    var windows = m.windows || [];
 
-    // Build or update desktop tab bar
-    if(desktops.length <= 1){
+    // ── Count-only fast path ─────────────────────────────────
+    // If count unchanged and DOM is ready, skip expensive diff.
+    // This fires on every periodic status broadcast when nothing changed.
+    if (m.count !== undefined && m.count === _lastWinCount && _domReady) {
+      if (m.count === 0) return;
+      var current = windows.filter(function(w){ return w.is_current; })[0];
+      if (current) {
+        var card = document.querySelector('[data-hwnd="'+current.hwnd+'"]');
+        if (card) {
+          document.querySelectorAll('.win-card').forEach(function(c){ c.classList.remove('current'); });
+          card.classList.add('current');
+        }
+      }
+      return;
+    }
+    _lastWinCount = m.count !== undefined ? m.count : windows.length;
+
+    // ── Desktop tabs ─────────────────────────────────────────
+    if (desktops.length <= 1) {
       document.getElementById('winDesktopBar').style.display = 'none';
     } else {
       var currentIdx = 0;
-      desktops.forEach(function(d, i){ if(d.is_current) currentIdx = i; });
-      activeDesktopIdx = currentIdx;
-      renderDesktopTabs(desktops, currentIdx);
+      desktops.forEach(function(d, i){ if (d.is_current) currentIdx = i; });
+      var existingTabs = document.querySelectorAll('.desk-tab').length;
+      if (existingTabs !== desktops.length) {
+        // Desktop count changed — rebuild tabs
+        activeDesktopIdx = currentIdx;
+        renderDesktopTabs(desktops, currentIdx);
+        if (window._updateDesktopCount) window._updateDesktopCount();
+      } else {
+        // Same count — just update the current index
+        activeDesktopIdx = currentIdx;
+      }
     }
 
-    // Group windows by desktop GUID
-    var byDesktopIdx = [];
-    desktops.forEach(function(){ byDesktopIdx.push([]); });
-
+    // ── Group windows by desktop ──────────────────────────────
+    var newByDesktop = {};
     windows.forEach(function(w){
-      if(w.desktop_id){
-        var matched = false;
-        for(var i = 0; i < desktops.length; i++){
-          if(desktops[i].guid && desktops[i].guid.indexOf(w.desktop_id) !== -1){
-            byDesktopIdx[i].push(w);
-            matched = true;
-            break;
-          }
-        }
-        if(!matched) byDesktopIdx[activeDesktopIdx].push(w);
-      } else {
-        byDesktopIdx[activeDesktopIdx].push(w);
-      }
+      var did = w.desktop_id || '__default__';
+      if (!newByDesktop[did]) newByDesktop[did] = [];
+      newByDesktop[did].push(w);
     });
 
-    // Build desktop view columns
-    var desktopsView = document.getElementById('winDesktopsView');
+    // ── Ensure desktop view columns exist ─────────────────────
+    // These are stable across updates; only rebuild when desktop count changes.
     var viewInner = document.getElementById('winDesktopsViewInner');
-    viewInner.innerHTML = '';
+    var needRebuildViews = viewInner.children.length !== desktops.length;
+    if (needRebuildViews) {
+      viewInner.innerHTML = '';
+      desktops.forEach(function(d, idx){
+        var view = document.createElement('div');
+        view.className = 'desktop-view';
+        view.setAttribute('role', 'tabpanel');
+        view.setAttribute('aria-label', d.name || ('桌面 ' + (idx + 1)));
+        var label = document.createElement('div');
+        label.className = 'desktop-view-label';
+        label.textContent = d.name || ('桌面 ' + (idx + 1));
+        view.appendChild(label);
+        var grid = document.createElement('div');
+        grid.className = 'win-grid';
+        view.appendChild(grid);
+        viewInner.appendChild(view);
+      });
+    }
 
-    setupCardObserver();
-
+    // ── Diff cards per desktop ────────────────────────────────
     desktops.forEach(function(d, idx){
-      var view = document.createElement('div');
-      view.className = 'desktop-view';
-      view.setAttribute('role', 'tabpanel');
-      view.setAttribute('aria-label', d.name || ('桌面 ' + (idx + 1)));
+      var did = d.guid || '__default__';
+      var desktopWins = newByDesktop[did] || [];
+      var grid = viewInner.children[idx]
+        ? viewInner.children[idx].querySelector('.win-grid')
+        : null;
+      if (!grid) return;
 
-      var label = document.createElement('div');
-      label.className = 'desktop-view-label';
-      label.textContent = d.name || ('桌面 ' + (idx + 1));
-      view.appendChild(label);
+      var existingCards = grid.querySelectorAll('.win-card');
+      var existingHwnds = {};
+      existingCards.forEach(function(c){ existingHwnds[Number(c.dataset.hwnd)] = c; });
+      var targetHwnds = {};
+      desktopWins.forEach(function(w){ targetHwnds[w.hwnd] = w; });
 
-      var grid = document.createElement('div');
-      grid.className = 'win-grid';
-      view.appendChild(grid);
-
-      byDesktopIdx[idx].forEach(function(w){
-        var card = renderWindowCard(w);
-        grid.appendChild(card);
-        if(cardObserver) cardObserver.observe(card);
+      // Remove stale cards
+      existingCards.forEach(function(c){
+        var h = Number(c.dataset.hwnd);
+        if (!targetHwnds[h]) {
+          if (cardObserver && c.dataset.observed) cardObserver.unobserve(c);
+          c.remove();
+        }
       });
 
-      viewInner.appendChild(view);
+      // Add new cards / patch existing
+      desktopWins.forEach(function(w){
+        var card = existingHwnds[w.hwnd];
+        if (card) {
+          // Patch existing: update is_current, title
+          if (w.is_current) {
+            if (!card.classList.contains('current')) {
+              document.querySelectorAll('.win-card').forEach(function(c){ c.classList.remove('current'); });
+              card.classList.add('current');
+            }
+          } else {
+            card.classList.remove('current');
+          }
+          var titleEl = card.querySelector('.win-title');
+          if (titleEl) {
+            var newTitle = w.title || '(无标题)';
+            if (titleEl.textContent !== newTitle) titleEl.textContent = newTitle;
+          }
+        } else {
+          // New card
+          var newCard = renderWindowCard(w);
+          grid.appendChild(newCard);
+          if (cardObserver) {
+            cardObserver.observe(newCard);
+            newCard.dataset.observed = '1';
+          }
+        }
+      });
     });
+
+    _domReady = true;
 
     // Position to current desktop
     viewInner.style.transition = 'none';
     viewInner.style.transform = 'translateX(' + (-activeDesktopIdx * 100) + '%)';
-    // Re-enable transition after paint
     requestAnimationFrame(function(){
       requestAnimationFrame(function(){
         viewInner.style.transition = '';
@@ -370,16 +452,17 @@
   }
 
   // ── Thumbnail update ────────────────────────────────────────
+  // thumbPending is cleared on both success and SVG-fallback (no real image).
+  // If the server sends no thumb (capture failed), we also clear the flag
+  // so the card can re-request when it scrolls back into view.
   function handleThumbUpdate(m){
     var card = document.querySelector('[data-hwnd="'+m.hwnd+'"]');
-    if(!card) return;
+    if (!card) return;
     var thumb = card.querySelector('.win-thumb');
-    if(!thumb) return;
-    if(typeof m.thumb === 'string' && m.thumb.indexOf('svg+xml') !== -1){
-      delete card.dataset.thumbPending;
-      return;
-    }
+    if (!thumb) return;
+    // Always clear pending — even if thumb is null/empty
     delete card.dataset.thumbPending;
+    if (!m.thumb || (typeof m.thumb === 'string' && m.thumb.indexOf('svg+xml') !== -1)) return;
     thumb.innerHTML = '';
     var img = document.createElement('img');
     img.src = m.thumb;
@@ -389,20 +472,28 @@
   }
 
   // ── Window events ───────────────────────────────────────────
+  // Debounce batches rapid structural changes (create/destroy bursts)
+  // into a single get_windows request, avoiding a flood of round-trips.
   function handleWinEvent(m) {
     var evt = m.event || m.e;
-    if(evt === 'foreground_changed' || evt === 'focus'){
+    if (evt === 'foreground_changed' || evt === 'focus'){
       document.querySelectorAll('.win-card').forEach(function(c){ c.classList.remove('current'); });
       var c = document.querySelector('[data-hwnd="'+m.hwnd+'"]');
-      if(c) c.classList.add('current'); else send({t:'get_windows'});
-    } else if(evt === 'created' || evt === 'destroyed' || evt === 'desktop_changed'){
-      // Re-fetch the full list for structural changes
-      send({t:'get_windows'});
-    } else if(evt === 'title_changed'){
+      if (c) c.classList.add('current'); else send({t:'get_windows'});
+    } else if (evt === 'created' || evt === 'destroyed' || evt === 'desktop_changed'){
+      if (_winDebounceTimer !== null) clearTimeout(_winDebounceTimer);
+      _winDebounceTimer = setTimeout(function(){
+        _winDebounceTimer = null;
+        _domReady = false;  // force full rebuild after structural change
+        send({t:'get_windows'});
+      }, 300);
+    } else if (evt === 'title_changed'){
       var c = document.querySelector('[data-hwnd="'+m.hwnd+'"]');
-      if(c){ var t = c.querySelector('.win-title'); if(t) t.textContent = m.title || '(无标题)'; }
+      if (c){ var t = c.querySelector('.win-title'); if(t) t.textContent = m.title || '(无标题)'; }
     }
   }
+
+  var _winDebounceTimer = null;
 
   // ── Switch result ───────────────────────────────────────────
   function handleSwitchResult(m){
@@ -424,6 +515,7 @@
   document.getElementById('winListBackBtn').addEventListener('click', function(){
     window.location.href = '/?t=' + encodeURIComponent(token);
   });
+
   // ── Keyboard nav (Tab trapping) ─────────────────────────────
   document.getElementById('winListMode').addEventListener('keydown', function(e){
     if(e.key !== 'Tab') return;
@@ -452,10 +544,9 @@
       if(e.touches.length !== 1) return;
       startX = e.touches[0].clientX;
       startY = e.touches[0].clientY;
-      // Read current translateX value
       var style = window.getComputedStyle(viewInner);
       var matrix = new DOMMatrixReadOnly(style.transform);
-      startTransform = matrix.m41; // current translateX
+      startTransform = matrix.m41;
       dragging = true;
     }, {passive:true});
 
@@ -463,7 +554,6 @@
       if(!dragging || e.touches.length !== 1) return;
       var dx = e.touches[0].clientX - startX;
       var dy = e.touches[0].clientY - startY;
-      // If vertical scroll dominates, don't interfere
       if(Math.abs(dy) > Math.abs(dx)) return;
       e.preventDefault();
       var maxTranslate = -(desktopCount - 1) * 100;
@@ -477,12 +567,11 @@
       if(!dragging) return;
       dragging = false;
       var dx = e.changedTouches[0].clientX - startX;
-      var threshold = 50; // px threshold to snap to next/prev desktop
+      var threshold = 50;
       if(Math.abs(dx) < threshold) return;
       var delta = dx < 0 ? 1 : -1;
       var newIdx = Math.max(0, Math.min(desktopCount - 1, activeDesktopIdx + delta));
       if(newIdx === activeDesktopIdx) return;
-      // Update tab appearance
       document.querySelectorAll('.desk-tab').forEach(function(t, i){
         t.classList.toggle('current', i === newIdx);
         t.setAttribute('aria-selected', i === newIdx ? 'true' : 'false');
@@ -492,7 +581,6 @@
       viewInner.style.transform = 'translateX(' + (-newIdx * 100) + '%)';
     }, {passive:true});
 
-    // Expose so handleWindowList can update count after rendering
     window._updateDesktopCount = updateDesktopCount;
   })();
 

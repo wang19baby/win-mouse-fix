@@ -91,6 +91,9 @@ pub fn stop_server() {
     // Drop the listening socket — the accept loop exits immediately.
     *LISTENER.lock() = None;
     *REMOTE.write() = None;
+    // Stop the WinEvent hooks so they no longer fire when remote is off.
+    crate::win::window_list::REMOTE_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::win::window_list::stop_win_event_hooks();
     crate::log::write("remote: trackpad server stopped");
 }
 
@@ -319,7 +322,25 @@ dbg_log(&format!("remote: ws loop start {ip}"));
                                 .try_clone()
                                 .expect("clone of just-accepted TcpStream");
                             ACTIVE.lock().push(Arc::new(parking_lot::Mutex::new(clone)));
-                            dbg_log(&format!("remote: ws {ip} authed -> status sent"));
+
+                            // Activate window list push updates and start WinEvent hooks
+                            // (idempotent — calling twice is safe).
+                            crate::win::window_list::REMOTE_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+                            crate::win::window_list::start_win_event_hooks();
+
+                            // Push the full window list immediately so the
+                            // winlist page doesn't have to wait for a round-trip.
+                            let windows = crate::win::window_list::enumerate_windows();
+                            let desktops = crate::win::window_list::enumerate_desktops();
+                            let count = windows.len();
+                            let json = serde_json::json!({
+                                "t": "window_list",
+                                "windows": windows,
+                                "desktops": desktops,
+                                "count": count,
+                            });
+                            let _ = crate::remote::write_frame(&mut stream, 0x1, json.to_string().as_bytes());
+                            dbg_log(&format!("remote: ws {ip} authed -> window_list pushed ({count} windows), REMOTE_ACTIVE=true"));
                         }
                     }
                     0x8 => {
@@ -465,10 +486,14 @@ fn build_status_json() -> String {
             "low": b.low,
         })
     });
+    // Include live window count so the winlist page can skip expensive full diffs
+    let windows = crate::win::window_list::enumerate_windows();
+    let win_count = windows.len();
     let json = serde_json::json!({
         "t": "status",
         "conn": true,
         "pc_battery": pc_battery,
+        "win_count": win_count,
         "touch": {
             "gain": touch.gain,
             "accel_ref": touch.accel_ref,
@@ -488,7 +513,6 @@ fn build_status_json() -> String {
     });
     json.to_string()
 }
-
 /// Push the latest status JSON to every currently-authenticated WS client.
 /// Best-effort: a client whose socket is no longer writable is silently
 /// dropped from ACTIVE so the list does not grow unboundedly.
@@ -506,8 +530,6 @@ pub fn broadcast_status() {
     });
 }
 
-/// Broadcast a JSON string to all authenticated WS clients. Used by window_list.rs
-/// to push thumb updates after the initial window_list reply.
 pub fn broadcast_message(msg: &str) {
     if ACTIVE.lock().is_empty() {
         return;
@@ -519,6 +541,19 @@ pub fn broadcast_message(msg: &str) {
             Err(_) => false,
         }
     });
+}
+
+/// Push a `win_event` message to all authenticated WS clients.
+/// Called by the WinEvent hook whenever a window is created, destroyed,
+/// moved, or activated so the winlist page can update incrementally.
+pub fn broadcast_win_event(event: &str, hwnd: isize, title: Option<&str>) {
+    let json = serde_json::json!({
+        "t": "win_event",
+        "event": event,
+        "hwnd": hwnd,
+        "title": title,
+    });
+    broadcast_message(&json.to_string());
 }
 
 /// Dispatch a text frame. Returns `Err` to close the socket (auth failure).
@@ -618,12 +653,14 @@ fn dispatch(
             crate::log::write(&format!("dispatch: received {} request", t));
             let windows = crate::win::window_list::enumerate_windows();
             let desktops = crate::win::window_list::enumerate_desktops();
+            let count = windows.len();
             let json = serde_json::json!({
                 "t": "window_list",
                 "windows": windows,
                 "desktops": desktops,
+                "count": count,
             });
-            crate::log::write(&format!("dispatch: sending window_list reply windows={}", windows.len()));
+            crate::log::write(&format!("dispatch: sending window_list reply windows={}", count));
             let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
         }
         "switch_window" => {
@@ -643,6 +680,27 @@ fn dispatch(
             if let Some(idx) = v.get("index").and_then(|x| x.as_u64()) {
                 crate::win::window_list::switch_to_desktop(idx as u32);
             }
+        }
+        "thumb_request" => {
+            // Lazy thumbnail capture: capture and push to all clients.
+            // Runs on a background thread to avoid blocking the WS dispatch loop.
+            let hwnd = v.get("hwnd").and_then(|x| x.as_i64()).unwrap_or(0) as isize;
+            let max_w = v.get("w").and_then(|x| x.as_u64()).unwrap_or(320) as u32;
+            let max_h = v.get("h").and_then(|x| x.as_u64()).unwrap_or(200) as u32;
+            std::thread::spawn(move || {
+                use base64::Engine;
+                let thumb = crate::win::window_list::capture_window_thumb(hwnd, max_w, max_h);
+                let data_uri = thumb.and_then(|bytes| {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    Some(format!("data:image/jpeg;base64,{}", b64))
+                });
+                let json = serde_json::json!({
+                    "t": "thumb_update",
+                    "hwnd": hwnd,
+                    "thumb": data_uri,
+                });
+                crate::remote::broadcast_message(&json.to_string());
+            });
         }
         _ => {}
     }
