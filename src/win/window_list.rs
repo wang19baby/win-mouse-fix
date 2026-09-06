@@ -572,11 +572,13 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
     match classify_alt_tab_window(hwnd) {
         Ok(()) => {
             let (title, proc_name) = get_window_info(hwnd);
-            let icon = extract_window_icon(hwnd as isize)
-                .and_then(|png| {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
-                    Some(format!("data:image/png;base64,{b64}"))
-                });
+            // Icon extraction with crash protection
+            let icon = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                extract_window_icon(hwnd as isize)
+            })).ok().flatten().and_then(|png| {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+                Some(format!("data:image/png;base64,{b64}"))
+            });
             list.push(WindowMeta {
                 hwnd,
                 title,
