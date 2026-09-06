@@ -61,6 +61,9 @@ pub struct WindowMeta {
     pub is_current: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Virtual desktop GUID this window belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desktop_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -68,6 +71,9 @@ pub struct DesktopInfo {
     pub index: u32,
     pub name: String,
     pub is_current: bool,
+    /// Virtual desktop GUID (from registry).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guid: Option<String>,
 }
 
 /// Messages sent from PC to phone via WebSocket for window-change events.
@@ -536,20 +542,18 @@ pub fn enumerate_windows() -> Vec<WindowMeta> {
         EnumWindows(Some(enum_windows_callback), &mut result as *mut Vec<WindowMeta> as LPARAM);
     }
 
-    // Mark current foreground
+    // Mark current foreground and resolve desktop_id for each window
     for w in &mut result {
         w.is_current = w.hwnd == fg;
+        w.desktop_id = get_window_desktop_id(w.hwnd);
     }
 
     refresh_known_hwnds(&result);
     result
- }
+}
 
 /// Enumerate virtual desktops. Returns index, name, and which is current.
 pub fn enumerate_desktops() -> Vec<DesktopInfo> {
-    // Reuse the existing COM interface from virtual_desktop.rs
-    // For now, return a single desktop. Full implementation requires
-    // extending the COM vtable in virtual_desktop.rs.
     let count = get_desktop_count();
     let current = get_current_desktop_index();
 
@@ -558,6 +562,7 @@ pub fn enumerate_desktops() -> Vec<DesktopInfo> {
             index: i,
             name: get_desktop_name(i),
             is_current: i == current,
+            guid: get_desktop_guid_string(i).ok(),
         })
         .collect()
 }
@@ -578,6 +583,7 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
                 process_name: proc_name,
                 is_current: false,
                 icon,
+                desktop_id: None,
             });
         }
         Err(reason) => {
@@ -1241,7 +1247,72 @@ const _IID_IOBJECT_ARRAY: GUID = GUID {
     data3: 0x4A7E,
     data4: [0xAA, 0xC6, 0x8A, 0xF2, 0x6D, 0x16, 0x07, 0x59],
 };
+// CLSID_IVirtualDesktopManager — {a5cd7a9e-84d5-4d8a-8951-e9e374e1b2d8}
+const CLSID_VD_MANAGER: GUID = GUID {
+    data1: 0xa5cd7a9e,
+    data2: 0x84d5,
+    data3: 0x4d8a,
+    data4: [0x89, 0x51, 0xe9, 0xe3, 0x74, 0xe1, 0xb2, 0xd8],
+};
 
+// IID_IVirtualDesktopManager — {9ac9af95-e0ea-4a53-8d30-f9d0da7c5d0a}
+const IID_VD_MANAGER: GUID = GUID {
+    data1: 0x9ac9af95,
+    data2: 0xe0ea,
+    data3: 0x4a53,
+    data4: [0x8d, 0x30, 0xf9, 0xd0, 0xda, 0x7c, 0x5d, 0x0a],
+};
+
+/// Get the virtual desktop GUID for a window using IVirtualDesktopManager.
+/// Returns None if the window is on the current desktop or COM fails.
+fn get_window_desktop_id(hwnd: isize) -> Option<String> {
+    if !ensure_com() {
+        return None;
+    }
+    unsafe {
+        let mut vdm: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hr = CoCreateInstance(
+            &CLSID_VD_MANAGER,
+            std::ptr::null_mut(),
+            CLSCTX_INPROC_SERVER,
+            &IID_VD_MANAGER as *const _,
+            &mut vdm,
+        );
+        if hr < 0 || vdm.is_null() {
+            return None;
+        }
+
+        // IVirtualDesktopManager vtable:
+        // 0: QueryInterface, 1: AddRef, 2: Release
+        // 3: IsWindowOnCurrentVirtualDesktop
+        // 4: IsWindowOnDesktop (hwnd, desktopGuid) — deprecated?
+        // 5: GetWindowDesktopId(hwnd, *guid) — this is what we need
+        let vtbl = *(vdm as *const *const usize);
+        let get_window_desktop_id_fn: unsafe fn(
+            *mut std::ffi::c_void,
+            isize,
+            *mut GUID,
+        ) -> i32 = std::mem::transmute(*vtbl.add(5));
+
+        let mut guid: GUID = std::mem::zeroed();
+        let hr2 = get_window_desktop_id_fn(vdm, hwnd, &mut guid);
+
+        let release: unsafe fn(*mut std::ffi::c_void) -> u32 =
+            std::mem::transmute(*vtbl.add(2));
+        release(vdm);
+
+        if hr2 < 0 {
+            return None;
+        }
+
+        Some(format!(
+            "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+            guid.data1, guid.data2, guid.data3, guid.data4[0], guid.data4[1],
+            guid.data4[2], guid.data4[3], guid.data4[4], guid.data4[5],
+            guid.data4[6], guid.data4[7]
+        ))
+    }
+}
 static COM_INIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 fn ensure_com() -> bool {
