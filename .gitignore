@@ -24,3 +24,49 @@ token.txt
 
 # Backup / artifact files dropped during development
 *.old
+
+# Node.js dependencies (Playwright tests)
+node_modules/
+package-lock.json
+
+# Playwright test artifacts
+test-results/
+test-screenshots/
+
+# Temporary debug scripts and logs
+test_*.js
+test-*.js
+stdout*.txt
+stderr*.txt
+stdout.txt
+stderr.txt
+out.txt
+output.txt
+err.txt
+*.log.1
+*.log.2
+*.log.3
+
+# Development docs and plans
+PLAN-*.md
+docs/phone-*.md
+
+# Development scripts
+run_and_monitor.ps1
+test_ws.ps1
+
+# Screenshot artifacts
+winlist-debug*.png
+winlist-final.png
+
+# OMC config
+.omc/
+
+# Python development files
+assets/inject_winlist.py
+assets/patch*.py
+assets/patch_trackpad.py
+
+# Probe/diag binaries
+src/bin/thumb-dwm-poc.rs
+src/bin/ws-diag.rs
