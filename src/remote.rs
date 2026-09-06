@@ -603,9 +603,8 @@ fn dispatch(
                 }
             }
         }
-        "window_list" => {
-            crate::log::write("dispatch: received window_list request");
-            // User requested window list from phone — enumerate and reply.
+        "get_windows" | "window_list" => {
+            crate::log::write(&format!("dispatch: received {} request", t));
             let windows = crate::win::window_list::enumerate_windows();
             let desktops = crate::win::window_list::enumerate_desktops();
             let json = serde_json::json!({
