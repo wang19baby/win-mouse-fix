@@ -108,8 +108,7 @@
 <body>
 
 <div id="winListMode" role="dialog" aria-label="窗口列表" aria-hidden="true">
-  <div class="winlist-header">
-    <button id="winListBackBtn">&#x2190; 返回</button>
+    <button id="winListBackBtn">&#x2190; 切换回妙控板</button>
     <span>选择窗口</span>
   </div>
   <div id="winDesktopBar" class="desktop-bar" role="tablist" style="display:none;"></div>
@@ -425,14 +424,8 @@
 
   // ── Back button ─────────────────────────────────────────────
   document.getElementById('winListBackBtn').addEventListener('click', function(){
-    // Close this view — for standalone page, go back or close
-    if(window.history.length > 1){
-      window.history.back();
-    } else {
-      window.close();
-    }
+    window.location.href = '/?t=' + encodeURIComponent(token);
   });
-
   // ── Keyboard nav (Tab trapping) ─────────────────────────────
   document.getElementById('winListMode').addEventListener('keydown', function(e){
     if(e.key !== 'Tab') return;
