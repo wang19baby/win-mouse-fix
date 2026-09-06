@@ -152,7 +152,7 @@
       if(m.t === 'status'){
         authed = true; stopReconnect = false;
         // Connected — request window list immediately
-        send({t:'get_windows'});
+        send({t:'window_list'});
       } else if(m.t === 'reject'){
         showBanner('认证失败' + (m.reason ? ': ' + m.reason : ''));
         stopReconnect = true;
@@ -396,10 +396,10 @@
     if(evt === 'foreground_changed' || evt === 'focus'){
       document.querySelectorAll('.win-card').forEach(function(c){ c.classList.remove('current'); });
       var c = document.querySelector('[data-hwnd="'+m.hwnd+'"]');
-      if(c) c.classList.add('current'); else send({t:'get_windows'});
+      if(c) c.classList.add('current'); else send({t:'window_list'});
     } else if(evt === 'created' || evt === 'destroyed' || evt === 'desktop_changed'){
       // Re-fetch the full list for structural changes
-      send({t:'get_windows'});
+      send({t:'window_list'});
     } else if(evt === 'title_changed'){
       var c = document.querySelector('[data-hwnd="'+m.hwnd+'"]');
       if(c){ var t = c.querySelector('.win-title'); if(t) t.textContent = m.title || '(无标题)'; }
