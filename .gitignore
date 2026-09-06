@@ -24,10 +24,12 @@ token.txt
 
 # Backup / artifact files dropped during development
 *.old
-
+# Playwright e2e tests (run locally, not in CI)
+tests/
 # Node.js dependencies (Playwright tests)
 node_modules/
-package-lock.json
+package.json
+playwright.config.js
 
 # Playwright test artifacts
 test-results/
