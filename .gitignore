@@ -29,6 +29,7 @@ tests/
 # Node.js dependencies (Playwright tests)
 node_modules/
 package.json
+package-lock.json
 playwright.config.js
 
 # Playwright test artifacts
