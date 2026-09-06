@@ -223,9 +223,8 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
                 } else {
                     let fresh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         extract_window_icon(hwnd as isize)
-                    })).ok().flatten().and_then(|jpeg_bytes| {
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
-                        Some(format!("data:image/jpeg;base64,{b64}"))
+                    })).ok().flatten().and_then(|png_bytes| {
+                        Some(format!("data:image/png;base64,{}", String::from_utf8_lossy(&png_bytes)))
                     });
                     if let Some(ref v) = fresh {
                         cache.insert(proc_name.clone(), v.clone());
@@ -432,7 +431,7 @@ fn get_window_info(hwnd: HWND) -> (String, String) {
 
 // ─── Icon extraction ─────────────────────────────────────────────────────────
 
-/// Extract a window's small icon as PNG bytes (32x32).
+/// Extract a window's icon as PNG bytes (64x64) with alpha preserved.
 /// Falls back to the class icon, then the application icon.
 /// Returns None on failure.
 pub fn extract_window_icon(hwnd: isize) -> Option<Vec<u8>> {
@@ -443,21 +442,21 @@ unsafe fn extract_window_icon_inner(hwnd: isize) -> Option<Vec<u8>> {
     // Try to get HICON via WM_GETICON (best quality)
     let hicon = get_hicon_from_window(hwnd);
 
-    // Render icon to a 32x32 RGB buffer
-    let pixels = render_hicon_to_rgba(hwnd, hicon, 32)?;
+    // Render icon to a 64x64 RGBA buffer
+    let pixels = render_hicon_to_rgba(hwnd, hicon, 64)?;
 
-    // Convert RGBA -> RGBAImage and encode as JPEG quality 70
-    let img = match image::RgbaImage::from_raw(32, 32, pixels) {
+    // Convert RGBA -> RgbaImage and encode as PNG (preserves alpha, crisp at small sizes)
+    let img = match image::RgbaImage::from_raw(64, 64, pixels) {
         Some(img) => image::DynamicImage::ImageRgba8(img),
         None => return None,
     };
     let mut buf = Cursor::new(Vec::new());
-    // JPEG quality 70: ~3-5KB per 32x32 icon vs ~8-15KB PNG, visually identical at this size
-    if let Err(e) = img.write_to(&mut buf, image::ImageFormat::Jpeg) {
-        crate::log::write(&format!("icon: JPEG encode failed: {e}"));
+    if let Err(e) = img.write_to(&mut buf, image::ImageFormat::Png) {
+        crate::log::write(&format!("icon: PNG encode failed: {e}"));
         return None;
     }
-    Some(buf.into_inner())
+    let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+    Some(b64.into_bytes())
 }
 
 /// Get HICON from window, trying WM_GETICON then class icon.
