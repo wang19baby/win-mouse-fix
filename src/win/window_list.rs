@@ -19,7 +19,6 @@ use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject,
     GetDC, ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, CAPTUREBLT, HALFTONE, SRCCOPY,
     BITMAPINFOHEADER, DIB_RGB_COLORS,
-    GetMonitorInfoW, MonitorFromWindow,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetLastActivePopup,
