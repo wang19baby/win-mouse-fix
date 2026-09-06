@@ -547,8 +547,7 @@ var isConnecting = false;
 
   // Open standalone window list page
   winListToggle.addEventListener('click', function(){
-    var url = '/winlist.html?t=' + encodeURIComponent(token);
-    window.open(url, '_blank', 'noopener');
+    window.location.href = '/winlist.html?t=' + encodeURIComponent(token);
   });
 
   collapseBtn.addEventListener('click', closeInputBar);
