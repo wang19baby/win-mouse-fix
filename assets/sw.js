@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trackpad-v4';
+const CACHE_NAME = 'trackpad-v5';
 const PRECACHE = [
   '/',
   '/manifest.json',

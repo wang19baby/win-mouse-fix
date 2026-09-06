@@ -113,5 +113,7 @@ decide_px = 12.0       # Scroll vs pinch disambiguation threshold (px)
 pinch_bias = 1.5       # Pinch signal must exceed scroll * bias to be classified as pinch
 diag_min = 20.0        # Minimum displacement on both axes for diagonal detection (px)
 diag_ratio = 1.6       # Max ratio between axes for diagonal (higher = more strict)
-longpress_ms = 400     # Long-press duration to start window drag (ms)
 
+[remote]
+enabled = true
+port = 18765

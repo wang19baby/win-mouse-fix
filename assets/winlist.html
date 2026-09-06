@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0a0a0a">
+<title>窗口列表</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;width:100%;overflow:hidden;background:#0a0a0a;touch-action:none;overscroll-behavior:none;}
+
+  /* ── Window list layout ─────────────────────────────────────── */
+  #winListMode{position:fixed;inset:0;background:#0a0a0a;z-index:30;overflow:hidden;display:flex;flex-direction:column;}
+
+  .winlist-header{
+    display:flex;align-items:center;gap:10px;
+    padding:12px 16px 8px;
+    border-bottom:1px solid #333;
+    background:#0a0a0a;
+    flex-shrink:0;
+  }
+  .winlist-header button{
+    background:none;color:#aaa;border:1px solid #444;border-radius:8px;
+    padding:6px 12px;font:14px system-ui;cursor:pointer;
+  }
+  .winlist-header button:active{color:#fff;border-color:#888;}
+  .winlist-header span{color:#888;font:13px system-ui;}
+
+  .desktop-bar{
+    display:flex;gap:8px;padding:8px 16px;
+    overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;
+    flex-shrink:0;
+  }
+  .desktop-bar::-webkit-scrollbar{display:none;}
+  .desk-tab{
+    padding:6px 14px;border:1px solid #333;border-radius:20px;
+    background:#1a1a1a;color:#777;font:13px system-ui;
+    cursor:pointer;white-space:nowrap;flex-shrink:0;transition:all .15s;
+  }
+  .desk-tab:active{background:#2a2a2a;}
+  .desk-tab.current{border-color:#3a7;color:#3a7;background:#0f2a1a;}
+
+  /* Horizontal swipe container — flex so children stack side-by-side */
+  .desktops-view{
+    flex:1;overflow:hidden;position:relative;display:flex;
+  }
+  .desktops-view-inner{
+    display:flex;height:100%;width:100%;
+    transition:transform .25s ease;
+  }
+  .desktop-view{
+    width:100%;height:100%;overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    padding:12px 16px;flex-shrink:0;box-sizing:border-box;
+  }
+  .desktop-view-label{
+    color:#555;font:11px system-ui;
+    margin-bottom:10px;padding-left:2px;
+  }
+  .win-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+    gap:10px;
+  }
+
+  /* ── Window card ────────────────────────────────────────────── */
+  .win-card{
+    cursor:pointer;
+    border:2px solid #2a2a2a;border-radius:10px;
+    overflow:hidden;background:#1a1a1a;
+    transition:border-color .15s,transform .1s;
+  }
+  .win-card:active{transform:scale(0.97);}
+  .win-card.current{border-color:#3a7;}
+
+  .win-thumb{
+    width:100%;aspect-ratio:16/10;background:#222;
+    display:flex;align-items:center;justify-content:center;overflow:hidden;
+  }
+  .win-thumb-icon{width:100%;height:100%;object-fit:cover;}
+  .win-thumb-emoji{font-size:32px;opacity:0.4;}
+  .win-thumb-real{width:100%;height:100%;object-fit:cover;}
+
+  .win-info{padding:6px 8px;}
+  .win-title{
+    color:#ddd;font:12px/1.3 system-ui;
+    overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  }
+  .win-proc{
+    color:#666;font:10px system-ui;margin-top:2px;
+    overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  }
+
+  /* ── Banner ─────────────────────────────────────────────────── */
+  #banner{
+    position:fixed;top:60px;left:50%;transform:translateX(-50%);
+    display:none;align-items:center;gap:9px;
+    background:rgba(190,45,45,.94);color:#fff;
+    font:14px/1.3 system-ui;padding:9px 16px;border-radius:20px;
+    z-index:40;max-width:92%;text-align:center;
+    box-shadow:0 3px 12px rgba(0,0,0,.45);
+  }
+  #banner.show{display:flex;}
+</style>
+</head>
+<body>
+
+<div id="winListMode" role="dialog" aria-label="窗口列表" aria-hidden="true">
+  <div class="winlist-header">
+    <button id="winListBackBtn">&#x2190; 返回</button>
+    <span>选择窗口</span>
+  </div>
+  <div id="winDesktopBar" class="desktop-bar" role="tablist" style="display:none;"></div>
+  <div class="desktops-view" id="winDesktopsView">
+    <div class="desktops-view-inner" id="winDesktopsViewInner"></div>
+  </div>
+</div>
+
+<div id="banner"><span id="bannerText"></span></div>
+
+<script>
+(function(){
+  "use strict";
+
+  var params = new URLSearchParams(location.search);
+  var token = params.get('t') || '';
+
+  var ws = null;
+  var authed = false;
+  var backoff = 500;
+  var stopReconnect = false;
+
+  // ── Banner helpers ────────────────────────────────────────────
+  var banner = document.getElementById('banner');
+  var bannerText = document.getElementById('bannerText');
+  function showBanner(t){ bannerText.textContent = t; banner.classList.add('show'); }
+  function hideBanner(){ banner.classList.remove('show'); }
+
+  // ── WebSocket ────────────────────────────────────────────────
+  function connect(){
+    if(ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(proto + '://' + location.host + '/ws');
+
+    ws.onopen = function(){
+      ws.send(JSON.stringify({t:'auth', token:token}));
+    };
+
+    ws.onmessage = function(e){
+      var m; try { m = JSON.parse(e.data); } catch(_) { return; }
+      if(m.t === 'status'){
+        authed = true; stopReconnect = false;
+        // Connected — request window list immediately
+        send({t:'get_windows'});
+      } else if(m.t === 'reject'){
+        showBanner('认证失败' + (m.reason ? ': ' + m.reason : ''));
+        stopReconnect = true;
+        try { ws.close(); } catch(_) {}
+      } else if(m.t === 'window_list'){
+        handleWindowList(m);
+      } else if(m.t === 'thumb_update'){
+        handleThumbUpdate(m);
+      } else if(m.t === 'win_event'){
+        handleWinEvent(m);
+      } else if(m.t === 'switch_result'){
+        handleSwitchResult(m);
+      }
+    };
+
+    ws.onclose = function(e){
+      authed = false;
+      if(!stopReconnect) setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 8000);
+    };
+
+    ws.onerror = function(){
+      // Will trigger onclose
+    };
+  }
+
+  function send(obj){
+    if(ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  }
+
+  // ── Window list state ────────────────────────────────────────
+  var activeDesktopIdx = 0;
+  var pendingSwitchHwnd = null;
+  var pendingSwitchTimer = null;
+  var SWITCH_TIMEOUT_MS = 5000;
+  var cardObserver = null;
+
+  // ── Icon map ────────────────────────────────────────────────
+  function getWindowIcon(procName) {
+    var lower = (procName || '').toLowerCase();
+    if (lower.includes('chrome') || lower.includes('firefox') || lower.includes('msedge')) return '\u{1f310}';
+    if (lower.includes('code') || lower.includes('idea') || lower.includes('sublime')) return '\u{1f4dd}';
+    if (lower.includes('explorer') || lower.includes('dolphin') || lower.includes('nautilus')) return '\u{1f4c1}';
+    if (lower.includes('terminal') || lower.includes('cmd') || lower.includes('powershell')) return '\u{1f5a5}';
+    if (lower.includes('spotify') || lower.includes('music') || lower.includes('vlc')) return '\u{1f3b5}';
+    if (lower.includes('slack') || lower.includes('discord') || lower.includes('teams')) return '\u{1f4ac}';
+    return '\u{1f4bb}';
+  }
+
+  // ── Render a single window card ──────────────────────────────
+  function renderWindowCard(w){
+    var card = document.createElement('div');
+    card.className = 'win-card' + (w.is_current ? ' current' : '');
+    card.dataset.hwnd = w.hwnd;
+    card.setAttribute('role', 'option');
+    if(w.is_current) card.setAttribute('aria-selected', 'true');
+
+    var thumb = document.createElement('div');
+    thumb.className = 'win-thumb';
+    if (w.icon) {
+      var iconImg = document.createElement('img');
+      iconImg.className = 'win-thumb-icon';
+      iconImg.src = w.icon;
+      iconImg.alt = w.process_name || '';
+      thumb.appendChild(iconImg);
+    } else {
+      var emoji = document.createElement('span');
+      emoji.className = 'win-thumb-emoji';
+      emoji.textContent = getWindowIcon(w.process_name);
+      thumb.appendChild(emoji);
+    }
+    card.appendChild(thumb);
+
+    var info = document.createElement('div');
+    info.className = 'win-info';
+    var title = document.createElement('div');
+    title.className = 'win-title';
+    title.textContent = w.title || '(无标题)';
+    info.appendChild(title);
+    var proc = document.createElement('div');
+    proc.className = 'win-proc';
+    proc.textContent = w.process_name || '';
+    info.appendChild(proc);
+    card.appendChild(info);
+
+    card.addEventListener('click', function(){
+      if(w.is_current) return;
+      if(pendingSwitchHwnd) return;
+      pendingSwitchHwnd = w.hwnd;
+      pendingSwitchTimer = setTimeout(function(){
+        pendingSwitchHwnd = null; pendingSwitchTimer = null;
+        document.querySelectorAll('.win-card').forEach(function(c){ c.style.pointerEvents = ''; });
+        showBanner('窗口切换超时');
+      }, SWITCH_TIMEOUT_MS);
+      document.querySelectorAll('.win-card').forEach(function(c){ c.style.pointerEvents = 'none'; c.classList.remove('current'); });
+      card.style.pointerEvents = 'auto';
+      card.classList.add('current');
+      send({t:'switch_window', hwnd:w.hwnd});
+    });
+
+    return card;
+  }
+
+  // ── Render desktop tabs ─────────────────────────────────────
+  function renderDesktopTabs(desktops, currentIdx){
+    var bar = document.getElementById('winDesktopBar');
+    bar.innerHTML = '';
+    bar.setAttribute('role', 'tablist');
+    desktops.forEach(function(d, i){
+      var tab = document.createElement('button');
+      tab.className = 'desk-tab' + (d.is_current ? ' current' : '');
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', d.is_current ? 'true' : 'false');
+      tab.textContent = d.name || ('桌面 ' + (i + 1));
+      tab.addEventListener('click', function(){
+        if(i === activeDesktopIdx) return;
+        document.querySelectorAll('.desk-tab').forEach(function(t){ t.classList.remove('current'); t.setAttribute('aria-selected', 'false'); });
+        tab.classList.add('current');
+        tab.setAttribute('aria-selected', 'true');
+        var inner = document.getElementById('winDesktopsViewInner');
+        inner.style.transform = 'translateX(' + (-i * 100) + '%)';
+        activeDesktopIdx = i;
+      });
+      bar.appendChild(tab);
+    });
+    bar.style.display = '';
+  }
+
+  // ── Card visibility observer ────────────────────────────────
+  function setupCardObserver(){
+    if(cardObserver) return;
+    cardObserver = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting && e.target.dataset.hwnd && !e.target.dataset.thumbPending){
+          e.target.dataset.thumbPending = '1';
+          send({t:'thumb_request', hwnd: Number(e.target.dataset.hwnd)});
+        }
+      });
+    }, { threshold: 0.3 });
+  }
+
+  // ── Main window list handler (desktop-aware) ─────────────────
+  function handleWindowList(m){
+    var desktops = m.desktops || [];
+    var windows = m.windows || [];
+
+    // Build or update desktop tab bar
+    if(desktops.length <= 1){
+      document.getElementById('winDesktopBar').style.display = 'none';
+    } else {
+      var currentIdx = 0;
+      desktops.forEach(function(d, i){ if(d.is_current) currentIdx = i; });
+      activeDesktopIdx = currentIdx;
+      renderDesktopTabs(desktops, currentIdx);
+    }
+
+    // Group windows by desktop GUID
+    var byDesktopIdx = [];
+    desktops.forEach(function(){ byDesktopIdx.push([]); });
+
+    windows.forEach(function(w){
+      if(w.desktop_id){
+        var matched = false;
+        for(var i = 0; i < desktops.length; i++){
+          if(desktops[i].guid && desktops[i].guid.indexOf(w.desktop_id) !== -1){
+            byDesktopIdx[i].push(w);
+            matched = true;
+            break;
+          }
+        }
+        if(!matched) byDesktopIdx[activeDesktopIdx].push(w);
+      } else {
+        byDesktopIdx[activeDesktopIdx].push(w);
+      }
+    });
+
+    // Build desktop view columns
+    var desktopsView = document.getElementById('winDesktopsView');
+    var viewInner = document.getElementById('winDesktopsViewInner');
+    viewInner.innerHTML = '';
+
+    setupCardObserver();
+
+    desktops.forEach(function(d, idx){
+      var view = document.createElement('div');
+      view.className = 'desktop-view';
+      view.setAttribute('role', 'tabpanel');
+      view.setAttribute('aria-label', d.name || ('桌面 ' + (idx + 1)));
+
+      var label = document.createElement('div');
+      label.className = 'desktop-view-label';
+      label.textContent = d.name || ('桌面 ' + (idx + 1));
+      view.appendChild(label);
+
+      var grid = document.createElement('div');
+      grid.className = 'win-grid';
+      view.appendChild(grid);
+
+      byDesktopIdx[idx].forEach(function(w){
+        var card = renderWindowCard(w);
+        grid.appendChild(card);
+        if(cardObserver) cardObserver.observe(card);
+      });
+
+      viewInner.appendChild(view);
+    });
+
+    // Position to current desktop
+    viewInner.style.transition = 'none';
+    viewInner.style.transform = 'translateX(' + (-activeDesktopIdx * 100) + '%)';
+    // Re-enable transition after paint
+    requestAnimationFrame(function(){
+      requestAnimationFrame(function(){
+        viewInner.style.transition = '';
+      });
+    });
+  }
+
+  // ── Thumbnail update ────────────────────────────────────────
+  function handleThumbUpdate(m){
+    var card = document.querySelector('[data-hwnd="'+m.hwnd+'"]');
+    if(!card) return;
+    var thumb = card.querySelector('.win-thumb');
+    if(!thumb) return;
+    if(typeof m.thumb === 'string' && m.thumb.indexOf('svg+xml') !== -1){
+      delete card.dataset.thumbPending;
+      return;
+    }
+    delete card.dataset.thumbPending;
+    thumb.innerHTML = '';
+    var img = document.createElement('img');
+    img.src = m.thumb;
+    img.className = 'win-thumb-real';
+    img.alt = '';
+    thumb.appendChild(img);
+  }
+
+  // ── Window events ───────────────────────────────────────────
+  function handleWinEvent(m) {
+    var evt = m.event || m.e;
+    if(evt === 'foreground_changed' || evt === 'focus'){
+      document.querySelectorAll('.win-card').forEach(function(c){ c.classList.remove('current'); });
+      var c = document.querySelector('[data-hwnd="'+m.hwnd+'"]');
+      if(c) c.classList.add('current'); else send({t:'get_windows'});
+    } else if(evt === 'created' || evt === 'destroyed' || evt === 'desktop_changed'){
+      // Re-fetch the full list for structural changes
+      send({t:'get_windows'});
+    } else if(evt === 'title_changed'){
+      var c = document.querySelector('[data-hwnd="'+m.hwnd+'"]');
+      if(c){ var t = c.querySelector('.win-title'); if(t) t.textContent = m.title || '(无标题)'; }
+    }
+  }
+
+  // ── Switch result ───────────────────────────────────────────
+  function handleSwitchResult(m){
+    if(m.ok){
+      if(pendingSwitchHwnd){
+        document.querySelectorAll('.win-card').forEach(function(c){ c.classList.remove('current'); c.style.pointerEvents = ''; });
+        var card = document.querySelector('[data-hwnd="'+pendingSwitchHwnd+'"]');
+        if(card) card.classList.add('current');
+      }
+    } else {
+      showBanner('窗口切换失败' + (m.error ? ': '+m.error : ''));
+      document.querySelectorAll('.win-card').forEach(function(c){ c.style.pointerEvents = ''; });
+    }
+    if(pendingSwitchTimer){ clearTimeout(pendingSwitchTimer); pendingSwitchTimer = null; }
+    pendingSwitchHwnd = null;
+  }
+
+  // ── Back button ─────────────────────────────────────────────
+  document.getElementById('winListBackBtn').addEventListener('click', function(){
+    // Close this view — for standalone page, go back or close
+    if(window.history.length > 1){
+      window.history.back();
+    } else {
+      window.close();
+    }
+  });
+
+  // ── Keyboard nav (Tab trapping) ─────────────────────────────
+  document.getElementById('winListMode').addEventListener('keydown', function(e){
+    if(e.key !== 'Tab') return;
+    var focusable = document.querySelectorAll('#winListMode button:not([disabled]), #winListMode [tabindex="0"]');
+    if(focusable.length === 0) return;
+    var first = focusable[0], last = focusable[focusable.length-1];
+    if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+  });
+
+  // ── Horizontal swipe between desktops ───────────────────────
+  (function(){
+    var desktopsView = document.getElementById('winDesktopsView');
+    var viewInner = document.getElementById('winDesktopsViewInner');
+    var startX = 0;
+    var startY = 0;
+    var startTransform = 0;
+    var dragging = false;
+    var desktopCount = 1;
+
+    function updateDesktopCount(){
+      desktopCount = document.querySelectorAll('.desktop-view').length;
+    }
+
+    desktopsView.addEventListener('touchstart', function(e){
+      if(e.touches.length !== 1) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      // Read current translateX value
+      var style = window.getComputedStyle(viewInner);
+      var matrix = new DOMMatrixReadOnly(style.transform);
+      startTransform = matrix.m41; // current translateX
+      dragging = true;
+    }, {passive:true});
+
+    desktopsView.addEventListener('touchmove', function(e){
+      if(!dragging || e.touches.length !== 1) return;
+      var dx = e.touches[0].clientX - startX;
+      var dy = e.touches[0].clientY - startY;
+      // If vertical scroll dominates, don't interfere
+      if(Math.abs(dy) > Math.abs(dx)) return;
+      e.preventDefault();
+      var maxTranslate = -(desktopCount - 1) * 100;
+      var pct = startTransform + (dx / desktopsView.clientWidth) * 100;
+      pct = Math.max(maxTranslate, Math.min(0, pct));
+      viewInner.style.transition = 'none';
+      viewInner.style.transform = 'translateX(' + pct + '%)';
+    }, {passive:false});
+
+    desktopsView.addEventListener('touchend', function(e){
+      if(!dragging) return;
+      dragging = false;
+      var dx = e.changedTouches[0].clientX - startX;
+      var threshold = 50; // px threshold to snap to next/prev desktop
+      if(Math.abs(dx) < threshold) return;
+      var delta = dx < 0 ? 1 : -1;
+      var newIdx = Math.max(0, Math.min(desktopCount - 1, activeDesktopIdx + delta));
+      if(newIdx === activeDesktopIdx) return;
+      // Update tab appearance
+      document.querySelectorAll('.desk-tab').forEach(function(t, i){
+        t.classList.toggle('current', i === newIdx);
+        t.setAttribute('aria-selected', i === newIdx ? 'true' : 'false');
+      });
+      activeDesktopIdx = newIdx;
+      viewInner.style.transition = '';
+      viewInner.style.transform = 'translateX(' + (-newIdx * 100) + '%)';
+    }, {passive:true});
+
+    // Expose so handleWindowList can update count after rendering
+    window._updateDesktopCount = updateDesktopCount;
+  })();
+
+  // ── Start ───────────────────────────────────────────────────
+  connect();
+
+})();
+</script>
+</body>
+</html>

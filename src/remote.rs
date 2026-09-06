@@ -157,20 +157,19 @@ fn handle_conn(mut stream: TcpStream, token: String) {
     let mut ws_key = String::new();
     let mut ws_ext = String::new();
 
-
     let is_ws;
     let is_qr;
     let is_diag;
     let is_report;
     let is_manifest;
     let is_sw;
+    let is_winlist;
     loop {
         match stream.read(&mut tmp) {
             Ok(0) => return,
             Ok(n) => {
                 buf.extend_from_slice(&tmp[..n]);
                 if let Some(pos) = find_sub(&buf, b"\r\n\r\n") {
-
                     let header = String::from_utf8_lossy(&buf[..pos]);
                     dbg_log(&format!("remote: RAW HEADERS from {ip}: {header}"));
                     if let Some(fl) = header.split("\r\n").next() {
@@ -179,19 +178,12 @@ fn handle_conn(mut stream: TcpStream, token: String) {
 
                     for line in header.split("\r\n") {
                         let low = line.to_ascii_lowercase();
-                        // NB: match the header *name* case-insensitively, but keep the
-                        // header *value* byte-exact. `Sec-WebSocket-Key` is base64 and
-                        // case-sensitive — lowercasing it (e.g. the real iPhone sends
-                        // mixed-case keys) makes the computed `Sec-WebSocket-Accept`
-                        // wrong, so Safari rejects the handshake with code 1006.
                         if let Some(pos) = low.find("sec-websocket-key:") {
                             ws_key = line[pos + "sec-websocket-key:".len()..].trim().to_string();
                         } else if let Some(pos) = low.find("sec-websocket-extensions:") {
                             ws_ext = line[pos + "sec-websocket-extensions:".len()..].trim().to_string();
                         }
                     }
-
-
 
                     is_ws = first_line.contains(" /ws");
                     let req_path = first_line.split_whitespace().nth(1).unwrap_or("");
@@ -200,6 +192,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                     is_report = req_path.starts_with("/report");
                     is_manifest = req_path == "/manifest.json";
                     is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
+                    is_winlist = req_path == "/winlist.html";
                     break;
                 }
                 if buf.len() > 16384 {
@@ -244,8 +237,8 @@ dbg_log(&format!("remote: ws handshake OK from {ip}"));
         );
     } else if is_manifest {
         serve_manifest(&mut stream);
-    } else if is_sw {
-        serve_sw(&mut stream);
+    } else if is_winlist {
+        serve_winlist(&mut stream);
     } else {
         serve_page(&mut stream);
     }
@@ -660,6 +653,20 @@ fn serve_page(stream: &mut TcpStream) {
     let _ = stream.write_all(body);
 }
 
+fn serve_winlist(stream: &mut TcpStream) {
+    let body = WINLIST_HTML.as_bytes();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\n\
+        Content-Type: text/html; charset=utf-8\r\n\
+        Cache-Control: no-cache\r\n\
+        Content-Length: {}\r\n\
+        Connection: close\r\n\
+        \r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+}
 fn serve_manifest(stream: &mut TcpStream) {
     let body = MANIFEST_JSON.as_bytes();
     let header = format!(
@@ -968,6 +975,7 @@ fn base64(data: &[u8]) -> String {
 const TRACKPAD_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/trackpad.html"));
 const QR_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/qr.html"));
 const MANIFEST_JSON: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/manifest.json"));
+const WINLIST_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/winlist.html"));
 
 #[cfg(test)]
 mod tests {
