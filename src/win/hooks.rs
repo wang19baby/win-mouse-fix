@@ -683,7 +683,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         let scroll_on = SCROLL_ENABLED.load(Ordering::Relaxed);
         let _smooth_on = SMOOTH_ENABLED.load(Ordering::Relaxed);
         let buttons_on = BUTTONS_ENABLED.load(Ordering::Relaxed);
-        let accel_on = ACCEL_ENABLED.load(Ordering::Relaxed);
+        let _accel_on = ACCEL_ENABLED.load(Ordering::Relaxed);
         let drag_on = DRAG_ENABLED.load(Ordering::Relaxed);
         let ws_on = WINDOW_SWITCHER_ENABLED.load(Ordering::Relaxed);
 
@@ -722,8 +722,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         }
         // ── Mousemove ────────────────────────────────────────────────────────────
         if ev == WM_MOUSEMOVE {
-            // Window-drag gesture: behaviour depends on cfg.drag.mode.
-            let mut dragging = false;
+            // Window-drag gesture: behaviour depends on DRAG_MODE atomic.
             if drag_on {
                 match DRAG_MODE.load(Ordering::Relaxed) {
                 0u8 => {
@@ -731,7 +730,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                     if let Some(ctrl) = DRAG.read().as_ref() {
                         if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
                             crate::win::window::move_window(ctrl.hwnd(), x, y);
-                            dragging = true;
+
                         }
                     }
                 }
@@ -762,7 +761,6 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                                 }
                             }
                         }
-                        dragging = true;
                     }
                 }
                 2u8 => {
@@ -780,8 +778,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                             };
                             crate::remap::execute_effect(&crate::remap::Effect::NavigationSwipe { direction });
                             ctrl.reset_accum();
+
                         }
-                        dragging = true;
                     }
                 }
                 3u8 => {
@@ -795,7 +793,6 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                             crate::remap::execute_effect(&crate::remap::Effect::TaskView);
                             ctrl.reset_accum();
                         }
-                        dragging = true;
                     }
                 }
                 4u8 => {
@@ -809,7 +806,6 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                             crate::remap::execute_effect(&crate::remap::Effect::ShowDesktop);
                             ctrl.reset_accum();
                         }
-                        dragging = true;
                     }
                 }
                 _ => {}
