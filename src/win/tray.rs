@@ -211,8 +211,9 @@ pub fn create() -> Result<(), String> {
         // Hot-reload: poll config.toml mtime via the tray timer (see check_reload_config).
         SetTimer(hwnd, ID_TIMER_CONFIG, CONFIG_RELOAD_MS, None);
         SetTimer(hwnd, ID_TIMER_PROFILE, PROFILE_POLL_MS, None);
-        SetTimer(hwnd, ID_TIMER_BATTERY_ICON, BATTERY_ICON_MS, None);
-        SetTimer(hwnd, ID_TIMER_DPI, DPI_POLL_MS, None);
+        // Battery and DPI polling disabled — set to 0 to re-enable if needed.
+        // SetTimer(hwnd, ID_TIMER_BATTERY_ICON, BATTERY_ICON_MS, None);
+        // SetTimer(hwnd, ID_TIMER_DPI, DPI_POLL_MS, None);
         // Seed last-mtime so the first tick doesn't trigger a redundant reload.
         *CONFIG_MTIME.lock() =
             std::fs::metadata(crate::config::config_path()).ok().and_then(|m| m.modified().ok());
@@ -376,8 +377,8 @@ unsafe extern "system" fn wnd_proc(
             KillTimer(hwnd, ID_TIMER_ADDMODE);
             KillTimer(hwnd, ID_TIMER_CONFIG);
             KillTimer(hwnd, ID_TIMER_PROFILE);
-            KillTimer(hwnd, ID_TIMER_BATTERY_ICON);
-            KillTimer(hwnd, ID_TIMER_DPI);
+            // KillTimer(hwnd, ID_TIMER_BATTERY_ICON);
+            // KillTimer(hwnd, ID_TIMER_DPI);
             KillTimer(hwnd, crate::win::hooks::CLICK_TIMER_ID);
 
             let ov = *CUR_OVERLAY.lock();
@@ -430,24 +431,6 @@ unsafe fn show_menu(hwnd: isize) {
     // Trackpad toggle: ✓ if server is running, blank if not.
     let remote_flags = MF_STRING | if crate::remote::info().is_some() { MF_CHECKED } else { MF_UNCHECKED };
     AppendMenuW(menu, remote_flags, ID_REMOTE, to_wide("手机妙控板").as_ptr());
-    AppendMenuW(menu, MF_SEPARATOR, 0, null());
-
-    let addmode_active = crate::add_mode::is_active();
-    let addmode_flags =
-        MF_STRING | if addmode_active { MF_CHECKED } else { MF_UNCHECKED };
-    AppendMenuW(
-        menu,
-        addmode_flags,
-        ID_ADDMODE,
-        to_wide(" 录制新按键映射").as_ptr(),
-    );
-
-    AppendMenuW(menu, MF_STRING, ID_BATTERY, to_wide("电池状态").as_ptr());
-    AppendMenuW(menu, MF_STRING, ID_DPI, to_wide("DPI 同步当前屏").as_ptr());
-    AppendMenuW(menu, MF_SEPARATOR, 0, null());
-    AppendMenuW(menu, MF_STRING, ID_SETTINGS, to_wide("设置").as_ptr());
-    AppendMenuW(menu, MF_STRING, ID_PROFILES, to_wide("配置文件").as_ptr());
-    AppendMenuW(menu, MF_STRING, ID_HELP, to_wide("帮助").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_ABOUT, to_wide("关于").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_EXIT, to_wide("退出").as_ptr());
 
@@ -493,64 +476,6 @@ unsafe fn show_menu(hwnd: isize) {
         }
         ID_ABOUT => {
             show_about();
-        }
-        ID_HELP => {
-            show_help();
-        }
-        ID_SETTINGS => {
-            crate::gui::open_settings(hwnd);
-        }
-        ID_PROFILES => {
-            crate::gui::open_profiles(hwnd);
-        }
-        ID_BATTERY => {
-            crate::device::log_battery_status();
-        }
-        ID_DPI => {
-            let cfg = crate::config::Config::load_or_default();
-            let monitors = crate::device::dpi::enumerate_monitors();
-            let ref_dpi = monitors
-                .iter()
-                .find(|m| m.primary)
-                .or_else(|| monitors.first())
-                .map(|m| m.dpi_x)
-                .unwrap_or(96);
-            // Refresh the shared DPI cache and read the computed target.
-            match crate::device::cache::update_dpi(
-                cfg.dpi.base_dpi,
-                ref_dpi,
-                cfg.dpi.min_dpi,
-                cfg.dpi.max_dpi,
-            ) {
-                Some(state) => {
-                    let applied =
-                        crate::device::dpi::apply_dpi_to_first_device(state.target_hw_dpi);
-                    let msg = match applied {
-                        Some(actual) => format!(
-                            "当前屏逻辑 DPI: {}\n基准屏 DPI: {}\n目标硬件 DPI: {} → 已写入 {}",
-                            state.monitor_dpi, ref_dpi, state.target_hw_dpi, actual,
-                        ),
-                        None => format!(
-                            "当前屏逻辑 DPI: {}\n基准屏 DPI: {}\n目标硬件 DPI: {}\n(未找到支持 DPI 的 Logitech 设备)",
-                            state.monitor_dpi, ref_dpi, state.target_hw_dpi,
-                        ),
-                    };
-                    MessageBoxW(
-                        hwnd,
-                        to_wide(&msg).as_ptr(),
-                        to_wide("DPI 同步").as_ptr(),
-                        MB_OK | MB_ICONINFORMATION,
-                    );
-                }
-                None => {
-                    MessageBoxW(
-                        hwnd,
-                        to_wide("未检测到显示器").as_ptr(),
-                        to_wide("DPI 同步").as_ptr(),
-                        MB_OK | MB_ICONINFORMATION,
-                    );
-                }
-            }
         }
         ID_REMOTE => {
             if crate::remote::info().is_some() {
