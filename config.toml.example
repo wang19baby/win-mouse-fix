@@ -1,0 +1,119 @@
+[general]
+start_hidden = true
+# Optional rolling log file. Uncomment to capture output when run headless.
+log_path = "D:/work_space/personal_workspace/win-mouse-fix/win-mouse-fix.log"
+
+[scroll]
+enabled = true
+smooth = true          # Smooth (inertial) scrolling vs raw wheel ticks
+speed = 1.0           # Overall scroll speed multiplier
+invert = false        # Invert vertical scroll direction
+
+# ── Smooth-scroll tuning ────────────────────────────────────────────────────
+# MMF 3.x drag-momentum model (v'(t) = -a·v(t)^b via curve.rs):
+drag_exponent = 1.05   # Drag exponent `b`. Higher = shorter coast.
+drag_coefficient = 15.0 # Drag coefficient `a`. Higher = faster decay.
+stop_speed = 30.0     # units/sec; below this scrolling stops (inertia end)
+step = 120            # Max wheel units per tick (subdivision cap for smoothness)
+
+# ── Shift nonlinear accelerator (PR-B) ──────────────────────────────────────
+# When shift_speedup_linear = false (default), Shift becomes a "throttle":
+# light tap → ~1× speed; sustained hold → up to the curve's y_max.
+shift_speedup_curve = [0.0, 1.0, 0.25, 1.8, 0.7, 4.0, 1.0, 6.0]
+shift_speedup_max_hold = 0.6   # seconds to reach the curve's right endpoint (x=1)
+shift_speedup_linear = false   # true ⇒ ignore curve; use scalar shift_speedup
+
+# ── Tick interval clamping ─────────────────────────────────────────────────
+tick_interval_min = 0.001    # seconds; prevents acceleration overflow on fast wheels
+tick_interval_max = 0.160    # seconds; gap > this starts a new swipe
+
+# ── Acceleration curve ────────────────────────────────────────────────────
+tick_interval_accel_end = 0.015
+accel_x_min = 6.25     # tick/s; below this, no acceleration
+accel_x_max = 66.667   # tick/s; above this, capped at y_max
+accel_y_min = 30.0     # px/tick; minimum multiplier at x_min
+accel_y_max = 120.0    # px/tick; maximum multiplier at x_max
+accel_curvature = 3.0  # bezier degree-1; controls saturation shape
+
+# ── Fast-scroll speedup ────────────────────────────────────────────────────
+fast_scroll_threshold = 3
+fast_scroll_initial = 1.33   # multiplier at first ramp step
+fast_scroll_exponential = 7.5 # asymptotic multiplier ceiling
+swipe_max_interval = 0.375   # seconds; gap > this resets the swipe sequence
+swipe_min_tick_speed = 16.0   # tick/s; below this, fast-scroll is skipped
+swipe_threshold_ticks = 2    # ticks in a burst before counting toward fast-scroll
+swipe_max_ticks = 11          # max ticks per burst counted toward fast-scroll ramp
+
+# ── Base phase timing ──────────────────────────────────────────────────────
+base_ms_per_step = -1.0
+
+# ── Advanced: time & velocity smoothing ──────────────────────────────────
+time_smoothing_weight = 0.5
+velocity_a = 1.0     # Data weight `a`. 1.0 = off, lower = smoother.
+velocity_y = 1.0     # Trend weight `y`. 1.0 = off, lower = smoother.
+
+[buttons]
+enabled = true
+window_switcher = true
+
+# ── Default remaps (edit to taste) ────────────────────────────────────────────
+# Shift+scroll → horizontal scroll
+[[buttons.advanced]]
+modifiers = { keyboard = 0x200 }
+trigger = { type = "scroll" }
+effect = { type = "modified_scroll", data = { modification = "horizontal" } }
+
+# Ctrl+scroll → precision mode (cursor-centered zoom-like scrolling)
+[[buttons.advanced]]
+modifiers = { keyboard = 0x100 }
+trigger = { type = "scroll" }
+effect = { type = "modified_scroll", data = { modification = "precision" } }
+
+# X1 (back) side button → Task View (Win+Tab)
+# Uncomment to bind:
+# [[buttons.advanced]]
+# trigger = { type = "button", button = "x1", level = 1, duration = "click" }
+# effect = { type = "task_view" }
+#
+# X2 (forward) side button → Show Desktop (Win+D)
+# Uncomment to bind:
+# [[buttons.advanced]]
+# trigger = { type = "button", button = "x2", level = 1, duration = "click" }
+# effect = { type = "show_desktop" }
+
+# Drag gestures (left-click drag)
+# Modes: "move" (drag window), "scroll" (drag-to-scroll), "navigate" (back/forward),
+#        "taskview" (drag up = Win+Tab), "showdesktop" (drag down = Win+D)
+[drag]
+enabled = true
+button = "left"
+mode = "move"
+
+# Pointer acceleration (subtle; adjusts mouse sensitivity by movement speed)
+[accel]
+enabled = true
+sensitivity = 1000.0
+min_factor = 1.0
+max_factor = 2.0
+
+# ── Phone trackpad touch parameters ──────────────────────────────────────────
+# Sent to the phone via WebSocket status message.
+# Adjust these to match your phone's screen size and preferred feel.
+[touch]
+gain = 6.7             # Base pointer gain (finger px → cursor px)
+accel_ref = 10.0       # Speed threshold below which no acceleration applies (px/frame)
+accel_slope = 10.0     # Each px/frame above accel_ref adds +1x gain
+accel_max_mult = 2.0   # Maximum acceleration multiplier
+move_ema = 0.35        # EMA smoothing coefficient for speed estimate (lower = smoother)
+scroll_gain = 5.5      # Finger px → scroll wheel units
+tap_ms = 220           # Max duration for a tap gesture (ms)
+tap_px = 10.0          # Max displacement for a tap gesture (px)
+swipe_px = 45.0        # 3/4-finger swipe trigger distance (px)
+decide_px = 12.0       # Scroll vs pinch disambiguation threshold (px)
+pinch_bias = 1.5       # Pinch signal must exceed scroll * bias to be classified as pinch
+diag_min = 20.0        # Minimum displacement on both axes for diagonal detection (px)
+diag_ratio = 1.6       # Max ratio between axes for diagonal (higher = more strict)
+
+[remote]
+enabled = true
+port = 18765

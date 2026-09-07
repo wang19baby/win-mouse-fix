@@ -83,6 +83,7 @@ const IDC_CANCEL: usize = 2008;
 static SELECTED_EFFECT: std::sync::OnceLock<std::sync::Mutex<Option<crate::remap::Effect>>> =
     std::sync::OnceLock::new();
 const ABOUT_OK_ID: usize = 2002;
+const ID_GITHUB: usize = 2003;
 const REPO_URL: &str = "https://github.com/wang19baby/win-mouse-fix";
 
 /// Last observed mtime of config.toml; used to detect changes for hot-reload.
@@ -693,11 +694,23 @@ unsafe extern "system" fn about_wnd_proc(
                 150, 130, 80, 24,
                 hwnd, ABOUT_OK_ID as isize, hmod, null_mut(),
             );
+            CreateWindowExW(
+                0, to_wide("Button").as_ptr(), to_wide("GitHub").as_ptr(),
+                WS_CHILD | WS_VISIBLE,
+                245, 130, 80, 24,
+                hwnd, ID_GITHUB as isize, hmod, null_mut(),
+            );
             0
         }
         WM_COMMAND => {
-            if wparam as usize == ABOUT_OK_ID {
+            let id = wparam as usize & 0xFFFF;
+            if id == ABOUT_OK_ID {
                 DestroyWindow(hwnd);
+            } else if id == ID_GITHUB {
+                unsafe {
+                    ShellExecuteW(0, to_wide("open").as_ptr(), to_wide(REPO_URL).as_ptr(),
+                        null(), null(), 1);
+                }
             }
             0
         }

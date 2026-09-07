@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Windows mouse enhancement tool (smooth scroll, button remapping) — Rust + native Win32"
 license = "MIT"
+authors = ["aiotdl.com"]
 
 [dependencies]
 # Pinned to versions already present in the local cargo cache (rsproxy.cn mirror).
