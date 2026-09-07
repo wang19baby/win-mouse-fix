@@ -31,7 +31,7 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          Compress-Archive -Path target/release/win-mouse-fix.exe -DestinationPath win-mouse-fix.zip -Force
+          Compress-Archive -Path target/release/win-mouse-fix.exe, config.toml.example -DestinationPath win-mouse-fix.zip -Force
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
           Write-Host "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
         env:
