@@ -1,8 +1,6 @@
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, PeekMessageW, TranslateMessage, PM_REMOVE, QS_ALLINPUT,
-    WM_APP, WM_QUIT,
+    DispatchMessageW, GetMessageW, TranslateMessage,
 };
-use windows_sys::Win32::Foundation::WPARAM;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // Hook installation requests from the WS/auth thread — processed on the main thread.
