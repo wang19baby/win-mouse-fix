@@ -1324,7 +1324,7 @@ pub fn stop_win_event_hooks() {
 #[allow(unused_imports)]
 #[allow(unused_imports)]
 mod tests {
-
+    use super::*;
     #[test]
     fn enumerate_windows_returns_visible_windows() {
         let windows = enumerate_windows();

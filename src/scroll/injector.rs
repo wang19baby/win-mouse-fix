@@ -298,15 +298,17 @@ impl ScrollInjector {
     }
 }
 
-/// Spawn the injector thread and return a `Sender` for the hook layer to feed.
+/// Spawn the injector thread and return a `SyncSender` for the hook layer to feed.
 ///
 /// Returns `None` if smooth scrolling is disabled in `cfg`.
-pub fn start(cfg: &Config) -> Option<Sender<WheelInput>> {
+pub fn start(cfg: &Config) -> Option<std::sync::mpsc::SyncSender<WheelInput>> {
     if !cfg.scroll.enabled || !cfg.scroll.smooth {
         return None;
     }
     let s = &cfg.scroll;
-    let (tx, rx) = mpsc::channel();
+    // Bounded sync channel so `try_send` works in the hook (never blocks).
+    // 1000-event buffer handles burst scrolling; overflow is discarded safely.
+    let (tx, rx) = mpsc::sync_channel(1000);
     let injector = ScrollInjector {
         rx,
         vertical: WheelTracker::new(

@@ -11,7 +11,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_HWHEEL,
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
     MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
-    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput,
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VK_SPACE,
 };
 
 use crate::CONFIG;
@@ -19,15 +19,13 @@ use crate::config::Config;
 use crate::gesture::{drag_scroll_refine, DragController};
 use crate::accel::PointerAccel;
 use std::sync::atomic::{AtomicBool, Ordering};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
-use std::sync::mpsc::Sender;
 use parking_lot::{Mutex, RwLock};
 use crate::scroll::engine::WheelInput;
 use crate::remap::{MouseButton, SimpleRemapTable, RemapEngine, ClickCycleTracker, ActiveModifiers, Effect, ModifiedScrollModification, ModifiedDragType};
 
 /// Sender to the injector thread. `None` when scroll is disabled or smooth is off.
-/// Wrapped in a `Mutex` for shared access from the hook procedure.
-static SCROLL_TX: Mutex<Option<Sender<WheelInput>>> = Mutex::new(None);
+/// Uses `SyncSender` so `try_send()` is available in the hook (never blocks).
+static SCROLL_TX: Mutex<Option<std::sync::mpsc::SyncSender<WheelInput>>> = Mutex::new(None);
 
 /// Low-level hook flag: the event was synthesized via `SendInput` (by us), so it
 /// must not be re-smoothed (would cause a feedback loop).
@@ -68,12 +66,13 @@ static SPACE_HELD: AtomicBool = AtomicBool::new(false);
 static DRAG: RwLock<Option<DragController>> = RwLock::new(None);
 
 /// Output mode for a button-drag gesture (selected by `cfg.drag.mode`).
+/// Discriminants are stored in `DRAG_MODE` as a u8 — must be consecutive 0..4.
 enum DragOutput {
-    Move,
-    Scroll,
-    Navigate,
-    TaskView,    // drag → Win+Tab (virtual desktop overview)
-    ShowDesktop, // drag → Win+D (minimize all / restore)
+    Move = 0,
+    Scroll = 1,
+    Navigate = 2,
+    TaskView = 3,    // drag → Win+Tab (virtual desktop overview)
+    ShowDesktop = 4, // drag → Win+D (minimize all / restore)
 }
 
 /// Map the config `drag.mode` string to a [`DragOutput`].
@@ -97,6 +96,9 @@ static BUTTONS_ENABLED: AtomicBool = AtomicBool::new(false);
 static ACCEL_ENABLED: AtomicBool = AtomicBool::new(false);
 static DRAG_ENABLED: AtomicBool = AtomicBool::new(false);
 static WINDOW_SWITCHER_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Cached drag mode for the mousemove hot path — avoids CONFIG.read() on every move.
+/// 0=Move, 1=Scroll, 2=Navigate, 3=TaskView, 4=ShowDesktop (matches DragOutput discriminant).
+static DRAG_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// Set while `TrackPopupMenu` is active on the tray. The hook skips all button
 /// events when this is true so the menu receives clicks.
@@ -182,6 +184,15 @@ pub fn apply_config(cfg: Config) {
     ACCEL_ENABLED.store(cfg.accel.enabled, Ordering::Relaxed);
     DRAG_ENABLED.store(cfg.drag.enabled, Ordering::Relaxed);
     WINDOW_SWITCHER_ENABLED.store(cfg.buttons.window_switcher, Ordering::Relaxed);
+    // Cache drag mode as u8 for the lock-free mousemove hot path.
+    let mode_u8 = match cfg.drag.mode.as_str() {
+        "scroll" => 1u8,
+        "navigate" => 2u8,
+        "taskview" => 3u8,
+        "showdesktop" => 4u8,
+        _ => 0u8,
+    };
+    DRAG_MODE.store(mode_u8, Ordering::Relaxed);
     drop(cfg);
 
     let _ = install();
@@ -649,7 +660,7 @@ unsafe fn process_wheel(delta: i32, horizontal: bool, cfg: &Config) -> Option<Wh
     //    If smooth mode is off, return None so the original event passes through.
     if cfg.scroll.smooth {
         if let Some(tx) = SCROLL_TX.lock().as_ref() {
-            let _ = tx.send(WheelInput { delta, horizontal });
+            let _ = tx.try_send(WheelInput { delta, horizontal });
         }
         Some(WheelInput { delta, horizontal })
     } else {
@@ -714,9 +725,9 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             // Window-drag gesture: behaviour depends on cfg.drag.mode.
             let mut dragging = false;
             if drag_on {
-                let cfg = CONFIG.read();
-                    match drag_output(&cfg.drag.mode) {
-                DragOutput::Move => {
+                match DRAG_MODE.load(Ordering::Relaxed) {
+                0u8 => {
+                    // DragOutput::Move
                     if let Some(ctrl) = DRAG.read().as_ref() {
                         if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
                             crate::win::window::move_window(ctrl.hwnd(), x, y);
@@ -724,10 +735,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         }
                     }
                 }
-                DragOutput::Scroll => {
-                    // Feed pointer delta into the smooth-scroll injector (mac drag-to-scroll).
-                    // Held modifiers switch semantics (mac Core/Modifiers/): Shift forces
-                    // horizontal, Ctrl slows to precision.
+                1u8 => {
+                    // DragOutput::Scroll
                     let mut drag = DRAG.write();
                     if let Some(ctrl) = drag.as_mut() {
                         let (dx, dy) = ctrl.consume_delta(ms.pt.x, ms.pt.y);
@@ -738,27 +747,26 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                             );
                             let scale = if refine.precision { 0.5_f64 } else { 1.0 };
                             if refine.horizontal_only {
-                                // Vertical drag becomes horizontal scroll (mac Shift behaviour).
                                 let h = (-(dx as f64 + dy as f64) * scale).round() as i32;
                                 if h != 0 {
-                                    let _ = tx.send(WheelInput { delta: h, horizontal: true });
+                                    let _ = tx.try_send(WheelInput { delta: h, horizontal: true });
                                 }
                             } else {
                                 let v = (-(dy as f64) * scale).round() as i32;
                                 let h = (-(dx as f64) * scale).round() as i32;
                                 if v != 0 {
-                                    let _ = tx.send(WheelInput { delta: v, horizontal: false });
+                                    let _ = tx.try_send(WheelInput { delta: v, horizontal: false });
                                 }
                                 if h != 0 {
-                                    let _ = tx.send(WheelInput { delta: h, horizontal: true });
+                                    let _ = tx.try_send(WheelInput { delta: h, horizontal: true });
                                 }
                             }
                         }
                         dragging = true;
                     }
                 }
-                DragOutput::Navigate => {
-                    // Horizontal drag -> browser back/forward (mac TwoFingerSwipe).
+                2u8 => {
+                    // DragOutput::Navigate
                     let mut drag = DRAG.write();
                     if let Some(ctrl) = drag.as_mut() {
                         ctrl.consume_delta(ms.pt.x, ms.pt.y);
@@ -776,8 +784,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         dragging = true;
                     }
                 }
-                DragOutput::TaskView => {
-                    // Vertical drag up → Task View (Win+Tab).
+                3u8 => {
+                    // DragOutput::TaskView
                     let mut drag = DRAG.write();
                     if let Some(ctrl) = drag.as_mut() {
                         ctrl.consume_delta(ms.pt.x, ms.pt.y);
@@ -790,8 +798,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         dragging = true;
                     }
                 }
-                DragOutput::ShowDesktop => {
-                    // Vertical drag down → Show Desktop (Win+D).
+                4u8 => {
+                    // DragOutput::ShowDesktop
                     let mut drag = DRAG.write();
                     if let Some(ctrl) = drag.as_mut() {
                         ctrl.consume_delta(ms.pt.x, ms.pt.y);
@@ -804,94 +812,10 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         dragging = true;
                     }
                 }
-                }
-            }
-            // ModifiedDrag: TwoFingerSwipe / ThreeFingerSwipe → navigation swipe.
-            // FakeDrag → synthesized mouse drag (move while button held).
-            if !dragging {
-                if let Some(drag_state) = DRAG_EFFECT.read().as_ref() {
-                    let dx = ms.pt.x - drag_state.origin_x;
-                    let dy = ms.pt.y - drag_state.origin_y;
-                    match drag_state.drag_type {
-                        ModifiedDragType::TwoFingerSwipe => {
-                            // Two-finger horizontal swipe → browser back/forward.
-                            if dx.abs() > 4 || dy.abs() > 4 {
-                                let direction = if dx > 0 {
-                                    crate::remap::SwipeDirection::Forward
-                                } else {
-                                    crate::remap::SwipeDirection::Back
-                                };
-                                crate::remap::execute_effect(&crate::remap::Effect::NavigationSwipe { direction });
-                                *DRAG_EFFECT.write() = Some(DragState {
-                                    drag_type: drag_state.drag_type.clone(),
-                                    trigger_button: drag_state.trigger_button,
-                                    origin_x: ms.pt.x,
-                                    origin_y: ms.pt.y,
-                                });
-                            }
-                            dragging = true;
-                        }
-                        ModifiedDragType::ThreeFingerSwipe | ModifiedDragType::FourFingerSwipe => {
-                            // Three/four-finger swipe → virtual desktop switch (Win+Ctrl+Left/Right).
-                            // Mirrors mac's TouchSimulator postDockSwipeEventWithDelta.
-                            if dx.abs() > 4 || dy.abs() > 4 {
-                                let direction = if dx > 0 {
-                                    crate::remap::SwipeDirection::Forward
-                                } else {
-                                    crate::remap::SwipeDirection::Back
-                                };
-                                crate::remap::send_virtual_desktop_switch(direction);
-                                *DRAG_EFFECT.write() = Some(DragState {
-                                    drag_type: drag_state.drag_type.clone(),
-                                    trigger_button: drag_state.trigger_button,
-                                    origin_x: ms.pt.x,
-                                    origin_y: ms.pt.y,
-                                });
-                            }
-                            dragging = true;
-                        }
-                        ModifiedDragType::FakeDrag => {
-                            // Send the accumulated delta as a mouse move while the trigger button is held.
-                            if dx != 0 || dy != 0 {
-                                send_fake_drag_move(drag_state.trigger_button, dx, dy);
-                                // Update origin to track next delta.
-                                *DRAG_EFFECT.write() = Some(DragState {
-                                    drag_type: drag_state.drag_type.clone(),
-                                    trigger_button: drag_state.trigger_button,
-                                    origin_x: ms.pt.x,
-                                    origin_y: ms.pt.y,
-                                });
-                            }
-                            dragging = true;
-                        }
-                    }
-                }
-            }
-            // Pointer acceleration: amplify the cursor move and swallow.
-            // Skip entirely when accel is disabled (fast atomic check, no lock).
-            if !dragging && accel_on {
-                // Read accel config BEFORE taking ACCEL lock to avoid lock ordering
-                // violation with apply_config (which takes CONFIG.read() then ACCEL.write()).
-                let accel_cfg = CONFIG.read().accel.clone();
-                let mut accel = ACCEL.write();
-                if let Some(ctrl) = accel.as_mut() {
-                    if let Some((dx, dy)) = ctrl.on_move(ms.pt.x, ms.pt.y, &accel_cfg) {
-                        if dx != 0 || dy != 0 {
-                            crate::scroll::injector::send_mouse_move(dx, dy);
-                            // Re-sync tracker to actual cursor position so screen-edge
-                            // clamping doesn't cause drift.
-                            let mut pt: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
-                            if windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) != 0 {
-                                ctrl.re_sync(pt.x, pt.y);
-                            }
-                            return 1;
-                        }
-                    }
+                _ => {}
                 }
             }
         }
-
-        // ── Button events ───────────────────────────────────────────────────────
         if let Some((btn, down)) = button_event(ev, ms) {
             // Skip all button processing when the tray popup menu is active so
             // the menu receives clicks.
