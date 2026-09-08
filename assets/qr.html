@@ -35,7 +35,7 @@
     <button onclick="copyUrl()">复制地址</button>
   </div>
   <a class="link" id="openLink" href="#">打开妙控板 →</a>
-  <p class="hint">用手机相机或扫码 App 扫描上方二维码,即可在手机浏览器中打开妙控板并开始控制鼠标。</p>
+  <p class="hint" id="hint">用手机相机或扫码 App 扫描上方二维码,即可在手机浏览器中打开妙控板并开始控制鼠标。</p>
 
 <script>
 window.QR = __QR_DATA__;
@@ -52,8 +52,20 @@ window.QR = __QR_DATA__;
       if (m[r * n + c]) ctx.fillRect(c * px, r * px, px, px);
     }
   }
-  document.getElementById('url').value = q.url;
-  document.getElementById('openLink').href = q.url;
+  // Auto-select: use pad.html for large screens (tablets), regular trackpad for phones
+  var isLarge = (function(){
+    var w = screen.width, h = screen.height;
+    if (w < h) return w >= 600;
+    return h >= 600 && w / h < 2.1;
+  })();
+  var selectedUrl = isLarge ? q.pad_url : q.url;
+  var label = isLarge ? '妙控板(分屏)' : '妙控板';
+  document.getElementById('url').value = selectedUrl;
+  document.getElementById('openLink').href = selectedUrl;
+  document.getElementById('openLink').textContent = '打开' + label + ' \u2192';
+  document.querySelector('p.hint').textContent =
+    '\u7528\u624b\u673a\u76f8\u673a\u6216\u626b\u7801 App \u626b\u63cf\u4e0a\u65b9\u4e8c\u7ef4\u7801,' +
+    '\u5373\u53ef\u5728\u624b\u673a\u6d4f\u89c8\u5668\u4e2d\u6253\u5f00' + label + '\u5e76\u5f00\u59cb\u63a7\u5236\u9f20\u6807\u3002';
 })();
 function copyUrl() {
   var u = document.getElementById('url');

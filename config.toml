@@ -41,5 +41,7 @@ scroll_gain = 5.5
 tap_ms = 220
 
 [remote]
-enabled = false
+enabled = true
 port = 18765
+large_screen_split = true
+split_ratio = 0.4

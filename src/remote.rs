@@ -20,6 +20,7 @@ use qrcode::{Color, QrCode};
 #[derive(Clone)]
 pub struct RemoteInfo {
     pub url: String,
+    pub pad_url: String,
     #[allow(dead_code)]
     pub token: String,
 }
@@ -76,8 +77,10 @@ fn start_server_impl() {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let url = format!("http://{ip}:{port}/?t={token}&v={nonce}");
+    let pad_url = format!("http://{ip}:{port}/pad.html?t={token}&v={nonce}");
     *REMOTE.write() = Some(RemoteInfo {
         url: url.clone(),
+        pad_url: pad_url.clone(),
         token: token.clone(),
     });
     crate::log::write(&format!("remote: trackpad ready -> {url}"));
@@ -171,6 +174,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
     let is_manifest;
     let _is_sw;
     let is_winlist;
+    let is_pad;
     loop {
         match stream.read(&mut tmp) {
             Ok(0) => return,
@@ -203,6 +207,8 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                     _is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
                     is_winlist =
                         req_path == "/winlist.html" || req_path.starts_with("/winlist.html?");
+                    is_pad =
+                        req_path == "/pad.html" || req_path.starts_with("/pad.html?");
                     break;
                 }
                 if buf.len() > 16384 {
@@ -241,6 +247,8 @@ fn handle_conn(mut stream: TcpStream, token: String) {
         serve_manifest(&mut stream);
     } else if is_winlist {
         serve_winlist(&mut stream);
+    } else if is_pad {
+        serve_pad(&mut stream);
     } else {
         serve_page(&mut stream);
     }
@@ -504,11 +512,14 @@ fn build_status_json() -> String {
     // Include live window count so the winlist page can skip expensive full diffs
     let windows = crate::win::window_list::enumerate_windows();
     let win_count = windows.len();
+    let remote = &cfg.remote;
     let json = serde_json::json!({
         "t": "status",
         "conn": true,
         "pc_battery": pc_battery,
         "win_count": win_count,
+        "large_screen_split": remote.large_screen_split,
+        "split_ratio": remote.split_ratio,
         "touch": {
             "gain": touch.gain,
             "accel_ref": touch.accel_ref,
@@ -740,12 +751,12 @@ fn serve_page(stream: &mut TcpStream) {
     // fixed, because regular browsers (Chrome/Edge) cache HTML by default
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
-        Content-Type: text/html; charset=utf-8\r\n\
-        Cache-Control: no-cache\r\n\
-        X-Build-Id: trackpad-html-bytes\r\n\
-        Content-Length: {}\r\n\
-        Connection: close\r\n\
-        \r\n",
+Content-Type: text/html; charset=utf-8\r\n\
+Cache-Control: no-cache\r\n\
+X-Build-Id: trackpad-html-bytes\r\n\
+Content-Length: {}\r\n\
+Connection: close\r\n\
+\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -756,24 +767,39 @@ fn serve_winlist(stream: &mut TcpStream) {
     let body = WINLIST_HTML.as_bytes();
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
-        Content-Type: text/html; charset=utf-8\r\n\
-        Cache-Control: no-cache\r\n\
-        Content-Length: {}\r\n\
-        Connection: close\r\n\
-        \r\n",
+Content-Type: text/html; charset=utf-8\r\n\
+Cache-Control: no-cache\r\n\
+Content-Length: {}\r\n\
+Connection: close\r\n\
+\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(body);
 }
+fn serve_pad(stream: &mut TcpStream) {
+    let body = PAD_HTML.as_bytes();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+Cache-Control: no-cache\r\n\
+Content-Length: {}\r\n\
+Connection: close\r\n\
+\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+}
+
 fn serve_manifest(stream: &mut TcpStream) {
     let body = MANIFEST_JSON.as_bytes();
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
-         Content-Type: application/manifest+json; charset=utf-8\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n",
+Content-Type: application/manifest+json; charset=utf-8\r\n\
+Content-Length: {}\r\n\
+Connection: close\r\n\
+\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -788,11 +814,11 @@ fn serve_sw(stream: &mut TcpStream) {
     let body = SW_JS.as_bytes();
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
-         Content-Type: application/javascript; charset=utf-8\r\n\
-         Content-Length: {}\r\n\
-         Cache-Control: no-cache\r\n\
-         Connection: close\r\n\
-         \r\n",
+Content-Type: application/javascript; charset=utf-8\r\n\
+Content-Length: {}\r\n\
+Cache-Control: no-cache\r\n\
+Connection: close\r\n\
+\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -827,10 +853,10 @@ fetch(location.origin + '/').then(function(r){ return r.text(); }).then(function
 </script></body></html>"#;
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
-         Content-Type: text/html; charset=utf-8\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n",
+Content-Type: text/html; charset=utf-8\r\n\
+Content-Length: {}\r\n\
+Connection: close\r\n\
+\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -849,7 +875,7 @@ fn serve_qr_page(stream: &mut TcpStream) {
                     .iter()
                     .map(|c| if *c == Color::Dark { 1u8 } else { 0u8 })
                     .collect();
-                let data = serde_json::json!({ "url": &info.url, "size": n, "modules": modules });
+                let data = serde_json::json!({ "url": &info.url, "pad_url": &info.pad_url, "size": n, "modules": modules });
                 let json = serde_json::to_string(&data).unwrap_or_default();
                 QR_HTML.replace("__QR_DATA__", &json)
             }
@@ -859,13 +885,13 @@ fn serve_qr_page(stream: &mut TcpStream) {
     };
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
-         Content-Type: text/html; charset=utf-8\r\n\
-         Cache-Control: no-cache, no-store, must-revalidate\r\n\
-         Pragma: no-cache\r\n\
-         Expires: 0\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n",
+Content-Type: text/html; charset=utf-8\r\n\
+Cache-Control: no-cache, no-store, must-revalidate\r\n\
+Pragma: no-cache\r\n\
+Expires: 0\r\n\
+Content-Length: {}\r\n\
+Connection: close\r\n\
+\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -1087,6 +1113,8 @@ const MANIFEST_JSON: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/manifest.json"));
 const WINLIST_HTML: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/winlist.html"));
+const PAD_HTML: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/pad.html"));
 
 #[cfg(test)]
 mod tests {

@@ -408,6 +408,10 @@ pub struct RemoteConfig {
     pub enabled: bool,
     #[serde(default = "default_remote_port")]
     pub port: u16,
+    #[serde(default = "default_large_screen_split")]
+    pub large_screen_split: bool,
+    #[serde(default = "default_split_ratio")]
+    pub split_ratio: f64,
 }
 
 fn default_remote_enabled() -> bool {
@@ -416,12 +420,20 @@ fn default_remote_enabled() -> bool {
 fn default_remote_port() -> u16 {
     18765
 }
+fn default_large_screen_split() -> bool {
+    true
+}
+fn default_split_ratio() -> f64 {
+    0.4
+}
 
 impl Default for RemoteConfig {
     fn default() -> Self {
         RemoteConfig {
             enabled: default_remote_enabled(),
             port: default_remote_port(),
+            large_screen_split: default_large_screen_split(),
+            split_ratio: default_split_ratio(),
         }
     }
 }
