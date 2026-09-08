@@ -261,6 +261,7 @@ impl ClickState {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub struct ClickCycleTracker {
     active: HashMap<MouseButton, ClickState>,
     release_callbacks: Mutex<HashMap<MouseButton, Vec<Box<dyn FnOnce() + Send + 'static>>>>,
@@ -653,11 +654,12 @@ unsafe fn send_system_event(event_type: u32, _flags: u32) {
 
 /// Open Task View (Win+Tab) — virtual desktop overview / Timeline.
 unsafe fn send_task_view() {
-    let mut inputs: Vec<INPUT> = Vec::with_capacity(4);
-    inputs.push(vk_input(0x5B, 0, true)); // VK_LWIN down
-    inputs.push(vk_input(0x09, 0, true)); // VK_TAB down
-    inputs.push(vk_input(0x09, 0, false)); // VK_TAB up
-    inputs.push(vk_input(0x5B, 0, false)); // VK_LWIN up
+    let inputs = [
+        vk_input(0x5B, 0, true),  // VK_LWIN down
+        vk_input(0x09, 0, true),  // VK_TAB down
+        vk_input(0x09, 0, false), // VK_TAB up
+        vk_input(0x5B, 0, false), // VK_LWIN up
+    ];
     SendInput(
         inputs.len() as u32,
         inputs.as_ptr(),
@@ -667,11 +669,12 @@ unsafe fn send_task_view() {
 
 /// Show Desktop / restore all (Win+D) — toggle minimize all windows.
 unsafe fn send_show_desktop() {
-    let mut inputs: Vec<INPUT> = Vec::with_capacity(4);
-    inputs.push(vk_input(0x5B, 0, true)); // VK_LWIN down
-    inputs.push(vk_input(0x44, 0, true)); // VK_D down
-    inputs.push(vk_input(0x44, 0, false)); // VK_D up
-    inputs.push(vk_input(0x5B, 0, false)); // VK_LWIN up
+    let inputs = [
+        vk_input(0x5B, 0, true),  // VK_LWIN down
+        vk_input(0x44, 0, true),  // VK_D down
+        vk_input(0x44, 0, false), // VK_D up
+        vk_input(0x5B, 0, false), // VK_LWIN up
+    ];
     SendInput(
         inputs.len() as u32,
         inputs.as_ptr(),

@@ -66,7 +66,7 @@ pub struct ScrollAxis {
 
 impl ScrollAxis {
     /// 10-param constructor matching `wheel_tracker.rs` call site.
-    #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         drag_exponent: f64,
         drag_coefficient: f64,
@@ -158,13 +158,7 @@ impl ScrollAxis {
         let dt = match self.last_tick {
             Some(t) => {
                 let d = now.duration_since(t).as_secs_f64();
-                if d <= 0.0 {
-                    0.0
-                } else if d > MAX_DT {
-                    MAX_DT
-                } else {
-                    d
-                }
+                d.clamp(0.0, MAX_DT)
             }
             None => 0.016,
         };

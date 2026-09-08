@@ -195,7 +195,7 @@ impl ScrollAnalyzer {
     /// `swipe_max_interval` — max gap (seconds) between swipe bursts.
     /// `swipe_min_tick_speed` — minimum tick speed for fast-scroll activation.
     /// `smoothness` — 0=off, 1=low, 2=regular, 3=high (mac `u_smoothness`).
-    /// `precise` — whether precision mode is active (mac `u_precise`).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         time_smoothing_weight: f64,
         velocity_a: f64,
@@ -436,9 +436,7 @@ pub struct WheelTracker {
 }
 
 impl WheelTracker {
-    /// Create a tracker for one axis.
-    ///
-    /// All params forwarded from config via `injector.rs`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         drag_exponent: f64,
         drag_coefficient: f64,

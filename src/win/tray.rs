@@ -409,7 +409,7 @@ unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam:
             0
         }
         WM_COMMAND => {
-            if wparam as usize == ID_ADDMODE {
+            if wparam == ID_ADDMODE {
                 start_addmode(hwnd);
             }
             0
@@ -802,7 +802,7 @@ unsafe extern "system" fn about_wnd_proc(
             0
         }
         WM_COMMAND => {
-            let id = wparam as usize & 0xFFFF;
+            let id = wparam & 0xFFFF;
             if id == ABOUT_OK_ID {
                 DestroyWindow(hwnd);
             } else if id == ID_GITHUB {
@@ -901,7 +901,7 @@ unsafe extern "system" fn addmode_dialog_proc(
                 0,
                 to_wide("Static").as_ptr(),
                 to_wide("捕获到触发器 — 选择要映射的效果:").as_ptr(),
-                WS_CHILD | WS_VISIBLE | 0, // SS_LEFT = 0
+                WS_CHILD | WS_VISIBLE, // SS_LEFT = 0
                 20,
                 16,
                 380,
@@ -1163,23 +1163,6 @@ fn show_remote_qr(_owner: isize) {
     }
 }
 
-#[cfg(test)]
-mod firewall_tests {
-    use super::parse_port;
-
-    #[test]
-    fn parses_port_from_trackpad_url() {
-        assert_eq!(parse_port("http://192.168.0.167:18765/?t=abc123"), 18765);
-        assert_eq!(parse_port("http://10.0.0.5:18770/?t=xyz"), 18770);
-    }
-
-    #[test]
-    fn falls_back_without_port() {
-        assert_eq!(parse_port("http://host/?t=abc"), 18765);
-        assert_eq!(parse_port("not-a-url"), 18765);
-    }
-}
-
 /// Copy `text` to the clipboard as CF_UNICODETEXT (best-effort).
 fn copy_text_to_clipboard(text: &str) {
     unsafe {
@@ -1199,5 +1182,22 @@ fn copy_text_to_clipboard(text: &str) {
             }
         }
         CloseClipboard();
+    }
+}
+
+#[cfg(test)]
+mod firewall_tests {
+    use super::parse_port;
+
+    #[test]
+    fn parses_port_from_trackpad_url() {
+        assert_eq!(parse_port("http://192.168.0.167:18765/?t=abc123"), 18765);
+        assert_eq!(parse_port("http://10.0.0.5:18770/?t=xyz"), 18770);
+    }
+
+    #[test]
+    fn falls_back_without_port() {
+        assert_eq!(parse_port("http://host/?t=abc"), 18765);
+        assert_eq!(parse_port("not-a-url"), 18765);
     }
 }

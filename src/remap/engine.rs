@@ -102,7 +102,7 @@ impl RemapEngine {
                     button: b,
                     level,
                     duration,
-                } if *b == button => Some((*level, duration.clone())),
+                } if *b == button => Some((*level, *duration)),
                 _ => None,
             };
 

@@ -235,15 +235,15 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
                     Some(cached.clone())
                 } else {
                     let fresh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        extract_window_icon(hwnd as isize)
+                        extract_window_icon(hwnd)
                     }))
                     .ok()
                     .flatten()
-                    .and_then(|png_bytes| {
-                        Some(format!(
+                    .map(|png_bytes| {
+                        format!(
                             "data:image/png;base64,{}",
                             String::from_utf8_lossy(&png_bytes)
-                        ))
+                        )
                     });
                     if let Some(ref v) = fresh {
                         cache.insert(proc_name.clone(), v.clone());
@@ -267,7 +267,7 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
             // the log on busy systems.
             static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n % 50 == 0 {
+            if n.is_multiple_of(50) {
                 let mut class = [0u16; 128];
                 windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW(
                     hwnd,
@@ -480,10 +480,7 @@ unsafe fn extract_window_icon_inner(hwnd: isize) -> Option<Vec<u8>> {
     let pixels = render_hicon_to_rgba(hwnd, hicon, 64)?;
 
     // Convert RGBA -> RgbaImage and encode as PNG (preserves alpha, crisp at small sizes)
-    let img = match image::RgbaImage::from_raw(64, 64, pixels) {
-        Some(img) => image::DynamicImage::ImageRgba8(img),
-        None => return None,
-    };
+    let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(64, 64, pixels)?);
     let mut buf = Cursor::new(Vec::new());
     if let Err(e) = img.write_to(&mut buf, image::ImageFormat::Png) {
         crate::log::write(&format!("icon: PNG encode failed: {e}"));
@@ -496,31 +493,31 @@ unsafe fn extract_window_icon_inner(hwnd: isize) -> Option<Vec<u8>> {
 /// Get HICON from window, trying WM_GETICON then class icon.
 unsafe fn get_hicon_from_window(hwnd: isize) -> Option<isize> {
     // Try WM_GETICON with ICON_SMALL2 first (most reliable)
-    let h = SendMessageW(hwnd as isize, WM_GETICON, ICON_SMALL2 as usize, 0);
+    let h = SendMessageW(hwnd, WM_GETICON, ICON_SMALL2 as usize, 0);
     if h != 0 {
         return Some(h as isize);
     }
     // Fall back to ICON_SMALL
-    let h = SendMessageW(hwnd as isize, WM_GETICON, ICON_SMALL as usize, 0);
+    let h = SendMessageW(hwnd, WM_GETICON, ICON_SMALL as usize, 0);
     if h != 0 {
         return Some(h as isize);
     }
     // Fall back to ICON_BIG
-    let h = SendMessageW(hwnd as isize, WM_GETICON, ICON_BIG as usize, 0);
+    let h = SendMessageW(hwnd, WM_GETICON, ICON_BIG as usize, 0);
     if h != 0 {
         return Some(h as isize);
     }
     // Fall back to class icon via GetClassLongPtr
     let h = windows_sys::Win32::UI::WindowsAndMessaging::GetClassLongPtrW(
-        hwnd as isize,
-        windows_sys::Win32::UI::WindowsAndMessaging::GCLP_HICONSM as i32,
+        hwnd,
+        windows_sys::Win32::UI::WindowsAndMessaging::GCLP_HICONSM,
     );
     if h != 0 {
         return Some(h as isize);
     }
     let h = windows_sys::Win32::UI::WindowsAndMessaging::GetClassLongPtrW(
-        hwnd as isize,
-        windows_sys::Win32::UI::WindowsAndMessaging::GCLP_HICON as i32,
+        hwnd,
+        windows_sys::Win32::UI::WindowsAndMessaging::GCLP_HICON,
     );
     if h != 0 {
         Some(h as isize)
@@ -638,13 +635,13 @@ pub(crate) unsafe fn capture_window_thumb_inner(
     // Falls back to GetWindowRect if DwmGetWindowAttribute fails.
     let mut rc: RECT = std::mem::zeroed();
     let hr = windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute(
-        hwnd as isize,
+        hwnd,
         9u32, // DWMWA_EXTENDED_FRAME_BOUNDS
         &mut rc as *mut _ as *mut _,
         std::mem::size_of::<RECT>() as u32,
     );
     if hr < 0 || rc.right <= rc.left || rc.bottom <= rc.top {
-        if GetWindowRect(hwnd as isize, &mut rc) == 0 {
+        if GetWindowRect(hwnd, &mut rc) == 0 {
             return None;
         }
         if rc.right <= rc.left || rc.bottom <= rc.top {
@@ -655,7 +652,7 @@ pub(crate) unsafe fn capture_window_thumb_inner(
     let src_h = (rc.bottom - rc.top) as u32;
 
     // Phase B.2: per-window DPI hint.
-    let _dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd as isize);
+    let _dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd);
 
     let scale = (max_w as f64 / src_w as f64).min(max_h as f64 / src_h as f64);
     let target_w = ((src_w as f64 * scale).round() as u32).max(1);
@@ -735,7 +732,7 @@ pub(crate) unsafe fn capture_window_thumb_inner(
     }
     let hdc_dst = CreateCompatibleDC(hdc_screen);
     let old_dst = SelectObject(hdc_dst, hbmp_dst);
-    SetStretchBltMode(hdc_dst, HALFTONE as i32);
+    SetStretchBltMode(hdc_dst, HALFTONE);
     StretchBlt(
         hdc_dst,
         0,
@@ -1327,7 +1324,6 @@ static mut WINEVENT_HOOKS: [HWINEVENTHOOK; 2] = [0, 0];
 
 /// WinEvent callback — 7 parameters per WINEVENTPROC signature.
 #[allow(non_snake_case)]
-#[allow(non_snake_case)]
 unsafe extern "system" fn win_event_callback(
     _hEventHook: HWINEVENTHOOK,
     event: u32,
@@ -1365,7 +1361,7 @@ unsafe extern "system" fn win_event_callback(
     };
 
     // Push to all WS clients (does nothing if no clients are connected)
-    crate::remote::broadcast_win_event(event_name, hwnd as isize, title.as_deref());
+    crate::remote::broadcast_win_event(event_name, hwnd, title.as_deref());
 }
 
 /// Start the WinEvent hooks. Safe to call multiple times (idempotent).
@@ -1430,7 +1426,6 @@ pub fn stop_win_event_hooks() {
         crate::log::write("window_list: WinEvent hooks uninstalled");
     }
 }
-#[allow(unused_imports)]
 #[allow(unused_imports)]
 mod tests {
     use super::*;

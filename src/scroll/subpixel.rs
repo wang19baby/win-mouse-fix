@@ -80,7 +80,7 @@ mod tests {
     fn emits_integer_part_and_keeps_fraction() {
         let mut a = SubPixelAccumulator::new(1.0, 1e9);
         assert_eq!(a.add(150.0), 150);
-        assert_eq!(a.acc.abs() < 1e-9, true);
+        assert!(a.acc.abs() < 1e-9);
         assert_eq!(a.add(0.6), 0);
         assert_eq!(a.add(0.6), 1); // 1.2 -> emit 1
     }

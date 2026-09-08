@@ -715,9 +715,9 @@ fn dispatch(
             std::thread::spawn(move || {
                 use base64::Engine;
                 let thumb = crate::win::window_list::capture_window_thumb(hwnd, max_w, max_h);
-                let data_uri = thumb.and_then(|bytes| {
+                let data_uri = thumb.map(|bytes| {
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    Some(format!("data:image/jpeg;base64,{}", b64))
+                    format!("data:image/jpeg;base64,{}", b64)
                 });
                 let json = serde_json::json!({
                     "t": "thumb_update",
@@ -896,12 +896,7 @@ fn local_ip() -> Option<IpAddr> {
 }
 
 fn pick_port(ip: IpAddr) -> Option<u16> {
-    for p in 18765..=18775 {
-        if std::net::TcpListener::bind(SocketAddr::new(ip, p)).is_ok() {
-            return Some(p);
-        }
-    }
-    None
+    (18765..=18775).find(|&p| std::net::TcpListener::bind(SocketAddr::new(ip, p)).is_ok())
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────
@@ -992,7 +987,7 @@ fn ws_accept(key: &str) -> String {
 
 fn sha1(data: &[u8]) -> [u8; 20] {
     fn rol(v: u32, n: u32) -> u32 {
-        (v << n) | (v >> (32 - n))
+        v.rotate_left(n)
     }
     let mut h: [u32; 5] = [
         0x6745_2301,
@@ -1022,6 +1017,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
             w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
         }
         let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        #[allow(clippy::needless_range_loop)]
         for i in 0..80 {
             let (f, k) = if i < 20 {
                 ((b & c) | ((!b) & d), 0x5A82_7999)
@@ -1290,19 +1286,19 @@ mod tests {
             //    declared as a `var NAME = ...` (or `var A = ..., NAME = ...`)
             //    somewhere in this script block. Catches the LONGPRESS_MS bug.
             let required = [
-                &"SENS",
+                "SENS",
                 "ACCEL_REF",
                 "ACCEL_SLOPE",
                 "ACCEL_MAX_MULT",
-                &"MOVE_EMA",
+                "MOVE_EMA",
                 "SCROLL_GAIN",
                 "TAP_MS",
                 "TAP_PX",
-                &"SWIPE_PX",
+                "SWIPE_PX",
                 "DECIDE_PX",
                 "PINCH_BIAS",
                 "DIAG_MIN",
-                &"DIAG_RATIO",
+                "DIAG_RATIO",
                 "LONGPRESS_MS",
             ];
             // Manual word-boundary check: find every occurrence of `name`
@@ -1485,7 +1481,7 @@ mod integration {
     /// Build a masked client->server ping (0x9) frame.
     fn client_ping_frame() -> Vec<u8> {
         let mask = [0x12u8, 0x34, 0x56, 0x78];
-        vec![0x89, 0x80 | 0, mask[0], mask[1], mask[2], mask[3]]
+        vec![0x89, 0x80, mask[0], mask[1], mask[2], mask[3]]
     }
 
     /// Connect to a freshly-spawned listener that may not be `accept()`-ing yet.
@@ -1628,7 +1624,13 @@ mod integration {
         let actual = resp
             .lines()
             .find(|l| l.to_ascii_lowercase().starts_with("sec-websocket-accept:"))
-            .map(|l| l.splitn(2, ':').nth(1).unwrap_or("").trim().to_string())
+            .map(|l| {
+                l.split_once(':')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            })
             .expect("response must contain Sec-WebSocket-Accept");
         assert_eq!(
             actual, expected,

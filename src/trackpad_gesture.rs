@@ -37,7 +37,7 @@ pub fn tap_action(platform: Platform, finger_count: u8) -> TapAction {
         1 => TapAction::LeftClick,
         2 => TapAction::RightClick,
         n if n == min_gesture_fingers(platform) => TapAction::TaskView,
-        n if n >= min_gesture_fingers(platform) + 1 => TapAction::ShowDesktop,
+        n if n > min_gesture_fingers(platform) => TapAction::ShowDesktop,
         _ => TapAction::Ignore,
     }
 }
@@ -77,7 +77,7 @@ pub fn classify_swipe(
         return None;
     }
     let axis = classify_axis(dx, dy, diag_min, diag_ratio);
-    let is_snap = committed_count >= min_gesture_fingers(platform) + 1;
+    let is_snap = committed_count > min_gesture_fingers(platform);
     Some(match (is_snap, axis) {
         // ── snap (max-finger): window snap to edges / corners
         (true, SwipeAxis::Horizontal { left }) => gesture(if left {
@@ -100,8 +100,6 @@ pub fn classify_swipe(
                 GestureName::SnapUpLeft
             } else if matches!(base, GestureName::SnapUp) {
                 GestureName::SnapUpRight
-            } else if left {
-                GestureName::SnapDownLeft
             } else {
                 GestureName::SnapDownRight
             })
@@ -152,6 +150,7 @@ fn classify_axis(dx: f32, dy: f32, diag_min: f32, diag_ratio: f32) -> SwipeAxis 
 }
 
 /// What the receiving end should do when the gesture name is emitted.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GestureName {
     DesktopLeft,

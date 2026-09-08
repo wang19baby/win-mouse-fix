@@ -113,7 +113,7 @@ impl BezierAccelCurve {
             }
             let y = if i == 0.0 { y_min } else { y_max };
             pts.push((x, y));
-            if (i as f64) >= degree {
+            if i >= degree {
                 break;
             }
             i += 1.0;
@@ -341,7 +341,6 @@ impl ScrollSpeedupCurve {
 /// Standalone drag-curve functions matching MMF `DragCurve.swift`.
 /// Used internally by HybridCurve. The DragCurve struct mirrors MMF's
 /// instance-based API for the `_bezierInit` fallback.
-
 /// Computed drag curve parameters for a given initial speed.
 #[derive(Debug, Clone)]
 pub struct DragCurveParams {
@@ -665,12 +664,7 @@ impl HybridCurve {
             } else {
                 0.0
             };
-            if base_result > 1.0 {
-                base_result = 1.0;
-            }
-            if base_result < 0.0 {
-                base_result = 0.0;
-            }
+            base_result = base_result.clamp(0.0, 1.0);
             base_result * self.base_dist_end
         } else {
             // DRAG PHASE.
@@ -868,7 +862,7 @@ fn combined_distance(
     drag_exponent: f64,
     stop_speed: f64,
 ) -> f64 {
-    assert!(t >= 0.0 && t <= 1.0);
+    assert!((0.0..=1.0).contains(&t));
 
     // Speed at t: slope * distance / duration.
     let slope = base_curve.derivative_dy_dx(t);
@@ -890,6 +884,7 @@ fn combined_distance(
 }
 
 /// Bisection search for transition point t where combined_distance = target.
+#[allow(clippy::too_many_arguments)]
 fn bisect_distance(
     lo: f64,
     hi: f64,
@@ -1058,7 +1053,7 @@ mod tests {
         for x in [6.25_f64, 20.0, 40.0, 60.0, 66.667] {
             let y = curve.evaluate(x);
             assert!(
-                y >= 30.0 - 1e-6 && y <= 120.0 + 1e-6,
+                (30.0 - 1e-6..=120.0 + 1e-6).contains(&y),
                 "y at x={x} should be between 30 and 120, got {y}"
             );
         }

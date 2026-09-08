@@ -479,7 +479,7 @@ mod tests {
         // each spawn a SendInput worker thread which SendInput cannot drain
         // without a foreground window. We just verify the state machine.
         assert!(on_middle_down_capture_only());
-        assert!(matches!(STATE.lock().pending_middle, Some(_)));
+        assert!(STATE.lock().pending_middle.is_some());
         assert!(on_middle_down_open_only());
         assert!(is_active());
         assert!(on_middle_down_confirm_only());

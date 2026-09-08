@@ -374,10 +374,10 @@ pub fn start(cfg: &Config) -> Option<std::sync::mpsc::SyncSender<WheelInput>> {
             s.fast_scroll_initial,
             s.fast_scroll_exponential,
         ),
-        shift_curve: match s.shift_speedup_curve.as_ref() {
-            Some(pts) => Some(BezierAccelCurve::from_points(&pts.as_point_pairs())),
-            None => None,
-        },
+        shift_curve: s
+            .shift_speedup_curve
+            .as_ref()
+            .map(|pts| BezierAccelCurve::from_points(&pts.as_point_pairs())),
         shift_speedup_max_hold: s.shift_speedup_max_hold,
         shift_speedup_linear: s.shift_speedup_linear,
         shift_scalar_speedup: s.shift_speedup,

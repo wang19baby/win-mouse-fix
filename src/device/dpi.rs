@@ -65,7 +65,7 @@ unsafe extern "system" fn monitor_cb(
     let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
     if GetDpiForMonitor(hmon, MDT_RAW_DPI, &mut dpi_x, &mut dpi_y) != 0 && hdc != 0 {
         dpi_x = GetDeviceCaps(hdc, LOGPIXELSX as i32) as u32;
-        dpi_y = GetDeviceCaps(hdc, LOGPIXELSY as i32) as u32;
+        dpi_y = GetDeviceCaps(hdc, LOGPIXELSY) as u32;
     }
     monitors.push(Monitor {
         index: monitors.len(),

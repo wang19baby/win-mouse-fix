@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn first_two_calls_return_input() {
         let mut s = DoubleExponentialSmoother::new(0.1, 0.1);
-        assert_eq!(s.smooth(3.14), 3.14);
+        assert_eq!(s.smooth(std::f64::consts::PI), std::f64::consts::PI);
         assert_eq!(s.smooth(2.71), 2.71);
     }
 

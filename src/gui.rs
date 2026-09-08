@@ -504,6 +504,7 @@ unsafe fn create_edit(p: isize, h: isize, id: usize, val: &str, x: i32, y: i32, 
         null_mut(),
     );
 }
+#[allow(clippy::too_many_arguments)]
 unsafe fn create_button(
     p: isize,
     h: isize,
@@ -534,9 +535,9 @@ unsafe fn create_listbox(p: isize, h: isize, id: usize, x: i32, y: i32, w: i32, 
         0,
         to_wide("ListBox").as_ptr(),
         null(),
-        (0x00010000 /* WS_BORDER */ | 0x00200000 /* WS_VSCROLL */
+        0x00010000 /* WS_BORDER */ | 0x00200000 /* WS_VSCROLL */
          | 0x00000002 /* LBS_NOTIFY */ | 0x00000040 /* LBS_HASSTRINGS */
-         | WS_CHILD | WS_VISIBLE | WS_TABSTOP) as u32,
+         | WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         x,
         y,
         w,
@@ -675,37 +676,36 @@ unsafe fn load_config_to_controls(hwnd: isize) {
 }
 
 unsafe fn save_config_from_controls(hwnd: isize) -> Result<(), String> {
-    {
-        let mut cfg = crate::CONFIG.write();
-        cfg.general.start_hidden = get_check(hwnd, IDC_CHK_START_HIDDEN);
-        cfg.remote.enabled = get_check(hwnd, IDC_CHK_REMOTE);
-        cfg.dpi.auto_switch = get_check(hwnd, IDC_CHK_DPI_AUTO);
-        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_DPI_BASE).parse::<u16>() {
-            cfg.dpi.base_dpi = v;
-        }
-        set_autostart(get_check(hwnd, IDC_CHK_AUTOSTART));
-        cfg.scroll.smooth = get_check(hwnd, IDC_CHK_SMOOTH);
-        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SPEED).parse::<f64>() {
-            cfg.scroll.speed = v;
-        }
-        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_STEP).parse::<f64>() {
-            cfg.scroll.step = v;
-        }
-        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SHIFT_SPEEDUP).parse::<f64>() {
-            cfg.scroll.shift_speedup = v;
-        }
-        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_STOP_SPEED).parse::<f64>() {
-            cfg.scroll.stop_speed = v;
-        }
-        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_BASE_MS).parse::<f64>() {
-            cfg.scroll.base_ms_per_step = v;
-        }
-        cfg.accel.enabled = get_check(hwnd, IDC_CHK_ACCEL);
-        if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SENS).parse::<f64>() {
-            cfg.accel.sensitivity = v;
-        }
-        cfg.save().map_err(|e| e.to_string())?;
+    let mut cfg = crate::CONFIG.write();
+    cfg.general.start_hidden = get_check(hwnd, IDC_CHK_START_HIDDEN);
+    cfg.remote.enabled = get_check(hwnd, IDC_CHK_REMOTE);
+    cfg.dpi.auto_switch = get_check(hwnd, IDC_CHK_DPI_AUTO);
+    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_DPI_BASE).parse::<u16>() {
+        cfg.dpi.base_dpi = v;
     }
+    set_autostart(get_check(hwnd, IDC_CHK_AUTOSTART));
+    cfg.scroll.smooth = get_check(hwnd, IDC_CHK_SMOOTH);
+    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SPEED).parse::<f64>() {
+        cfg.scroll.speed = v;
+    }
+    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_STEP).parse::<f64>() {
+        cfg.scroll.step = v;
+    }
+    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SHIFT_SPEEDUP).parse::<f64>() {
+        cfg.scroll.shift_speedup = v;
+    }
+    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_STOP_SPEED).parse::<f64>() {
+        cfg.scroll.stop_speed = v;
+    }
+    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_BASE_MS).parse::<f64>() {
+        cfg.scroll.base_ms_per_step = v;
+    }
+    cfg.accel.enabled = get_check(hwnd, IDC_CHK_ACCEL);
+    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SENS).parse::<f64>() {
+        cfg.accel.sensitivity = v;
+    }
+    cfg.save().map_err(|e| e.to_string())?;
+    drop(cfg);
     let cfg = crate::CONFIG.read().clone();
     crate::win::hooks::apply_config(cfg);
     Ok(())
@@ -923,13 +923,13 @@ unsafe extern "system" fn profiles_wnd_proc(
                 0,
                 to_wide("ListBox").as_ptr(),
                 null(),
-                (0x00010000
+                0x00010000
                     | 0x00200000
                     | 0x00000002
                     | 0x00000040
                     | WS_CHILD
                     | WS_VISIBLE
-                    | WS_TABSTOP) as u32,
+                    | WS_TABSTOP,
                 20,
                 72,
                 420,

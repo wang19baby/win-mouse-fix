@@ -79,8 +79,8 @@ fn main() {
     ];
 
     println!(
-        "{:<5} {:<10} {:<25} {:<18} {}",
-        "Slot", "Button", "Physical", "Attribute", "G-Shift?"
+        "{:<5} {:<10} {:<25} {:<18} G-Shift?",
+        "Slot", "Button", "Physical", "Attribute"
     );
     println!("{}", "-".repeat(80));
 
@@ -228,13 +228,14 @@ fn enumerate_logitech() -> Vec<DevInfo> {
             }
             let mut attr: HIDD_ATTRIBUTES = std::mem::zeroed();
             attr.Size = std::mem::size_of::<HIDD_ATTRIBUTES>() as u32;
-            if HidD_GetAttributes(h, &mut attr) != 0 && attr.VendorID == LOGITECH_VID {
-                if seen.insert(path.clone()) {
-                    out.push(DevInfo {
-                        path,
-                        pid: attr.ProductID,
-                    });
-                }
+            if HidD_GetAttributes(h, &mut attr) != 0
+                && attr.VendorID == LOGITECH_VID
+                && seen.insert(path.clone())
+            {
+                out.push(DevInfo {
+                    path,
+                    pid: attr.ProductID,
+                });
             }
             CloseHandle(h);
         }

@@ -61,7 +61,7 @@ struct ShortMsg {
 
 impl ShortMsg {
     fn encode(self) -> [u8; 7] {
-        let byte3 = (self.fn_id << 4) | 0x00;
+        let byte3 = self.fn_id << 4;
         let mut b = [
             RID_SHORT,
             self.device_idx,
@@ -239,11 +239,10 @@ unsafe fn enumerate_device_class_instances(class_key: isize, devices: &mut Vec<H
 
         let symlink = wide_to_string(symlink_buf.as_ptr());
 
-        let path = if symlink.starts_with("##?#") {
-            format!("\\\\?\\{}", &symlink[4..])
+        let path = if let Some(s) = symlink.strip_prefix("##?#") {
+            format!("\\?\\{}", s)
         } else {
-            // HID#...#{guid} — already a device path format
-            format!("\\\\?\\{}", symlink)
+            format!("\\?\\{}", symlink)
         };
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
 
@@ -300,6 +299,7 @@ unsafe fn enumerate_via_interface_paths(
         let mut iface_idx = 0u32;
 
         let guid_ptr = guid as *const _;
+        #[allow(clippy::unnecessary_mut_passed)]
         while SetupDiEnumDeviceInterfaces(set, &mut dev_info, guid_ptr, iface_idx, &mut iface) != 0
         {
             let mut needed = 0u32;
@@ -486,8 +486,8 @@ unsafe fn enumerate_usb_registry(target_vid: u16) -> Vec<HidDevice> {
                 && dp_key != 0
             {
                 if let Some(sym) = get_reg_string(dp_key, windows_sys::core::w!("SymbolicName")) {
-                    if sym.starts_with("\\??\\") {
-                        let path = format!("\\\\?\\{}", &sym[4..]);
+                    if let Some(stripped) = sym.strip_prefix("\\\\??\\\\") {
+                        let path = format!("\\\\?\\{}", stripped);
                         try_open_device(&path, &mut devices);
                     }
                 }
@@ -732,7 +732,7 @@ unsafe fn get_reg_multi_string(hkey: isize, name: *const u16) -> Option<String> 
 fn extract_vid_pid(hw_id: &str) -> (u16, u16) {
     let mut vid = 0u16;
     let mut pid = 0u16;
-    for part in hw_id.split(|c| c == '\\' || c == '#') {
+    for part in hw_id.split(['\\', '#']) {
         if let Some(vid_start) = part.find("VID_") {
             let hex_str = &part[vid_start + 4..];
             if hex_str.len() >= 4 {
@@ -858,11 +858,10 @@ fn probe_function_ids(path: &str, device_idx: u8, feat_idx: u8, base_dpi: u16) {
     let test_dpi = (base_dpi + 100).min(4000);
     let restore_dpi = base_dpi;
 
-    println!(
-        "\n  {:>4} | {:>22} | {:>22} | {}",
-        "fn", "request", "response", "verdict"
+    print!(
+        "\n  {:>4} | {:>22} | {:>22} | verdict",
+        "fn", "request", "response",
     );
-    println!("  {}", "-".repeat(72));
 
     for fn_id in 0u8..=0x0Fu8 {
         let resp = write_dpi(path, device_idx, feat_idx, fn_id, test_dpi);
