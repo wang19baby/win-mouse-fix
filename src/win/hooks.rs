@@ -138,6 +138,7 @@ pub fn apply_config(cfg: Config) {
     // Start the injector only when scroll is enabled AND smooth mode is enabled.
     // When smooth is off, wheel events pass through unmodified (with modifiers applied).
     if cfg.scroll.enabled && cfg.scroll.smooth {
+        #[allow(clippy::explicit_auto_deref)]
         if let Some(tx) = crate::scroll::injector::start(&*cfg) {
             *SCROLL_TX.lock() = Some(tx);
         }
@@ -933,7 +934,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                             if let Effect::ModifiedDrag { drag_type, .. } = effect {
                                 let origin = crate::win::window::cursor_pos();
                                 *DRAG_EFFECT.write() = Some(DragState {
-                                    drag_type: drag_type.clone(),
+                                    drag_type: *drag_type,
                                     trigger_button: btn,
                                     origin_x: origin.0,
                                     origin_y: origin.1,
@@ -1031,7 +1032,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize)
         if ev == WM_KEYDOWN || ev == WM_SYSKEYDOWN || ev == WM_KEYUP || ev == WM_SYSKEYUP {
             let ks = &*(lparam as *const KBDLLHOOKSTRUCT);
             let down = ev == WM_KEYDOWN || ev == WM_SYSKEYDOWN;
-            crate::modifiers::set_vk(ks.vkCode as u32, down);
+            crate::modifiers::set_vk(ks.vkCode, down);
             if ks.vkCode == VK_SPACE as u32 {
                 SPACE_HELD.store(down, Ordering::Relaxed);
             }
