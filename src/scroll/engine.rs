@@ -79,7 +79,10 @@ impl ScrollAxis {
         tick_max: f64,
         base_ms_per_step: f64,
     ) -> Self {
-        assert!(drag_exponent > 1.0 && drag_exponent != 2.0, "drag_exponent must be > 1 and != 2");
+        assert!(
+            drag_exponent > 1.0 && drag_exponent != 2.0,
+            "drag_exponent must be > 1 and != 2"
+        );
         assert!(drag_coefficient > 0.0, "drag_coefficient must be > 0");
         assert!(stop_speed > 0.0, "stop_speed must be > 0");
         Self {
@@ -320,16 +323,14 @@ pub(crate) fn make_axis() -> ScrollAxis {
     let accel = BezierAccelCurve::new(6.25, 66.667, 30.0, 120.0, 3.0);
     let speedup = ScrollSpeedupCurve::new(3, 1.33, 7.5);
     ScrollAxis::new(
-        1.05,   // drag_exponent
-        15.0,   // drag_coefficient
-        30.0,   // stop_speed
-        1.0,    // gain
-        120.0,  // step
-        accel,
-        speedup,
-        0.015,  // accel_end
-        0.160,  // tick_max
-        -1.0,   // base_ms_per_step
+        1.05,  // drag_exponent
+        15.0,  // drag_coefficient
+        30.0,  // stop_speed
+        1.0,   // gain
+        120.0, // step
+        accel, speedup, 0.015, // accel_end
+        0.160, // tick_max
+        -1.0,  // base_ms_per_step
     )
 }
 
@@ -373,7 +374,10 @@ mod tests {
             let tn = t0 + std::time::Duration::from_secs_f64(0.008 * i as f64);
             axis.tick(tn);
             let speed = axis.current_speed();
-            assert!(speed <= prev_speed + 1e-9, "speed should not increase at tick {i}");
+            assert!(
+                speed <= prev_speed + 1e-9,
+                "speed should not increase at tick {i}"
+            );
             prev_speed = speed;
         }
     }
@@ -385,34 +389,33 @@ mod tests {
         axis.on_wheel(120, t0);
         let t1 = t0 + std::time::Duration::from_millis(50);
         axis.on_wheel(-120, t1);
-        assert!(!axis.is_active(), "axis should not be active after opposite tick");
+        assert!(
+            !axis.is_active(),
+            "axis should not be active after opposite tick"
+        );
     }
     #[test]
     fn base_carry_over_distance_not_animating_returns_zero() {
         // When not animating, carry-over is always 0.
         let axis = make_axis_for_tests();
-        let curve = HybridCurve::new(
-            axis.accel_curve(),
-            50.0,
-            100.0,
-            15.0,
-            1.05,
-            30.0,
-            0.2,
-        );
+        let curve = HybridCurve::new(axis.accel_curve(), 50.0, 100.0, 15.0, 1.05, 30.0, 0.2);
         assert_eq!(base_carry_over_distance(false, 100.0, None, 0.0), 0.0);
-        assert_eq!(base_carry_over_distance(false, 100.0, Some(&curve), 0.5), 0.0);
+        assert_eq!(
+            base_carry_over_distance(false, 100.0, Some(&curve), 0.5),
+            0.0
+        );
     }
 
     #[test]
     fn base_carry_over_distance_animating_with_curve_delegates_to_base_phase_remaining() {
         let axis = make_axis_for_tests();
-        let curve = HybridCurve::new(
-            axis.accel_curve(), 50.0, 100.0, 15.0, 1.05, 30.0, 0.2,
-        );
+        let curve = HybridCurve::new(axis.accel_curve(), 50.0, 100.0, 15.0, 1.05, 30.0, 0.2);
         // At t=0, no base phase consumed → base_phase_distance_remaining(0) = transition_distance.
         let expected = curve.base_phase_distance_remaining(0.0);
-        assert_eq!(base_carry_over_distance(true, 100.0, Some(&curve), 0.0), expected);
+        assert_eq!(
+            base_carry_over_distance(true, 100.0, Some(&curve), 0.0),
+            expected
+        );
     }
 
     #[test]
@@ -424,9 +427,7 @@ mod tests {
     #[test]
     fn hybrid_curve_evaluate_at_t_zero_is_near_zero() {
         let axis = make_axis_for_tests();
-        let curve = HybridCurve::new(
-            axis.accel_curve(), 50.0, 100.0, 15.0, 1.05, 30.0, 0.2,
-        );
+        let curve = HybridCurve::new(axis.accel_curve(), 50.0, 100.0, 15.0, 1.05, 30.0, 0.2);
         // At t=0 (animation just starting), accumulated fraction should be ~0
         let frac = curve.evaluate(0.0);
         assert!(frac < 0.1, "evaluate(0) should be near 0, got {}", frac);

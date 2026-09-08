@@ -222,7 +222,11 @@ impl BezierAccelCurve {
         let dx = decasteljau_1d(&dx_pts, t);
         let dy = decasteljau_1d(&dy_pts, t);
         if dx.abs() < 1e-12 {
-            return if dy >= 0.0 { f64::INFINITY } else { f64::NEG_INFINITY };
+            return if dy >= 0.0 {
+                f64::INFINITY
+            } else {
+                f64::NEG_INFINITY
+            };
         }
         dy / dx
     }
@@ -241,13 +245,13 @@ impl BezierAccelCurve {
 ///
 /// PR-B throttle semantics: a short Shift tap barely speeds up; a sustained
 /// Shift press accelerates aggressively.
-pub fn evaluate_shift_speedup(
-    curve: &BezierAccelCurve,
-    hold_secs: f64,
-    max_hold: f64,
-) -> f64 {
+pub fn evaluate_shift_speedup(curve: &BezierAccelCurve, hold_secs: f64, max_hold: f64) -> f64 {
     assert!(max_hold > 0.0, "max_hold must be positive");
-    let x = if max_hold > 0.0 { hold_secs / max_hold } else { 0.0 };
+    let x = if max_hold > 0.0 {
+        hold_secs / max_hold
+    } else {
+        0.0
+    };
     curve.eval(x)
 }
 
@@ -354,7 +358,13 @@ impl DragCurveParams {
     pub fn from_speed(a: f64, b: f64, initial_speed: f64, stop_speed: f64) -> Self {
         assert!(a > 0.0 && b > 1.0 && b != 2.0);
         let c = -initial_speed.powf(1.0 - b) / (a * (b - 1.0));
-        Self { a, b, c, initial_speed, stop_speed }
+        Self {
+            a,
+            b,
+            c,
+            initial_speed,
+            stop_speed,
+        }
     }
 
     /// Create such that the curve covers exactly `distance` before stopping.
@@ -396,7 +406,13 @@ impl DragCurveParams {
                 c -= err / deriv;
             }
         }
-        Self { a, b, c, initial_speed: 0.0, stop_speed }
+        Self {
+            a,
+            b,
+            c,
+            initial_speed: 0.0,
+            stop_speed,
+        }
     }
 
     /// Total distance covered from t=0 until stop.
@@ -587,7 +603,11 @@ impl HybridCurve {
         if t >= base_end_t {
             return 0.0;
         }
-        let scaled_t = if base_end_t > 1e-12 { (t / base_end_t).min(1.0) } else { 0.0 };
+        let scaled_t = if base_end_t > 1e-12 {
+            (t / base_end_t).min(1.0)
+        } else {
+            0.0
+        };
         // Normalize sample_y_at_t result from [y_min, y_max] to [0, 1]
         let raw_y = self.base_curve.sample_y_at_t(scaled_t);
         let y_min = self.base_curve.y_min();
@@ -598,7 +618,9 @@ impl HybridCurve {
         } else {
             0.0
         };
-        if frac > 1.0 { frac = 1.0; }
+        if frac > 1.0 {
+            frac = 1.0;
+        }
         self.transition_distance * (1.0 - frac)
     }
 
@@ -643,8 +665,12 @@ impl HybridCurve {
             } else {
                 0.0
             };
-            if base_result > 1.0 { base_result = 1.0; }
-            if base_result < 0.0 { base_result = 0.0; }
+            if base_result > 1.0 {
+                base_result = 1.0;
+            }
+            if base_result < 0.0 {
+                base_result = 0.0;
+            }
             base_result * self.base_dist_end
         } else {
             // DRAG PHASE.
@@ -740,7 +766,10 @@ fn bezier_init(
 
         if k == 0 {
             // t=1.0: combined distance should be >= target (base curve alone covers target)
-            assert!(combined >= target_distance, "Bezier should cover target distance at t=1");
+            assert!(
+                combined >= target_distance,
+                "Bezier should cover target distance at t=1"
+            );
         }
 
         let diff = (combined - target_distance).abs();
@@ -751,7 +780,11 @@ fn bezier_init(
         if combined < target_distance {
             // Found a range where combined crosses target.
             // Next t in loop is t - 1/n = t + (1/n) since we're going backward.
-            let t_next = if k < n { 1.0 - ((k + 1) as f64) / (n as f64) } else { 0.0 };
+            let t_next = if k < n {
+                1.0 - ((k + 1) as f64) / (n as f64)
+            } else {
+                0.0
+            };
             transition_point_range = Some((t, t_next));
             break;
         }
@@ -802,7 +835,10 @@ fn bezier_init(
     } else {
         // Transition speed below stop speed: base curve covers everything.
         // Mac asserts transitionPoint == 1.
-        assert!((tp - 1.0).abs() < 1e-9, "transitionPoint should be 1 when speed <= stopSpeed");
+        assert!(
+            (tp - 1.0).abs() < 1e-9,
+            "transitionPoint should be 1 when speed <= stopSpeed"
+        );
     }
 
     let transition_time = base_curve.sample_x_at_t(tp) * min_duration;
@@ -944,7 +980,6 @@ fn drag_time_for_distance(a: f64, b: f64, distance: f64, stop_speed: f64) -> f64
 #[cfg(test)]
 mod tests {
 
-
     use super::*;
 
     const A: f64 = 15.0;
@@ -1011,7 +1046,10 @@ mod tests {
     fn bezier_accel_at_endpoints_matches_y_min_and_y_max() {
         let curve = BezierAccelCurve::new(6.25, 66.667, 30.0, 120.0, 3.0);
         assert!((curve.evaluate(6.25) - 30.0).abs() < 1e-6, "x_min → y_min");
-        assert!((curve.evaluate(66.667) - 120.0).abs() < 1e-6, "x_max → y_max");
+        assert!(
+            (curve.evaluate(66.667) - 120.0).abs() < 1e-6,
+            "x_max → y_max"
+        );
     }
 
     #[test]
@@ -1019,8 +1057,10 @@ mod tests {
         let curve = BezierAccelCurve::new(6.25, 66.667, 30.0, 120.0, 3.0);
         for x in [6.25_f64, 20.0, 40.0, 60.0, 66.667] {
             let y = curve.evaluate(x);
-            assert!(y >= 30.0 - 1e-6 && y <= 120.0 + 1e-6,
-                "y at x={x} should be between 30 and 120, got {y}");
+            assert!(
+                y >= 30.0 - 1e-6 && y <= 120.0 + 1e-6,
+                "y at x={x} should be between 30 and 120, got {y}"
+            );
         }
     }
 
@@ -1028,8 +1068,10 @@ mod tests {
     fn bezier_accel_post_line_extrapolates() {
         let curve = BezierAccelCurve::new(6.25, 66.667, 30.0, 120.0, 3.0);
         let y = curve.evaluate(100.0);
-        assert!((y - 120.0).abs() < 1.0,
-            "above x_max should stay near y_max (post_a≈0), got {y}");
+        assert!(
+            (y - 120.0).abs() < 1.0,
+            "above x_max should stay near y_max (post_a≈0), got {y}"
+        );
     }
 
     #[test]
@@ -1055,7 +1097,10 @@ mod tests {
     fn speedup_returns_one_before_threshold() {
         let curve = ScrollSpeedupCurve::new(3, 1.33, 7.5);
         for n in [0.0_f64, 1.0, 2.0] {
-            assert!((curve.evaluate(n) - 1.0).abs() < 1e-9, "n={n} should be 1.0");
+            assert!(
+                (curve.evaluate(n) - 1.0).abs() < 1e-9,
+                "n={n} should be 1.0"
+            );
         }
     }
 
@@ -1067,15 +1112,24 @@ mod tests {
 
         // Below threshold: returns exactly 1.0
         let below = curve.evaluate(5.0);
-        assert!((below - 1.0).abs() < 1e-9, "below threshold should be ~1.0, got {below}");
+        assert!(
+            (below - 1.0).abs() < 1e-9,
+            "below threshold should be ~1.0, got {below}"
+        );
 
         // At threshold: Mac formula returns 1.0 (within FP precision)
         let at_thresh = curve.evaluate(6.0);
-        assert!((at_thresh - 1.0).abs() < 1e-9, "at threshold should be ~1.0, got {at_thresh}");
+        assert!(
+            (at_thresh - 1.0).abs() < 1e-9,
+            "at threshold should be ~1.0, got {at_thresh}"
+        );
 
         // Above threshold: should exceed 1.0 and grow
         let above = curve.evaluate(7.0);
-        assert!(above > 1.0, "above threshold should exceed 1.0, got {above}");
+        assert!(
+            above > 1.0,
+            "above threshold should exceed 1.0, got {above}"
+        );
 
         let higher = curve.evaluate(10.0);
         assert!(higher > above, "higher swipe count should increase factor");
@@ -1092,7 +1146,10 @@ mod tests {
 
         // At threshold is approximately 1.0 (FP precision)
         let at_thresh = curve.evaluate(6.0);
-        assert!((at_thresh - 1.0).abs() < 1e-9, "at threshold should be ~1.0");
+        assert!(
+            (at_thresh - 1.0).abs() < 1e-9,
+            "at threshold should be ~1.0"
+        );
 
         // Above threshold grows toward infinity (but monotonically)
         let val7 = curve.evaluate(7.0);
@@ -1102,7 +1159,10 @@ mod tests {
 
         // Large swipe count grows very large (c=3.0, less extreme than c=7.5)
         let large = curve.evaluate(15.0);
-        assert!(large > 10.0, "large swipe count should be >> 1.0, got {large}");
+        assert!(
+            large > 10.0,
+            "large swipe count should be >> 1.0, got {large}"
+        );
     }
 
     // ── HybridCurve tests ─────────────────────────────────────────────────────
@@ -1116,8 +1176,22 @@ mod tests {
     /// Create a HybridCurve with typical test params: base_ms, distance, drag_a, drag_b, stop_speed, speed.
     /// Note: `speed` was the old 6th param (initial speed for drag). We ignore it and let
     /// _bezierInit compute the transition from the Bezier + distance + duration.
-    fn test_hybrid(base_ms: f64, distance: f64, drag_a: f64, drag_b: f64, stop_speed: f64) -> HybridCurve {
-        HybridCurve::new(&test_bezier(), base_ms, distance, drag_a, drag_b, stop_speed, 0.2)
+    fn test_hybrid(
+        base_ms: f64,
+        distance: f64,
+        drag_a: f64,
+        drag_b: f64,
+        stop_speed: f64,
+    ) -> HybridCurve {
+        HybridCurve::new(
+            &test_bezier(),
+            base_ms,
+            distance,
+            drag_a,
+            drag_b,
+            stop_speed,
+            0.2,
+        )
     }
 
     #[test]
@@ -1130,7 +1204,10 @@ mod tests {
     #[test]
     fn hybrid_curve_evaluate_at_zero_is_zero() {
         let curve = test_hybrid(14.0, 120.0, 15.0, 1.05, 30.0);
-        assert!((curve.evaluate(0.0) - 0.0).abs() < 1e-9, "t=0 should return 0");
+        assert!(
+            (curve.evaluate(0.0) - 0.0).abs() < 1e-9,
+            "t=0 should return 0"
+        );
     }
 
     #[test]
@@ -1138,8 +1215,10 @@ mod tests {
         let curve = test_hybrid(14.0, 120.0, 15.0, 1.05, 30.0);
         // Allow some tolerance due to Bezier fitting
         let result = curve.evaluate(1.0);
-        assert!((result - 1.0).abs() < 0.1,
-            "t=1 should return ~1, got {result}");
+        assert!(
+            (result - 1.0).abs() < 0.1,
+            "t=1 should return ~1, got {result}"
+        );
     }
 
     #[test]
@@ -1149,8 +1228,10 @@ mod tests {
         for i in 0..=20 {
             let t = i as f64 / 20.0;
             let v = curve.evaluate(t);
-            assert!(v >= prev - 1e-9,
-                "hybrid curve should be monotonically increasing at t={t}: {v} < {prev}");
+            assert!(
+                v >= prev - 1e-9,
+                "hybrid curve should be monotonically increasing at t={t}: {v} < {prev}"
+            );
             prev = v;
         }
     }
@@ -1161,8 +1242,10 @@ mod tests {
         assert_eq!(curve.sub_curve(0.0), HybridSubCurve::Base);
         // Note: with the new algorithm, transition point may vary; just check it changes
         let mid = curve.sub_curve(0.5);
-        assert!(mid == HybridSubCurve::Base || mid == HybridSubCurve::Drag,
-            "sub_curve(0.5) should be valid");
+        assert!(
+            mid == HybridSubCurve::Base || mid == HybridSubCurve::Drag,
+            "sub_curve(0.5) should be valid"
+        );
     }
 
     #[test]
@@ -1171,16 +1254,20 @@ mod tests {
         let total_dur = curve.total_duration();
         // For low speed, the base phase should dominate (>50% of duration)
         let base_frac = curve.transition_time / total_dur;
-        assert!(base_frac > 0.5,
-            "low speed should have large base fraction, got {base_frac}");
+        assert!(
+            base_frac > 0.5,
+            "low speed should have large base fraction, got {base_frac}"
+        );
     }
     #[test]
     fn hybrid_base_phase_remaining_at_start_equals_transition_distance() {
         let curve = test_hybrid(14.0, 120.0, 15.0, 1.05, 20.0);
         // At t=0, no base phase consumed → remaining = full transition_distance.
         let rem = curve.base_phase_distance_remaining(0.0);
-        assert!((rem - curve.transition_distance).abs() < 1e-9,
-            "at t=0 remaining should equal transition_distance");
+        assert!(
+            (rem - curve.transition_distance).abs() < 1e-9,
+            "at t=0 remaining should equal transition_distance"
+        );
     }
 
     #[test]
@@ -1188,10 +1275,16 @@ mod tests {
         let curve = test_hybrid(14.0, 120.0, 15.0, 1.05, 20.0);
         let base_end_t = curve.transition_time / curve.total_duration();
         // At t = base_end_t, base phase is complete → remaining = 0.
-        assert_eq!(curve.base_phase_distance_remaining(base_end_t), 0.0,
-            "at base_end_t remaining should be zero");
+        assert_eq!(
+            curve.base_phase_distance_remaining(base_end_t),
+            0.0,
+            "at base_end_t remaining should be zero"
+        );
         // Slightly past base_end_t also returns 0.
-        assert_eq!(curve.base_phase_distance_remaining((base_end_t + 0.1).min(1.0)), 0.0);
+        assert_eq!(
+            curve.base_phase_distance_remaining((base_end_t + 0.1).min(1.0)),
+            0.0
+        );
     }
 
     #[test]
@@ -1201,34 +1294,36 @@ mod tests {
         // During base phase, remaining should decrease monotonically.
         let rem_start = curve.base_phase_distance_remaining(0.0);
         let rem_mid = curve.base_phase_distance_remaining(base_end_t * 0.5);
-        assert!(rem_mid < rem_start,
-            "remaining should decrease as t progresses through base phase");
+        assert!(
+            rem_mid < rem_start,
+            "remaining should decrease as t progresses through base phase"
+        );
         assert!(rem_mid > 0.0, "mid-base remaining should still be positive");
     }
 
     #[test]
     fn hybrid_distance_remaining_at_end_is_zero() {
         let curve = test_hybrid(14.0, 120.0, 15.0, 1.05, 20.0);
-        assert_eq!(curve.distance_remaining(1.0), 0.0,
-            "at t=1.0 all distance should be consumed");
+        assert_eq!(
+            curve.distance_remaining(1.0),
+            0.0,
+            "at t=1.0 all distance should be consumed"
+        );
     }
 
     #[test]
     fn hybrid_distance_remaining_at_start_equals_total_distance() {
         let curve = test_hybrid(14.0, 120.0, 15.0, 1.05, 20.0);
         let rem = curve.distance_remaining(0.0);
-        assert!((rem - curve.total_distance).abs() < 1e-9,
-            "at t=0 remaining should equal total_distance");
+        assert!(
+            (rem - curve.total_distance).abs() < 1e-9,
+            "at t=0 remaining should equal total_distance"
+        );
     }
     // ── PR-B: evaluate_shift_speedup tests ───────────────────────────────
 
     fn shift_curve_default() -> BezierAccelCurve {
-        BezierAccelCurve::from_points(&[
-            (0.0, 1.0),
-            (0.25, 1.8),
-            (0.7, 4.0),
-            (1.0, 6.0),
-        ])
+        BezierAccelCurve::from_points(&[(0.0, 1.0), (0.25, 1.8), (0.7, 4.0), (1.0, 6.0)])
     }
 
     #[test]
@@ -1242,7 +1337,10 @@ mod tests {
     fn shift_speedup_max_hold_returns_y_max() {
         let curve = shift_curve_default();
         let v = evaluate_shift_speedup(&curve, 0.6, 0.6);
-        assert!((v - 6.0).abs() < 1e-6, "hold=max_hold should yield 6.0; got {v}");
+        assert!(
+            (v - 6.0).abs() < 1e-6,
+            "hold=max_hold should yield 6.0; got {v}"
+        );
     }
 
     #[test]

@@ -3,10 +3,10 @@
 //! Bypasses the keyboard input chain entirely — no SendInput, no intercepted shortcuts.
 //! Uses the same COM interface that Windows' Task View uses internally.
 
+use windows_sys::core::GUID;
 use windows_sys::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
-use windows_sys::core::GUID;
 
 // CLSID_IVirtualDesktopManagerInternal — {C2F03A33-16F9-4A8E-A68E-6069D647C712}
 const CLSID_VD_INTERNAL: GUID = GUID {
@@ -69,7 +69,9 @@ impl IVirtualDesktopManagerInternal {
 static COM_INIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 fn ensure_com() -> bool {
-    *COM_INIT.get_or_init(|| unsafe { CoInitializeEx(core::ptr::null(), COINIT_APARTMENTTHREADED as u32) >= 0 })
+    *COM_INIT.get_or_init(|| unsafe {
+        CoInitializeEx(core::ptr::null(), COINIT_APARTMENTTHREADED as u32) >= 0
+    })
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────

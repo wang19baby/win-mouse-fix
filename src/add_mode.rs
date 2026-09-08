@@ -35,7 +35,10 @@ impl Default for AddModePayload {
             button: None,
             click_count: 0,
             was_held: false,
-            active_mods: ActiveModifiers { keyboard: 0, buttons: Vec::new() },
+            active_mods: ActiveModifiers {
+                keyboard: 0,
+                buttons: Vec::new(),
+            },
             scroll_captured: false,
             drag_captured: false,
         }
@@ -50,7 +53,10 @@ static ADD_MODE_PAYLOAD: RwLock<AddModePayload> = RwLock::new(AddModePayload {
     button: None,
     click_count: 0,
     was_held: false,
-    active_mods: ActiveModifiers { keyboard: 0, buttons: Vec::new() },
+    active_mods: ActiveModifiers {
+        keyboard: 0,
+        buttons: Vec::new(),
+    },
     scroll_captured: false,
     drag_captured: false,
 });
@@ -68,8 +74,7 @@ pub fn enable() -> bool {
     }
     *guard = true;
     // Clear any stale payload.
-    *ADD_MODE_PAYLOAD.write().unwrap_or_else(|e| e.into_inner()) =
-        AddModePayload::default();
+    *ADD_MODE_PAYLOAD.write().unwrap_or_else(|e| e.into_inner()) = AddModePayload::default();
     true
 }
 
@@ -79,7 +84,10 @@ pub fn disable() -> AddModePayload {
         let mut guard = ADD_MODE_ACTIVE.write().unwrap_or_else(|e| e.into_inner());
         *guard = false;
     }
-    ADD_MODE_PAYLOAD.write().unwrap_or_else(|e| e.into_inner()).clone()
+    ADD_MODE_PAYLOAD
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// Consume a button event in add mode. Returns `true` if the event was
@@ -145,10 +153,7 @@ pub fn on_drag_event(active_mods: &ActiveModifiers) -> bool {
 pub fn get_payload() -> Option<AddModePayload> {
     let payload = ADD_MODE_PAYLOAD.read().unwrap_or_else(|e| e.into_inner());
     // Return None if nothing captured yet.
-    if payload.button.is_none()
-        && !payload.scroll_captured
-        && !payload.drag_captured
-    {
+    if payload.button.is_none() && !payload.scroll_captured && !payload.drag_captured {
         None
     } else {
         Some(payload.clone())
@@ -157,19 +162,22 @@ pub fn get_payload() -> Option<AddModePayload> {
 
 /// Build a `RemapEntry` from an add mode payload and a chosen effect.
 /// Uses sensible defaults for level and duration.
-pub fn build_remap_entry(
-    payload: &AddModePayload,
-    effect: Effect,
-) -> RemapEntry {
+pub fn build_remap_entry(payload: &AddModePayload, effect: Effect) -> RemapEntry {
     let trigger = if payload.scroll_captured {
         Trigger::Scroll
     } else if payload.drag_captured {
         Trigger::Drag
     } else {
         let (duration, level) = if payload.was_held {
-            (crate::remap::ClickDuration::Hold, payload.click_count.max(1))
+            (
+                crate::remap::ClickDuration::Hold,
+                payload.click_count.max(1),
+            )
         } else {
-            (crate::remap::ClickDuration::Click, payload.click_count.max(1))
+            (
+                crate::remap::ClickDuration::Click,
+                payload.click_count.max(1),
+            )
         };
         Trigger::Button {
             button: payload.button.unwrap_or(MouseButton::Left),
@@ -194,12 +202,16 @@ pub fn save_to_config(entry: &RemapEntry) -> Result<(), String> {
     use crate::config::config_path;
 
     let path = config_path();
-    let mut content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取 config.toml 失败: {e}"))?;
+    let mut content =
+        std::fs::read_to_string(&path).map_err(|e| format!("读取 config.toml 失败: {e}"))?;
 
     // Build TOML text for the new entry.
     let trigger_str = match &entry.trigger {
-        Trigger::Button { button, level, duration } => {
+        Trigger::Button {
+            button,
+            level,
+            duration,
+        } => {
             let btn = match button {
                 MouseButton::Left => "left",
                 MouseButton::Right => "right",
@@ -211,14 +223,20 @@ pub fn save_to_config(entry: &RemapEntry) -> Result<(), String> {
                 crate::remap::ClickDuration::Click => "click",
                 crate::remap::ClickDuration::Hold => "hold",
             };
-            format!("trigger = {{ type = \"button\", button = \"{}\", level = {}, duration = \"{}\" }}", btn, level, dur)
+            format!(
+                "trigger = {{ type = \"button\", button = \"{}\", level = {}, duration = \"{}\" }}",
+                btn, level, dur
+            )
         }
         Trigger::Scroll => "trigger = { type = \"scroll\" }".to_string(),
         Trigger::Drag => "trigger = { type = \"drag\" }".to_string(),
     };
 
     let mod_str = if entry.modifiers.keyboard != 0 || !entry.modifiers.buttons.is_empty() {
-        format!("\nmodifiers = {{ keyboard = 0x{:x} }}", entry.modifiers.keyboard)
+        format!(
+            "\nmodifiers = {{ keyboard = 0x{:x} }}",
+            entry.modifiers.keyboard
+        )
     } else {
         String::new()
     };
@@ -233,12 +251,21 @@ pub fn save_to_config(entry: &RemapEntry) -> Result<(), String> {
                 crate::remap::SwipeDirection::Back => "back",
                 crate::remap::SwipeDirection::Forward => "forward",
             };
-            format!("effect = {{ type = \"navigation_swipe\", data = {{ direction = \"{}\" }} }}", d)
+            format!(
+                "effect = {{ type = \"navigation_swipe\", data = {{ direction = \"{}\" }} }}",
+                d
+            )
         }
         Effect::SymbolicHotkey { keycode, flags } => {
-            format!("effect = {{ type = \"symbolic_hotkey\", data = {{ keycode = {}, flags = {} }} }}", keycode, flags)
+            format!(
+                "effect = {{ type = \"symbolic_hotkey\", data = {{ keycode = {}, flags = {} }} }}",
+                keycode, flags
+            )
         }
-        Effect::MouseButtonClicks { button, n_of_clicks } => {
+        Effect::MouseButtonClicks {
+            button,
+            n_of_clicks,
+        } => {
             let btn = match button {
                 MouseButton::Left => "left",
                 MouseButton::Right => "right",
@@ -251,7 +278,10 @@ pub fn save_to_config(entry: &RemapEntry) -> Result<(), String> {
         _ => "effect = { type = \"pass_through\" }".to_string(),
     };
 
-    let new_section = format!("\n[[buttons.advanced]]\n{}\n{}\n{}\n", trigger_str, mod_str, effect_str);
+    let new_section = format!(
+        "\n[[buttons.advanced]]\n{}\n{}\n{}\n",
+        trigger_str, mod_str, effect_str
+    );
 
     // Ensure trailing newline, then append.
     if !content.ends_with('\n') {
@@ -259,8 +289,7 @@ pub fn save_to_config(entry: &RemapEntry) -> Result<(), String> {
     }
     content.push_str(&new_section);
 
-    std::fs::write(&path, &content)
-        .map_err(|e| format!("写入 config.toml 失败: {e}"))?;
+    std::fs::write(&path, &content).map_err(|e| format!("写入 config.toml 失败: {e}"))?;
 
     crate::log::write(&format!("AddMode: appended entry to {}", path.display()));
     Ok(())

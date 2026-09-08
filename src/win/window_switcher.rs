@@ -167,7 +167,10 @@ pub fn poll_middle() {
     if pressed && !prev {
         // EDGE DOWN - drive the polling state machine.
         let now = Instant::now();
-        crate::log::write(&format!("poll_middle: EDGE DOWN prev={} raw=0x{:04x}", prev, raw as u16));
+        crate::log::write(&format!(
+            "poll_middle: EDGE DOWN prev={} raw=0x{:04x}",
+            prev, raw as u16
+        ));
         // If the switcher is already open, this EDGE DOWN means "confirm
         // and close" — same semantics as the hook-path on_middle_down()
         // Mode::Active branch.
@@ -179,27 +182,27 @@ pub fn poll_middle() {
             crate::log::write("poll_middle: EDGE DOWN active -> confirm close");
             send_alt_up_async();
         } else {
-        match s.polling_pending {
-            None => {
-                // First press: arm the double-click window.
-                s.polling_pending = Some(now);
-                crate::log::write("poll_middle: armed polling_pending");
+            match s.polling_pending {
+                None => {
+                    // First press: arm the double-click window.
+                    s.polling_pending = Some(now);
+                    crate::log::write("poll_middle: armed polling_pending");
+                }
+                Some(t) if now.duration_since(t) <= DOUBLE_CLICK => {
+                    // Double-click: open the switcher.
+                    s.polling_pending = None;
+                    s.mode = Mode::Active;
+                    s.alt_down_at = Some(now);
+                    drop(s);
+                    crate::log::write("poll_middle: EDGE DOWN #2 -> open switcher");
+                    send_alt_tab_enter_async();
+                }
+                Some(_) => {
+                    // Stale pending: restart the window.
+                    s.polling_pending = Some(now);
+                    crate::log::write("poll_middle: EDGE DOWN stale -> restart");
+                }
             }
-            Some(t) if now.duration_since(t) <= DOUBLE_CLICK => {
-                // Double-click: open the switcher.
-                s.polling_pending = None;
-                s.mode = Mode::Active;
-                s.alt_down_at = Some(now);
-                drop(s);
-                crate::log::write("poll_middle: EDGE DOWN #2 -> open switcher");
-                send_alt_tab_enter_async();
-            }
-            Some(_) => {
-                // Stale pending: restart the window.
-                s.polling_pending = Some(now);
-                crate::log::write("poll_middle: EDGE DOWN stale -> restart");
-            }
-        }
         }
     } else if !pressed && prev {
         // EDGE UP - single click completed. In the polling path we do NOT
@@ -281,11 +284,17 @@ pub fn step(forward: bool) -> bool {
                 s.mode = Mode::Idle;
                 s.alt_down_at = None;
             }
-            crate::log::write(&format!("step: skip mode={:?} alt_real={} forward={}", mode, alt_real, forward));
+            crate::log::write(&format!(
+                "step: skip mode={:?} alt_real={} forward={}",
+                mode, alt_real, forward
+            ));
             return false;
         }
     }
-    crate::log::write(&format!("step: ACTIVE forward={} alt_real=true, send Tab", forward));
+    crate::log::write(&format!(
+        "step: ACTIVE forward={} alt_real=true, send Tab",
+        forward
+    ));
     if forward {
         send_tab_async();
     } else {
@@ -444,8 +453,8 @@ mod hook_path_test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::hook_path_test_helpers::*;
+    use super::*;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 

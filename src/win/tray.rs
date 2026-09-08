@@ -1,45 +1,38 @@
+use std::os::windows::process::CommandExt;
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
-use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-
-use windows_sys::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
-    Shell_NotifyIconW, ShellExecuteW,
-};
+use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
-    DeleteDC, DeleteObject, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, FillRect,
-    GetDC, ReleaseDC, SelectObject, SetBkMode,
-    SetTextColor, TRANSPARENT,
+    CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
+    DeleteObject, DrawTextW, FillRect, GetDC, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
+    DT_CENTER, DT_SINGLELINE, DT_VCENTER, TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::Foundation::{POINT, RECT};
+use windows_sys::Win32::UI::Shell::{
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY, NOTIFYICONDATAW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, CreateIconFromResourceEx,
-    CreateIconIndirect, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow,
-    DrawIcon, GetCursorPos, GetSystemMetrics, ICONINFO, IDC_ARROW,
-    IDI_APPLICATION, KillTimer, LoadCursorW, LoadIconW, MB_ICONINFORMATION, MB_OK,
-    MessageBoxW, IDYES, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, PostQuitMessage,
-    RegisterClassExW, SetForegroundWindow, SetTimer, ShowWindow, SM_CXICON, SW_SHOW,
-    TrackPopupMenu, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CREATE,
-    WM_DESTROY, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_SYSMENU,
-    WS_VISIBLE, MB_YESNO, MB_ICONQUESTION,
-    BS_AUTORADIOBUTTON, WS_GROUP, WS_TABSTOP,
-    GetMessageW, TranslateMessage, DispatchMessageW,
-    SendDlgItemMessageW, BM_GETCHECK,
+    AppendMenuW, CreateIconFromResourceEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIcon,
+    GetCursorPos, GetMessageW, GetSystemMetrics, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
+    PostQuitMessage, RegisterClassExW, SendDlgItemMessageW, SetForegroundWindow, SetTimer,
+    ShowWindow, TrackPopupMenu, TranslateMessage, BM_GETCHECK, BS_AUTORADIOBUTTON, ICONINFO,
+    IDC_ARROW, IDI_APPLICATION, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_YESNO,
+    MF_CHECKED, MF_STRING, MF_UNCHECKED, SM_CXICON, SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION,
+    WS_CHILD, WS_GROUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 
 const BST_CHECKED: u32 = 0x0001;
 
 use windows_sys::Win32::System::DataExchange::{
-    OpenClipboard, EmptyClipboard, CloseClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
-use windows_sys::Win32::System::Memory::{
-    GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
-};
+use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
 const WM_TRAYICON: u32 = WM_APP + 1;
 const ID_EXIT: usize = 1001;
@@ -47,12 +40,17 @@ const ID_ABOUT: usize = 1002;
 const ID_SMOOTH: usize = 1003;
 const ID_REMAP: usize = 1004;
 const ID_ADDMODE: usize = 1005;
+#[allow(dead_code)]
 const ID_BATTERY: usize = 1006;
+#[allow(dead_code)]
 const ID_DPI: usize = 1007;
 
 const ID_REMOTE: usize = 1008;
+#[allow(dead_code)]
 const ID_SETTINGS: usize = 1009;
+#[allow(dead_code)]
 const ID_PROFILES: usize = 1010;
+#[allow(dead_code)]
 const ID_HELP: usize = 1011;
 static FW_DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -62,8 +60,10 @@ const CONFIG_RELOAD_MS: u32 = 1000;
 const ID_TIMER_PROFILE: usize = 3003;
 const PROFILE_POLL_MS: u32 = 500;
 const ID_TIMER_BATTERY_ICON: usize = 3004;
+#[allow(dead_code)]
 const BATTERY_ICON_MS: u32 = 5000; // refresh tray icon from cache every 5s
 const ID_TIMER_DPI: usize = 3005;
+#[allow(dead_code)]
 const DPI_POLL_MS: u32 = 250;
 
 const ABOUT_CLASS: &str = "WinMouseFixAboutClass";
@@ -98,7 +98,8 @@ pub(crate) fn hwnd() -> windows_sys::Win32::Foundation::HWND {
         .unwrap_or(&windows_sys::Win32::Foundation::HWND::default())
 }
 
-static CONFIG_MTIME: parking_lot::Mutex<Option<std::time::SystemTime>> = parking_lot::Mutex::new(None);
+static CONFIG_MTIME: parking_lot::Mutex<Option<std::time::SystemTime>> =
+    parking_lot::Mutex::new(None);
 /// Original embedded tray icon; never destroyed.
 static BASE_HICON: parking_lot::Mutex<isize> = parking_lot::Mutex::new(0);
 /// Currently displayed (overlay) icon; destroyed before each replacement.
@@ -122,7 +123,8 @@ fn load_embedded_icon() -> isize {
             let bytes_in_res =
                 u32::from_le_bytes([DATA[e + 8], DATA[e + 9], DATA[e + 10], DATA[e + 11]]) as usize;
             let offset =
-                u32::from_le_bytes([DATA[e + 12], DATA[e + 13], DATA[e + 14], DATA[e + 15]]) as usize;
+                u32::from_le_bytes([DATA[e + 12], DATA[e + 13], DATA[e + 14], DATA[e + 15]])
+                    as usize;
             match best {
                 Some((_, len)) if bytes_in_res <= len => {}
                 _ => best = Some((offset, bytes_in_res)),
@@ -194,8 +196,7 @@ pub fn create() -> Result<(), String> {
         let _ = TRAY_HWND.set(hwnd);
 
         let mut nid: windows_sys::Win32::UI::Shell::NOTIFYICONDATAW = std::mem::zeroed();
-        nid.cbSize =
-            std::mem::size_of::<windows_sys::Win32::UI::Shell::NOTIFYICONDATAW>() as u32;
+        nid.cbSize = std::mem::size_of::<windows_sys::Win32::UI::Shell::NOTIFYICONDATAW>() as u32;
         nid.hWnd = hwnd;
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
@@ -216,8 +217,9 @@ pub fn create() -> Result<(), String> {
         // SetTimer(hwnd, ID_TIMER_BATTERY_ICON, BATTERY_ICON_MS, None);
         // SetTimer(hwnd, ID_TIMER_DPI, DPI_POLL_MS, None);
         // Seed last-mtime so the first tick doesn't trigger a redundant reload.
-        *CONFIG_MTIME.lock() =
-            std::fs::metadata(crate::config::config_path()).ok().and_then(|m| m.modified().ok());
+        *CONFIG_MTIME.lock() = std::fs::metadata(crate::config::config_path())
+            .ok()
+            .and_then(|m| m.modified().ok());
 
         crate::log::write("tray icon created");
         Ok(())
@@ -225,126 +227,164 @@ pub fn create() -> Result<(), String> {
 }
 
 /// Refresh the battery cache and update the tray icon + tooltip.
-    unsafe fn update_battery_icon(hwnd: isize) {
-        // Just read from the cache — the bg poll thread updates it periodically.
-        let info = *crate::device::cache::BATTERY.read();
-        let base = *BASE_HICON.lock();
-        let (icon, tip) = match info {
-            Some(b) => {
-                let icon = make_battery_icon(base, b.percent, b.low);
-                let tip = if b.low {
-                    format!("⚠ 鼠标电量低 {}%", b.percent)
-                } else {
-                    format!(
-                        "鼠标电量 {}%{}",
-                        b.percent,
-                        if b.charging { "（充电中）" } else { "" }
-                    )
-                };
-                (icon, tip)
-            }
-            None => (base, "Win Mouse Fix".to_string()),
-        };
-
-        // Destroy the previous overlay before swapping in the new one.
-        let mut ov = CUR_OVERLAY.lock();
-        if *ov != 0 && *ov != base {
-            DestroyIcon(*ov);
+unsafe fn update_battery_icon(hwnd: isize) {
+    // Just read from the cache — the bg poll thread updates it periodically.
+    let info = *crate::device::cache::BATTERY.read();
+    let base = *BASE_HICON.lock();
+    let (icon, tip) = match info {
+        Some(b) => {
+            let icon = make_battery_icon(base, b.percent, b.low);
+            let tip = if b.low {
+                format!("⚠ 鼠标电量低 {}%", b.percent)
+            } else {
+                format!(
+                    "鼠标电量 {}%{}",
+                    b.percent,
+                    if b.charging { "（充电中）" } else { "" }
+                )
+            };
+            (icon, tip)
         }
-        *ov = if icon != base { icon } else { 0 };
-        drop(ov);
+        None => (base, "Win Mouse Fix".to_string()),
+    };
 
-        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = hwnd;
-        nid.uID = 1;
-        nid.uFlags = NIF_ICON | NIF_TIP;
-        nid.hIcon = icon;
-        let wtip = to_wide(&tip);
-        let len = wtip.len().min(nid.szTip.len());
-        std::ptr::copy_nonoverlapping(wtip.as_ptr(), nid.szTip.as_mut_ptr(), len);
-        Shell_NotifyIconW(NIM_MODIFY, &nid);
-        // Push the latest status (PC battery, etc.) to any connected phone so
-        // its HUD updates without a reconnect.
-        crate::remote::broadcast_status();
+    // Destroy the previous overlay before swapping in the new one.
+    let mut ov = CUR_OVERLAY.lock();
+    if *ov != 0 && *ov != base {
+        DestroyIcon(*ov);
     }
-    /// Draw the battery percentage onto a copy of `base`, returning a new HICON.
-    /// Falls back to `base` on any GDI failure (so the icon is never broken).
-    unsafe fn make_battery_icon(base: isize, percent: u8, _low: bool) -> isize {
-        let size = GetSystemMetrics(SM_CXICON);
-        if size <= 0 {
-            return base;
-        }
-        let screen = GetDC(0);
-        if screen == 0 {
-            return base;
-        }
-        let mem = CreateCompatibleDC(screen);
-        let bmp = CreateCompatibleBitmap(screen, size, size);
-        if mem == 0 || bmp == 0 {
-            if mem != 0 { DeleteDC(mem); }
-            if bmp != 0 { DeleteObject(bmp); }
-            ReleaseDC(0, screen);
-            return base;
-        }
-        let old = SelectObject(mem, bmp);
+    *ov = if icon != base { icon } else { 0 };
+    drop(ov);
 
-        // Draw the base mouse icon first.
-        DrawIcon(mem, 0, 0, base);
-
-        // Draw a small battery bar at the bottom (2px tall, 60% width).
-        let bar_w = size * 6 / 10;
-        let bar_h = 2i32;
-        let bar_x = (size - bar_w) / 2;
-        let bar_y = size - bar_h - 1;
-        let bar_color: u32 = if percent > 50 { 0x0000CC00 }  // green
-            else if percent > 20 { 0x0000CCFF }  // yellow (0x00BBGGRR)
-            else { 0x000000FF };  // red
-        let bar_brush = CreateSolidBrush(bar_color);
-        if bar_brush != 0 {
-            let bar_rect = RECT { left: bar_x, top: bar_y, right: bar_x + bar_w, bottom: bar_y + bar_h };
-            FillRect(mem, &bar_rect, bar_brush);
-            DeleteObject(bar_brush);
+    let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_ICON | NIF_TIP;
+    nid.hIcon = icon;
+    let wtip = to_wide(&tip);
+    let len = wtip.len().min(nid.szTip.len());
+    std::ptr::copy_nonoverlapping(wtip.as_ptr(), nid.szTip.as_mut_ptr(), len);
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+    // Push the latest status (PC battery, etc.) to any connected phone so
+    // its HUD updates without a reconnect.
+    crate::remote::broadcast_status();
+}
+/// Draw the battery percentage onto a copy of `base`, returning a new HICON.
+/// Falls back to `base` on any GDI failure (so the icon is never broken).
+unsafe fn make_battery_icon(base: isize, percent: u8, _low: bool) -> isize {
+    let size = GetSystemMetrics(SM_CXICON);
+    if size <= 0 {
+        return base;
+    }
+    let screen = GetDC(0);
+    if screen == 0 {
+        return base;
+    }
+    let mem = CreateCompatibleDC(screen);
+    let bmp = CreateCompatibleBitmap(screen, size, size);
+    if mem == 0 || bmp == 0 {
+        if mem != 0 {
+            DeleteDC(mem);
         }
-
-        // Draw percentage text with dark outline for readability on any taskbar.
-        let text = to_wide(&format!("{percent}"));
-        SetBkMode(mem, TRANSPARENT as i32);
-        let mut rect = RECT { left: 0, top: 0, right: size, bottom: size - bar_h - 2 };
-        // Dark outline: draw at 4 offsets.
-        SetTextColor(mem, 0x00000000); // black
-        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-            let mut r = rect;
-            r.left += dx; r.right += dx;
-            r.top += dy; r.bottom += dy;
-            DrawTextW(mem, text.as_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        }
-        // White text on top.
-        SetTextColor(mem, 0x00FFFFFF);
-        DrawTextW(mem, text.as_ptr(), -1, &mut rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-        SelectObject(mem, old);
-        let mask = CreateBitmap(size, size, 1, 1, std::ptr::null());
-        let mut ii: ICONINFO = std::mem::zeroed();
-        ii.fIcon = 1;
-        ii.hbmMask = mask;
-        ii.hbmColor = bmp;
-        let hicon = CreateIconIndirect(&ii);
-        ReleaseDC(0, screen);
-        DeleteDC(mem);
-        if mask != 0 { DeleteObject(mask); }
-        if hicon != 0 {
+        if bmp != 0 {
             DeleteObject(bmp);
-            hicon
-        } else {
-            if bmp != 0 { DeleteObject(bmp); }
-            base
         }
+        ReleaseDC(0, screen);
+        return base;
+    }
+    let old = SelectObject(mem, bmp);
+
+    // Draw the base mouse icon first.
+    DrawIcon(mem, 0, 0, base);
+
+    // Draw a small battery bar at the bottom (2px tall, 60% width).
+    let bar_w = size * 6 / 10;
+    let bar_h = 2i32;
+    let bar_x = (size - bar_w) / 2;
+    let bar_y = size - bar_h - 1;
+    let bar_color: u32 = if percent > 50 {
+        0x0000CC00
+    }
+    // green
+    else if percent > 20 {
+        0x0000CCFF
+    }
+    // yellow (0x00BBGGRR)
+    else {
+        0x000000FF
+    }; // red
+    let bar_brush = CreateSolidBrush(bar_color);
+    if bar_brush != 0 {
+        let bar_rect = RECT {
+            left: bar_x,
+            top: bar_y,
+            right: bar_x + bar_w,
+            bottom: bar_y + bar_h,
+        };
+        FillRect(mem, &bar_rect, bar_brush);
+        DeleteObject(bar_brush);
     }
 
-unsafe extern "system" fn wnd_proc(
-    hwnd: isize, msg: u32, wparam: usize, lparam: isize,
-) -> isize {
+    // Draw percentage text with dark outline for readability on any taskbar.
+    let text = to_wide(&format!("{percent}"));
+    SetBkMode(mem, TRANSPARENT as i32);
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: size,
+        bottom: size - bar_h - 2,
+    };
+    // Dark outline: draw at 4 offsets.
+    SetTextColor(mem, 0x00000000); // black
+    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+        let mut r = rect;
+        r.left += dx;
+        r.right += dx;
+        r.top += dy;
+        r.bottom += dy;
+        DrawTextW(
+            mem,
+            text.as_ptr(),
+            -1,
+            &mut r,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        );
+    }
+    // White text on top.
+    SetTextColor(mem, 0x00FFFFFF);
+    DrawTextW(
+        mem,
+        text.as_ptr(),
+        -1,
+        &mut rect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
+
+    SelectObject(mem, old);
+    let mask = CreateBitmap(size, size, 1, 1, std::ptr::null());
+    let mut ii: ICONINFO = std::mem::zeroed();
+    ii.fIcon = 1;
+    ii.hbmMask = mask;
+    ii.hbmColor = bmp;
+    let hicon = CreateIconIndirect(&ii);
+    ReleaseDC(0, screen);
+    DeleteDC(mem);
+    if mask != 0 {
+        DeleteObject(mask);
+    }
+    if hicon != 0 {
+        DeleteObject(bmp);
+        hicon
+    } else {
+        if bmp != 0 {
+            DeleteObject(bmp);
+        }
+        base
+    }
+}
+
+unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> isize {
     match msg {
         WM_TRAYICON => {
             if lparam as u32 == WM_RBUTTONUP {
@@ -412,16 +452,14 @@ unsafe fn show_menu(hwnd: isize) {
 
     crate::win::hooks::MENU_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
 
-    let smooth_flags =
-        MF_STRING | if crate::win::hooks::feature_enabled(crate::win::hooks::Feature::SmoothScroll)
-        {
+    let smooth_flags = MF_STRING
+        | if crate::win::hooks::feature_enabled(crate::win::hooks::Feature::SmoothScroll) {
             MF_CHECKED
         } else {
             MF_UNCHECKED
         };
-    let remap_flags =
-        MF_STRING | if crate::win::hooks::feature_enabled(crate::win::hooks::Feature::ButtonRemap)
-        {
+    let remap_flags = MF_STRING
+        | if crate::win::hooks::feature_enabled(crate::win::hooks::Feature::ButtonRemap) {
             MF_CHECKED
         } else {
             MF_UNCHECKED
@@ -430,8 +468,18 @@ unsafe fn show_menu(hwnd: isize) {
     AppendMenuW(menu, smooth_flags, ID_SMOOTH, to_wide("平滑滚动").as_ptr());
     AppendMenuW(menu, remap_flags, ID_REMAP, to_wide("按键重映射").as_ptr());
     // Trackpad toggle: ✓ if server is running, blank if not.
-    let remote_flags = MF_STRING | if crate::remote::info().is_some() { MF_CHECKED } else { MF_UNCHECKED };
-    AppendMenuW(menu, remote_flags, ID_REMOTE, to_wide("手机妙控板").as_ptr());
+    let remote_flags = MF_STRING
+        | if crate::remote::info().is_some() {
+            MF_CHECKED
+        } else {
+            MF_UNCHECKED
+        };
+    AppendMenuW(
+        menu,
+        remote_flags,
+        ID_REMOTE,
+        to_wide("手机妙控板").as_ptr(),
+    );
     AppendMenuW(menu, MF_STRING, ID_ABOUT, to_wide("关于").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_EXIT, to_wide("退出").as_ptr());
 
@@ -452,12 +500,8 @@ unsafe fn show_menu(hwnd: isize) {
     DestroyMenu(menu);
 
     match cmd as usize {
-        ID_SMOOTH => {
-            crate::win::hooks::toggle_feature(crate::win::hooks::Feature::SmoothScroll)
-        }
-        ID_REMAP => {
-            crate::win::hooks::toggle_feature(crate::win::hooks::Feature::ButtonRemap)
-        }
+        ID_SMOOTH => crate::win::hooks::toggle_feature(crate::win::hooks::Feature::SmoothScroll),
+        ID_REMAP => crate::win::hooks::toggle_feature(crate::win::hooks::Feature::ButtonRemap),
         ID_EXIT => {
             let result = MessageBoxW(
                 hwnd,
@@ -496,9 +540,7 @@ unsafe fn show_menu(hwnd: isize) {
 unsafe fn start_addmode(hwnd: isize) {
     if crate::add_mode::enable() {
         SetTimer(hwnd, ID_TIMER_ADDMODE, 50, None);
-        crate::log::write(
-            "AddMode started — click, scroll or drag to capture a trigger",
-        );
+        crate::log::write("AddMode started — click, scroll or drag to capture a trigger");
     }
 }
 
@@ -578,6 +620,7 @@ unsafe fn show_addmode_message(hwnd: isize, payload: &crate::add_mode::AddModePa
 }
 
 /// Interactive About box.
+#[allow(dead_code)]
 fn show_help() {
     let help_text = "\
 Win Mouse Fix 使用说明
@@ -646,8 +689,14 @@ fn show_about() {
             to_wide(ABOUT_CLASS).as_ptr(),
             to_wide("关于 Win Mouse Fix").as_ptr(),
             WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-            200, 200, 380, 200,
-            0, 0isize, GetModuleHandleW(null()), null_mut(),
+            200,
+            200,
+            380,
+            200,
+            0,
+            0isize,
+            GetModuleHandleW(null()),
+            null_mut(),
         );
         if hwnd != 0 {
             ShowWindow(hwnd, SW_SHOW);
@@ -656,49 +705,99 @@ fn show_about() {
 }
 
 unsafe extern "system" fn about_wnd_proc(
-    hwnd: isize, msg: u32, wparam: usize, lparam: isize,
+    hwnd: isize,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
 ) -> isize {
     match msg {
         WM_CREATE => {
             let hmod = GetModuleHandleW(null());
             CreateWindowExW(
-                0, to_wide("Static").as_ptr(), to_wide("Win Mouse Fix").as_ptr(),
+                0,
+                to_wide("Static").as_ptr(),
+                to_wide("Win Mouse Fix").as_ptr(),
                 WS_CHILD | WS_VISIBLE,
-                20, 16, 320, 24,
-                hwnd, 0isize, hmod, null_mut(),
+                20,
+                16,
+                320,
+                24,
+                hwnd,
+                0isize,
+                hmod,
+                null_mut(),
             );
             let ver = format!("版本 {}", env!("CARGO_PKG_VERSION"));
             CreateWindowExW(
-                0, to_wide("Static").as_ptr(), to_wide(&ver).as_ptr(),
+                0,
+                to_wide("Static").as_ptr(),
+                to_wide(&ver).as_ptr(),
                 WS_CHILD | WS_VISIBLE,
-                20, 44, 320, 20,
-                hwnd, 0isize, hmod, null_mut(),
+                20,
+                44,
+                320,
+                20,
+                hwnd,
+                0isize,
+                hmod,
+                null_mut(),
             );
             CreateWindowExW(
-                0, to_wide("Static").as_ptr(),
+                0,
+                to_wide("Static").as_ptr(),
                 to_wide("Windows 按键映射与平滑滚动增强工具").as_ptr(),
                 WS_CHILD | WS_VISIBLE,
-                20, 68, 320, 20,
-                hwnd, 0isize, hmod, null_mut(),
+                20,
+                68,
+                320,
+                20,
+                hwnd,
+                0isize,
+                hmod,
+                null_mut(),
             );
             let link = format!("打开项目主页: {}", REPO_URL);
             CreateWindowExW(
-                0, to_wide("Static").as_ptr(), to_wide(&link).as_ptr(),
+                0,
+                to_wide("Static").as_ptr(),
+                to_wide(&link).as_ptr(),
                 WS_CHILD | WS_VISIBLE,
-                20, 92, 320, 20,
-                hwnd, 0isize, hmod, null_mut(),
+                20,
+                92,
+                320,
+                20,
+                hwnd,
+                0isize,
+                hmod,
+                null_mut(),
             );
             CreateWindowExW(
-                0, to_wide("Button").as_ptr(), to_wide("确定").as_ptr(),
+                0,
+                to_wide("Button").as_ptr(),
+                to_wide("确定").as_ptr(),
                 WS_CHILD | WS_VISIBLE,
-                150, 130, 80, 24,
-                hwnd, ABOUT_OK_ID as isize, hmod, null_mut(),
+                150,
+                130,
+                80,
+                24,
+                hwnd,
+                ABOUT_OK_ID as isize,
+                hmod,
+                null_mut(),
             );
             CreateWindowExW(
-                0, to_wide("Button").as_ptr(), to_wide("GitHub").as_ptr(),
+                0,
+                to_wide("Button").as_ptr(),
+                to_wide("GitHub").as_ptr(),
                 WS_CHILD | WS_VISIBLE,
-                245, 130, 80, 24,
-                hwnd, ID_GITHUB as isize, hmod, null_mut(),
+                245,
+                130,
+                80,
+                24,
+                hwnd,
+                ID_GITHUB as isize,
+                hmod,
+                null_mut(),
             );
             0
         }
@@ -708,8 +807,14 @@ unsafe extern "system" fn about_wnd_proc(
                 DestroyWindow(hwnd);
             } else if id == ID_GITHUB {
                 unsafe {
-                    ShellExecuteW(0, to_wide("open").as_ptr(), to_wide(REPO_URL).as_ptr(),
-                        null(), null(), 1);
+                    ShellExecuteW(
+                        0,
+                        to_wide("open").as_ptr(),
+                        to_wide(REPO_URL).as_ptr(),
+                        null(),
+                        null(),
+                        1,
+                    );
                 }
             }
             0
@@ -723,7 +828,9 @@ unsafe extern "system" fn about_wnd_proc(
 
 /// Show a modal dialog letting the user choose which effect to assign to the
 /// captured trigger. Returns the selected `Effect`, or `None` on cancel.
-unsafe fn show_effect_dialog(_payload: &crate::add_mode::AddModePayload) -> Option<crate::remap::Effect> {
+unsafe fn show_effect_dialog(
+    _payload: &crate::add_mode::AddModePayload,
+) -> Option<crate::remap::Effect> {
     // Register dialog class once.
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
@@ -755,8 +862,14 @@ unsafe fn show_effect_dialog(_payload: &crate::add_mode::AddModePayload) -> Opti
         to_wide(ADDMODE_DIALOG_CLASS).as_ptr(),
         to_wide("选择效果 — Win Mouse Fix").as_ptr(),
         WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        300, 250, 420, 300,
-        0, 0isize, GetModuleHandleW(null()), null_mut(),
+        300,
+        250,
+        420,
+        300,
+        0,
+        0isize,
+        GetModuleHandleW(null()),
+        null_mut(),
     );
     if hwnd == 0 {
         return None;
@@ -774,7 +887,10 @@ unsafe fn show_effect_dialog(_payload: &crate::add_mode::AddModePayload) -> Opti
 }
 
 unsafe extern "system" fn addmode_dialog_proc(
-    hwnd: isize, msg: u32, wparam: usize, _lparam: isize,
+    hwnd: isize,
+    msg: u32,
+    wparam: usize,
+    _lparam: isize,
 ) -> isize {
     match msg {
         WM_CREATE => {
@@ -782,46 +898,79 @@ unsafe extern "system" fn addmode_dialog_proc(
 
             // Prompt text.
             CreateWindowExW(
-                0, to_wide("Static").as_ptr(),
+                0,
+                to_wide("Static").as_ptr(),
                 to_wide("捕获到触发器 — 选择要映射的效果:").as_ptr(),
                 WS_CHILD | WS_VISIBLE | 0, // SS_LEFT = 0
-                20, 16, 380, 20,
-                hwnd, IDC_EFFECT_PROMPT as isize, hmod, null_mut(),
+                20,
+                16,
+                380,
+                20,
+                hwnd,
+                IDC_EFFECT_PROMPT as isize,
+                hmod,
+                null_mut(),
             );
 
             // Radio buttons.
             let radios: &[(usize, &str)] = &[
                 (IDC_RADIO_PASSTHROUGH, "PassThrough（不映射）"),
-                (IDC_RADIO_NAVSWIPE,   "NavigationSwipe（前进/后退）"),
-                (IDC_RADIO_TASKVIEW,   "TaskView（Win+Tab）"),
-                (IDC_RADIO_SHOWDESKTOP,"ShowDesktop（Win+D）"),
-                (IDC_RADIO_XCLICK,     "XButton Click（X1/X2 点击）"),
+                (IDC_RADIO_NAVSWIPE, "NavigationSwipe（前进/后退）"),
+                (IDC_RADIO_TASKVIEW, "TaskView（Win+Tab）"),
+                (IDC_RADIO_SHOWDESKTOP, "ShowDesktop（Win+D）"),
+                (IDC_RADIO_XCLICK, "XButton Click（X1/X2 点击）"),
             ];
             for (i, (id, label)) in radios.iter().enumerate() {
-                let style = (BS_AUTORADIOBUTTON as u32) | WS_CHILD | WS_VISIBLE
+                let style = (BS_AUTORADIOBUTTON as u32)
+                    | WS_CHILD
+                    | WS_VISIBLE
                     | if i == 0 { WS_GROUP } else { 0 }
                     | WS_TABSTOP;
                 CreateWindowExW(
-                    0, to_wide("Button").as_ptr(), to_wide(label).as_ptr(),
+                    0,
+                    to_wide("Button").as_ptr(),
+                    to_wide(label).as_ptr(),
                     style,
-                    30, 48 + (i as i32) * 28, 360, 24,
-                    hwnd, *id as isize, hmod, null_mut(),
+                    30,
+                    48 + (i as i32) * 28,
+                    360,
+                    24,
+                    hwnd,
+                    *id as isize,
+                    hmod,
+                    null_mut(),
                 );
             }
 
             // OK button.
             CreateWindowExW(
-                0, to_wide("Button").as_ptr(), to_wide("确定").as_ptr(),
+                0,
+                to_wide("Button").as_ptr(),
+                to_wide("确定").as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                120, 210, 80, 28,
-                hwnd, IDC_OK as isize, hmod, null_mut(),
+                120,
+                210,
+                80,
+                28,
+                hwnd,
+                IDC_OK as isize,
+                hmod,
+                null_mut(),
             );
             // Cancel button.
             CreateWindowExW(
-                0, to_wide("Button").as_ptr(), to_wide("取消").as_ptr(),
+                0,
+                to_wide("Button").as_ptr(),
+                to_wide("取消").as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                220, 210, 80, 28,
-                hwnd, IDC_CANCEL as isize, hmod, null_mut(),
+                220,
+                210,
+                80,
+                28,
+                hwnd,
+                IDC_CANCEL as isize,
+                hmod,
+                null_mut(),
             );
 
             0
@@ -832,7 +981,8 @@ unsafe extern "system" fn addmode_dialog_proc(
                 IDC_OK => {
                     // Read which radio is checked via BM_GETCHECK.
                     let checked = |id: usize| -> bool {
-                        SendDlgItemMessageW(hwnd, id as i32, BM_GETCHECK, 0, 0) as u32 == BST_CHECKED
+                        SendDlgItemMessageW(hwnd, id as i32, BM_GETCHECK, 0, 0) as u32
+                            == BST_CHECKED
                     };
                     let effect = if checked(IDC_RADIO_NAVSWIPE) {
                         crate::remap::Effect::NavigationSwipe {
@@ -850,11 +1000,17 @@ unsafe extern "system" fn addmode_dialog_proc(
                     } else {
                         crate::remap::Effect::PassThrough
                     };
-                    *SELECTED_EFFECT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap() = Some(effect);
+                    *SELECTED_EFFECT
+                        .get_or_init(|| std::sync::Mutex::new(None))
+                        .lock()
+                        .unwrap() = Some(effect);
                     DestroyWindow(hwnd);
                 }
                 IDC_CANCEL => {
-                    *SELECTED_EFFECT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap() = None;
+                    *SELECTED_EFFECT
+                        .get_or_init(|| std::sync::Mutex::new(None))
+                        .lock()
+                        .unwrap() = None;
                     DestroyWindow(hwnd);
                 }
                 _ => {}
@@ -868,11 +1024,6 @@ unsafe extern "system" fn addmode_dialog_proc(
         _ => DefWindowProcW(hwnd, msg, wparam, _lparam),
     }
 }
-
-
-
-
-
 
 /// Phase 11 — on first use, ask the user to open the firewall port for LAN access.
 /// Windows blocks unsolicited inbound by default; adding the allow rule needs a
@@ -896,7 +1047,13 @@ fn parse_port(url: &str) -> u16 {
 fn firewall_rule_exists(port: u16) -> bool {
     let name = format!("WinMouseFix-Trackpad-{port}");
     let out = std::process::Command::new("netsh")
-        .args(["advfirewall", "firewall", "show", "rule", &format!("name={name}")])
+        .args([
+            "advfirewall",
+            "firewall",
+            "show",
+            "rule",
+            &format!("name={name}"),
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
     match out {
@@ -904,7 +1061,6 @@ fn firewall_rule_exists(port: u16) -> bool {
         Err(_) => false,
     }
 }
-
 
 fn add_firewall_rule_now(owner: isize, port: u16) {
     let name = format!("WinMouseFix-Trackpad-{port}");
@@ -999,10 +1155,7 @@ fn show_remote_qr(_owner: isize) {
         None => unsafe {
             MessageBoxW(
                 _owner,
-                to_wide(
-                    "手机妙控板服务启动失败。\n请检查防火墙设置或日志。",
-                )
-                .as_ptr(),
+                to_wide("手机妙控板服务启动失败。\n请检查防火墙设置或日志。").as_ptr(),
                 to_wide("手机妙控板").as_ptr(),
                 MB_OK | MB_ICONINFORMATION,
             );
@@ -1027,7 +1180,6 @@ mod firewall_tests {
     }
 }
 
-
 /// Copy `text` to the clipboard as CF_UNICODETEXT (best-effort).
 fn copy_text_to_clipboard(text: &str) {
     unsafe {
@@ -1049,5 +1201,3 @@ fn copy_text_to_clipboard(text: &str) {
         CloseClipboard();
     }
 }
-
-

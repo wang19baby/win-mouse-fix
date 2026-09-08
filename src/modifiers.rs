@@ -5,7 +5,7 @@
 //! "hold a key while scrolling" tricks). Stored as a single atomic bitmask so
 //! the hook thread and the scroll injector thread can both touch it cheaply.
 
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::LazyLock;
 use std::time::Instant;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_MENU, VK_SHIFT};
@@ -121,28 +121,46 @@ pub fn apply_scroll_modifiers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_SHIFT};
     use std::sync::Mutex;
     use std::sync::OnceLock;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_SHIFT};
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+        TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
     fn no_shift_leaves_input_unchanged() {
-        assert_eq!(apply_scroll_modifiers(120, false, false, 3.0, true), (120, false));
-        assert_eq!(apply_scroll_modifiers(120, true, false, 3.0, true), (120, true));
+        assert_eq!(
+            apply_scroll_modifiers(120, false, false, 3.0, true),
+            (120, false)
+        );
+        assert_eq!(
+            apply_scroll_modifiers(120, true, false, 3.0, true),
+            (120, true)
+        );
     }
 
     #[test]
     fn shift_speeds_up_and_swaps_axis() {
         // speedup 3.0: 120 -> 360; swap: vertical -> horizontal.
-        assert_eq!(apply_scroll_modifiers(120, false, true, 3.0, true), (360, true));
+        assert_eq!(
+            apply_scroll_modifiers(120, false, true, 3.0, true),
+            (360, true)
+        );
         // no swap: stays vertical, but sped up.
-        assert_eq!(apply_scroll_modifiers(120, false, true, 3.0, false), (360, false));
+        assert_eq!(
+            apply_scroll_modifiers(120, false, true, 3.0, false),
+            (360, false)
+        );
         // swap without speedup.
-        assert_eq!(apply_scroll_modifiers(120, false, true, 1.0, true), (120, true));
+        assert_eq!(
+            apply_scroll_modifiers(120, false, true, 1.0, true),
+            (120, true)
+        );
     }
 
     // ── PR-B: shift hold-time tracking ────────────────────────────────────────
@@ -165,8 +183,14 @@ mod tests {
         set_vk(VK_SHIFT as u32, true);
         std::thread::sleep(std::time::Duration::from_millis(50));
         let h = shift_hold_secs();
-        assert!(h >= 0.04, "hold_secs should be >= 0.04 after 50ms sleep; got {h}");
-        assert!(h < 1.0, "hold_secs should be < 1.0 right after a press; got {h}");
+        assert!(
+            h >= 0.04,
+            "hold_secs should be >= 0.04 after 50ms sleep; got {h}"
+        );
+        assert!(
+            h < 1.0,
+            "hold_secs should be < 1.0 right after a press; got {h}"
+        );
         set_vk(VK_SHIFT as u32, false);
         assert_eq!(shift_hold_secs(), 0.0);
     }
@@ -179,7 +203,10 @@ mod tests {
         let h1 = shift_hold_secs();
         std::thread::sleep(std::time::Duration::from_millis(20));
         let h2 = shift_hold_secs();
-        assert!(h2 > h1, "hold_secs must increase over time: h1={h1}, h2={h2}");
+        assert!(
+            h2 > h1,
+            "hold_secs must increase over time: h1={h1}, h2={h2}"
+        );
         set_vk(VK_SHIFT as u32, false);
     }
 

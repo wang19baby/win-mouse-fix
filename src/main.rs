@@ -1,25 +1,25 @@
 #![windows_subsystem = "windows"]
-mod config;
-mod log;
-mod win;
-mod scroll;
-mod remap;
-mod modifiers;
-mod gesture;
 mod accel;
 mod add_mode;
+mod config;
 mod device;
+mod gesture;
+mod gui;
+mod log;
+mod modifiers;
+mod remap;
 mod remote;
+mod scroll;
 #[cfg(test)]
 mod trackpad_gesture;
-mod gui;
+mod win;
 
-use parking_lot::RwLock;
 use config::Config;
+use parking_lot::RwLock;
 use std::sync::LazyLock;
 use windows_sys::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, PROCESS_PER_MONITOR_DPI_AWARE,
     SetProcessDpiAwareness, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, PROCESS_PER_MONITOR_DPI_AWARE,
 };
 
 /// Runtime configuration: read by the hook layer, hot-swapped by `apply_config`.
@@ -39,7 +39,8 @@ fn main() {
         } else {
             "Box<dyn Any>".to_string()
         };
-        let location = info.location()
+        let location = info
+            .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "<unknown>".to_string());
         let backtrace = std::backtrace::Backtrace::force_capture();

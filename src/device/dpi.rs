@@ -6,19 +6,19 @@
 //! (0x2201); it requires a connected, capable device and is best-effort
 //! (probe degradation, no errors).
 #![allow(dead_code)]
+use crate::device::enumerate;
+use crate::device::hidpp::{self, feature};
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetDeviceCaps, HDC, HMONITOR, LOGPIXELSX,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadFile, WriteFile,
+    CreateFileW, ReadFile, WriteFile, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_RAW_DPI};
 use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-use crate::device::enumerate;
-use crate::device::hidpp::{self, feature};
-use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 
 /// `GetDeviceCaps` index for vertical logical DPI (LOGPIXELSY). Not re-exported
 /// by the crate's prelude, so referenced by its documented value.
@@ -107,7 +107,8 @@ pub fn cursor_monitor() -> Option<Monitor> {
         let hit = monitors
             .iter()
             .find(|m| pt.x >= m.left && pt.x < m.right && pt.y >= m.top && pt.y < m.bottom);
-        hit.cloned().or_else(|| monitors.iter().find(|m| m.primary).cloned())
+        hit.cloned()
+            .or_else(|| monitors.iter().find(|m| m.primary).cloned())
     }
 }
 

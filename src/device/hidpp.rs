@@ -155,7 +155,11 @@ pub fn battery_status_from_response(msg: &ShortMessage) -> Option<BatteryStatus>
     let level = msg.params[0];
     let charging = (msg.params[1] & 0x01) != 0;
     let level_invalid = level == 0xFF;
-    Some(BatteryStatus { level, charging, level_invalid })
+    Some(BatteryStatus {
+        level,
+        charging,
+        level_invalid,
+    })
 }
 
 /// Build a `GetSensorDpi` (function 0x00) request for the adjustable-DPI
@@ -239,19 +243,31 @@ mod tests {
         let full = ShortMessage::decode(&[0x10, 0x01, 0x00, 0x05, 0x64, 0x00, 0x00]).unwrap();
         assert_eq!(
             battery_status_from_response(&full),
-            Some(BatteryStatus { level: 100, charging: false, level_invalid: false })
+            Some(BatteryStatus {
+                level: 100,
+                charging: false,
+                level_invalid: false
+            })
         );
 
         let charging = ShortMessage::decode(&[0x10, 0x01, 0x00, 0x05, 0x32, 0x01, 0x00]).unwrap();
         assert_eq!(
             battery_status_from_response(&charging),
-            Some(BatteryStatus { level: 50, charging: true, level_invalid: false })
+            Some(BatteryStatus {
+                level: 50,
+                charging: true,
+                level_invalid: false
+            })
         );
 
         let invalid = ShortMessage::decode(&[0x10, 0x01, 0x00, 0x05, 0xFF, 0x00, 0x00]).unwrap();
         assert_eq!(
             battery_status_from_response(&invalid),
-            Some(BatteryStatus { level: 0xFF, charging: false, level_invalid: true })
+            Some(BatteryStatus {
+                level: 0xFF,
+                charging: false,
+                level_invalid: true
+            })
         );
 
         assert_eq!(

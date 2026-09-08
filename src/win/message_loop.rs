@@ -1,7 +1,7 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, TranslateMessage,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 
 // Hook installation requests from the WS/auth thread — processed on the main thread.
 static HOOK_INSTALL_REQUESTED: AtomicBool = AtomicBool::new(false);

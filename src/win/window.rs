@@ -9,7 +9,7 @@ use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetAncestor, GetClassNameW, GetCursorPos, GetDesktopWindow, GetForegroundWindow,
     GetWindowModuleFileNameW, GetWindowRect, IsIconic, IsZoomed, SetWindowPos, WindowFromPoint,
-    GA_ROOT, HWND_TOP, SWP_NOSIZE, SWP_NOACTIVATE, SWP_NOZORDER,
+    GA_ROOT, HWND_TOP, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
 };
 
 /// Returns the current cursor position as (x, y).
@@ -105,7 +105,10 @@ pub fn foreground_exe() -> Option<String> {
             return None;
         }
         let path = String::from_utf16_lossy(&buf[..n as usize]);
-        let name = std::path::Path::new(&path).file_name()?.to_string_lossy().into_owned();
+        let name = std::path::Path::new(&path)
+            .file_name()?
+            .to_string_lossy()
+            .into_owned();
         Some(name)
     }
 }

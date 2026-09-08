@@ -62,7 +62,10 @@ pub struct DragController {
 
 impl DragController {
     pub fn new(button: TriggerButton) -> Self {
-        Self { button, active: None }
+        Self {
+            button,
+            active: None,
+        }
     }
 
     pub fn is_active(&self) -> bool {
@@ -209,19 +212,31 @@ mod tests {
     fn drag_scroll_refine_from_modifiers() {
         assert_eq!(
             drag_scroll_refine(false, false),
-            DragScrollRefine { horizontal_only: false, precision: false }
+            DragScrollRefine {
+                horizontal_only: false,
+                precision: false
+            }
         );
         assert_eq!(
             drag_scroll_refine(true, false),
-            DragScrollRefine { horizontal_only: true, precision: false }
+            DragScrollRefine {
+                horizontal_only: true,
+                precision: false
+            }
         );
         assert_eq!(
             drag_scroll_refine(false, true),
-            DragScrollRefine { horizontal_only: false, precision: true }
+            DragScrollRefine {
+                horizontal_only: false,
+                precision: true
+            }
         );
         assert_eq!(
             drag_scroll_refine(true, true),
-            DragScrollRefine { horizontal_only: true, precision: true }
+            DragScrollRefine {
+                horizontal_only: true,
+                precision: true
+            }
         );
     }
 

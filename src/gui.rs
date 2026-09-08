@@ -2,22 +2,19 @@
 //!
 //! Opens a modal dialog with 4 tabs (General / Scroll / Pointer / Buttons).
 //! On OK, writes the updated config to disk and hot-applies it via `apply_config`.
-
+#![allow(dead_code)]
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::{
-    RegOpenKeyExW, RegSetValueExW, RegDeleteValueW, RegCloseKey,
-    HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ, REG_SZ,
+    RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY_CURRENT_USER, KEY_ALL_ACCESS,
+    KEY_READ, REG_SZ,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow,
-    LoadCursorW, RegisterClassExW, ShowWindow,
-    WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSEXW,
-    WS_CAPTION, WS_CHILD, WS_SYSMENU, WS_VISIBLE,
-    WS_TABSTOP, WS_GROUP,
-    MessageBoxW, PostQuitMessage, IDC_ARROW,
-    SendDlgItemMessageW, GetDlgItem, SetWindowTextW, GetWindowTextW,
-    LB_ADDSTRING, LB_DELETESTRING, LB_GETCURSEL, LB_SETCURSEL,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetDlgItem, GetWindowTextW, LoadCursorW,
+    MessageBoxW, PostQuitMessage, RegisterClassExW, SendDlgItemMessageW, SetWindowTextW,
+    ShowWindow, IDC_ARROW, LB_ADDSTRING, LB_DELETESTRING, LB_GETCURSEL, LB_SETCURSEL, WM_COMMAND,
+    WM_CREATE, WM_DESTROY, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_GROUP, WS_SYSMENU, WS_TABSTOP,
+    WS_VISIBLE,
 };
 
 // ─── Control IDs (every control has a unique ID) ───────────────────────────
@@ -67,32 +64,104 @@ const SETTINGS_CLASS: &str = "WinMouseFixSettings";
 
 // ─── Control → tab mapping ─────────────────────────────────────────────────
 
-struct CtrlDef { id: usize, tab: usize }
+struct CtrlDef {
+    id: usize,
+    tab: usize,
+}
 
 const CTRL_TABLE: &[CtrlDef] = &[
-    CtrlDef { id: IDC_CHK_START_HIDDEN, tab: 0 },
-    CtrlDef { id: IDC_CHK_REMOTE,      tab: 0 },
-    CtrlDef { id: IDC_CHK_DPI_AUTO,    tab: 0 },
-    CtrlDef { id: IDC_LBL_DPI_BASE,    tab: 0 },
-    CtrlDef { id: IDC_EDT_DPI_BASE,    tab: 0 },
-    CtrlDef { id: IDC_CHK_AUTOSTART,   tab: 0 },
-    CtrlDef { id: IDC_CHK_SMOOTH,      tab: 1 },
-    CtrlDef { id: IDC_LBL_SPEED,       tab: 1 },
-    CtrlDef { id: IDC_EDT_SPEED,       tab: 1 },
-    CtrlDef { id: IDC_LBL_STEP,        tab: 1 },
-    CtrlDef { id: IDC_EDT_STEP,        tab: 1 },
-    CtrlDef { id: IDC_LBL_SHIFT_SPEEDUP, tab: 1 },
-    CtrlDef { id: IDC_EDT_SHIFT_SPEEDUP, tab: 1 },
-    CtrlDef { id: IDC_LBL_STOP_SPEED,  tab: 1 },
-    CtrlDef { id: IDC_EDT_STOP_SPEED,  tab: 1 },
-    CtrlDef { id: IDC_LBL_BASE_MS,     tab: 1 },
-    CtrlDef { id: IDC_EDT_BASE_MS,     tab: 1 },
-    CtrlDef { id: IDC_CHK_ACCEL,       tab: 2 },
-    CtrlDef { id: IDC_LBL_SENS,        tab: 2 },
-    CtrlDef { id: IDC_EDT_SENS,        tab: 2 },
-    CtrlDef { id: IDC_LST_REMAPS,      tab: 3 },
-    CtrlDef { id: IDC_BTN_DELETE,      tab: 3 },
-    CtrlDef { id: IDC_ADD_REMAP,       tab: 3 },
+    CtrlDef {
+        id: IDC_CHK_START_HIDDEN,
+        tab: 0,
+    },
+    CtrlDef {
+        id: IDC_CHK_REMOTE,
+        tab: 0,
+    },
+    CtrlDef {
+        id: IDC_CHK_DPI_AUTO,
+        tab: 0,
+    },
+    CtrlDef {
+        id: IDC_LBL_DPI_BASE,
+        tab: 0,
+    },
+    CtrlDef {
+        id: IDC_EDT_DPI_BASE,
+        tab: 0,
+    },
+    CtrlDef {
+        id: IDC_CHK_AUTOSTART,
+        tab: 0,
+    },
+    CtrlDef {
+        id: IDC_CHK_SMOOTH,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_LBL_SPEED,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_EDT_SPEED,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_LBL_STEP,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_EDT_STEP,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_LBL_SHIFT_SPEEDUP,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_EDT_SHIFT_SPEEDUP,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_LBL_STOP_SPEED,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_EDT_STOP_SPEED,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_LBL_BASE_MS,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_EDT_BASE_MS,
+        tab: 1,
+    },
+    CtrlDef {
+        id: IDC_CHK_ACCEL,
+        tab: 2,
+    },
+    CtrlDef {
+        id: IDC_LBL_SENS,
+        tab: 2,
+    },
+    CtrlDef {
+        id: IDC_EDT_SENS,
+        tab: 2,
+    },
+    CtrlDef {
+        id: IDC_LST_REMAPS,
+        tab: 3,
+    },
+    CtrlDef {
+        id: IDC_BTN_DELETE,
+        tab: 3,
+    },
+    CtrlDef {
+        id: IDC_ADD_REMAP,
+        tab: 3,
+    },
 ];
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -127,8 +196,14 @@ pub fn open_settings(parent: isize) {
             to_wide(SETTINGS_CLASS).as_ptr(),
             to_wide("设置 — Win Mouse Fix").as_ptr(),
             WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-            300, 200, 500, 400,
-            parent, 0, GetModuleHandleW(null()), null_mut(),
+            300,
+            200,
+            500,
+            400,
+            parent,
+            0,
+            GetModuleHandleW(null()),
+            null_mut(),
         );
         if hwnd != 0 {
             ShowWindow(hwnd, 9); // SW_SHOWNA
@@ -139,7 +214,10 @@ pub fn open_settings(parent: isize) {
 // ─── Window procedure ───────────────────────────────────────────────────────
 
 unsafe extern "system" fn settings_wnd_proc(
-    hwnd: isize, msg: u32, wparam: usize, _lparam: isize,
+    hwnd: isize,
+    msg: u32,
+    wparam: usize,
+    _lparam: isize,
 ) -> isize {
     match msg {
         WM_CREATE => {
@@ -158,25 +236,62 @@ unsafe extern "system" fn settings_wnd_proc(
                     | if i == 0 { WS_GROUP } else { 0 }
                     | WS_TABSTOP;
                 CreateWindowExW(
-                    0, to_wide("Button").as_ptr(), to_wide(label).as_ptr(),
+                    0,
+                    to_wide("Button").as_ptr(),
+                    to_wide(label).as_ptr(),
                     style,
-                    20 + (i as i32) * 100, 12, 90, 22,
-                    hwnd, *id as isize, hmod, null_mut(),
+                    20 + (i as i32) * 100,
+                    12,
+                    90,
+                    22,
+                    hwnd,
+                    *id as isize,
+                    hmod,
+                    null_mut(),
                 );
             }
 
             // ── Separator ──
             CreateWindowExW(
-                0, to_wide("Static").as_ptr(), null(),
+                0,
+                to_wide("Static").as_ptr(),
+                null(),
                 0x0010u32 | WS_CHILD | WS_VISIBLE, // SS_ETCHEDHORZ
-                10, 40, 474, 2,
-                hwnd, 0, hmod, null_mut(),
+                10,
+                40,
+                474,
+                2,
+                hwnd,
+                0,
+                hmod,
+                null_mut(),
             );
 
             // ── General tab ──
-            create_checkbox(hwnd, hmod, IDC_CHK_START_HIDDEN, "启动时最小化到托盘", 30, 56);
-            create_checkbox(hwnd, hmod, IDC_CHK_REMOTE, "启用手势服务（手机触控板）", 30, 84);
-            create_checkbox(hwnd, hmod, IDC_CHK_DPI_AUTO, "跨屏时自动调整鼠标 DPI", 30, 112);
+            create_checkbox(
+                hwnd,
+                hmod,
+                IDC_CHK_START_HIDDEN,
+                "启动时最小化到托盘",
+                30,
+                56,
+            );
+            create_checkbox(
+                hwnd,
+                hmod,
+                IDC_CHK_REMOTE,
+                "启用手势服务（手机触控板）",
+                30,
+                84,
+            );
+            create_checkbox(
+                hwnd,
+                hmod,
+                IDC_CHK_DPI_AUTO,
+                "跨屏时自动调整鼠标 DPI",
+                30,
+                112,
+            );
             create_label(hwnd, hmod, IDC_LBL_DPI_BASE, "基准 DPI:", 30, 142);
             create_edit(hwnd, hmod, IDC_EDT_DPI_BASE, "800", 160, 139, 80);
             create_checkbox(hwnd, hmod, IDC_CHK_AUTOSTART, "开机自动启动", 30, 170);
@@ -203,7 +318,16 @@ unsafe extern "system" fn settings_wnd_proc(
             // ListBox showing existing remaps.
             create_listbox(hwnd, hmod, IDC_LST_REMAPS, 30, 56, 430, 250);
             create_button(hwnd, hmod, IDC_BTN_DELETE, "删除选中", 30, 314, 90, 26);
-            create_button(hwnd, hmod, IDC_ADD_REMAP, "录制新映射...", 130, 314, 120, 26);
+            create_button(
+                hwnd,
+                hmod,
+                IDC_ADD_REMAP,
+                "录制新映射...",
+                130,
+                314,
+                120,
+                26,
+            );
             populate_remap_list(hwnd);
 
             // ── OK / Cancel (always visible) ──
@@ -218,10 +342,22 @@ unsafe extern "system" fn settings_wnd_proc(
             let id = wparam & 0xFFFF;
 
             // Tab switching.
-            if id == IDC_TAB_GENERAL { show_tab(hwnd, 0); return 0; }
-            if id == IDC_TAB_SCROLL { show_tab(hwnd, 1); return 0; }
-            if id == IDC_TAB_POINTER { show_tab(hwnd, 2); return 0; }
-            if id == IDC_TAB_BUTTONS { show_tab(hwnd, 3); return 0; }
+            if id == IDC_TAB_GENERAL {
+                show_tab(hwnd, 0);
+                return 0;
+            }
+            if id == IDC_TAB_SCROLL {
+                show_tab(hwnd, 1);
+                return 0;
+            }
+            if id == IDC_TAB_POINTER {
+                show_tab(hwnd, 2);
+                return 0;
+            }
+            if id == IDC_TAB_BUTTONS {
+                show_tab(hwnd, 3);
+                return 0;
+            }
 
             match id {
                 IDC_OK => {
@@ -236,7 +372,9 @@ unsafe extern "system" fn settings_wnd_proc(
                     }
                     DestroyWindow(hwnd);
                 }
-                IDC_CANCEL => { DestroyWindow(hwnd); }
+                IDC_CANCEL => {
+                    DestroyWindow(hwnd);
+                }
                 IDC_BTN_DELETE => {
                     let sel = SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_GETCURSEL, 0, 0);
                     if sel >= 0 {
@@ -250,11 +388,29 @@ unsafe extern "system" fn settings_wnd_proc(
                             }
                         }
                         // Refresh list.
-                        SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_DELETESTRING, sel as usize, 0);
+                        SendDlgItemMessageW(
+                            hwnd,
+                            IDC_LST_REMAPS as i32,
+                            LB_DELETESTRING,
+                            sel as usize,
+                            0,
+                        );
                         // Select next item or last.
-                        let count = SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, 0x018B /* LB_GETCOUNT */, 0, 0);
+                        let count = SendDlgItemMessageW(
+                            hwnd,
+                            IDC_LST_REMAPS as i32,
+                            0x018B, /* LB_GETCOUNT */
+                            0,
+                            0,
+                        );
                         let new_sel = if count > 0 { sel.min(count - 1) } else { 0 };
-                        SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_SETCURSEL, new_sel as usize, 0);
+                        SendDlgItemMessageW(
+                            hwnd,
+                            IDC_LST_REMAPS as i32,
+                            LB_SETCURSEL,
+                            new_sel as usize,
+                            0,
+                        );
                     }
                 }
                 IDC_ADD_REMAP => {
@@ -269,7 +425,10 @@ unsafe extern "system" fn settings_wnd_proc(
             }
             0
         }
-        WM_DESTROY => { PostQuitMessage(0); 0 }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            0
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, _lparam),
     }
 }
@@ -278,7 +437,12 @@ unsafe extern "system" fn settings_wnd_proc(
 
 unsafe fn show_tab(hwnd: isize, tab: usize) {
     // Update radio checks.
-    let tabs = [IDC_TAB_GENERAL, IDC_TAB_SCROLL, IDC_TAB_POINTER, IDC_TAB_BUTTONS];
+    let tabs = [
+        IDC_TAB_GENERAL,
+        IDC_TAB_SCROLL,
+        IDC_TAB_POINTER,
+        IDC_TAB_BUTTONS,
+    ];
     for (i, &id) in tabs.iter().enumerate() {
         SendDlgItemMessageW(hwnd, id as i32, 0x00F1, if i == tab { 1 } else { 0 }, 0);
     }
@@ -293,56 +457,144 @@ unsafe fn show_tab(hwnd: isize, tab: usize) {
 // ─── Control creation ───────────────────────────────────────────────────────
 
 unsafe fn create_checkbox(p: isize, h: isize, id: usize, label: &str, x: i32, y: i32) {
-    CreateWindowExW(0, to_wide("Button").as_ptr(), to_wide(label).as_ptr(),
+    CreateWindowExW(
+        0,
+        to_wide("Button").as_ptr(),
+        to_wide(label).as_ptr(),
         0x0003u32 | WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        x, y, 400, 20, p, id as isize, h, null_mut());
+        x,
+        y,
+        400,
+        20,
+        p,
+        id as isize,
+        h,
+        null_mut(),
+    );
 }
 unsafe fn create_label(p: isize, h: isize, id: usize, text: &str, x: i32, y: i32) {
-    CreateWindowExW(0, to_wide("Static").as_ptr(), to_wide(text).as_ptr(),
-        WS_CHILD | WS_VISIBLE, x, y, 120, 20, p, id as isize, h, null_mut());
+    CreateWindowExW(
+        0,
+        to_wide("Static").as_ptr(),
+        to_wide(text).as_ptr(),
+        WS_CHILD | WS_VISIBLE,
+        x,
+        y,
+        120,
+        20,
+        p,
+        id as isize,
+        h,
+        null_mut(),
+    );
 }
 unsafe fn create_edit(p: isize, h: isize, id: usize, val: &str, x: i32, y: i32, w: i32) {
-    CreateWindowExW(0, to_wide("Edit").as_ptr(), to_wide(val).as_ptr(),
+    CreateWindowExW(
+        0,
+        to_wide("Edit").as_ptr(),
+        to_wide(val).as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | 0x0080u32,
-        x, y, w, 22, p, id as isize, h, null_mut());
+        x,
+        y,
+        w,
+        22,
+        p,
+        id as isize,
+        h,
+        null_mut(),
+    );
 }
-unsafe fn create_button(p: isize, h: isize, id: usize, label: &str, x: i32, y: i32, w: i32, h2: i32) {
-    CreateWindowExW(0, to_wide("Button").as_ptr(), to_wide(label).as_ptr(),
+unsafe fn create_button(
+    p: isize,
+    h: isize,
+    id: usize,
+    label: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    h2: i32,
+) {
+    CreateWindowExW(
+        0,
+        to_wide("Button").as_ptr(),
+        to_wide(label).as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        x, y, w, h2, p, id as isize, h, null_mut());
+        x,
+        y,
+        w,
+        h2,
+        p,
+        id as isize,
+        h,
+        null_mut(),
+    );
 }
 unsafe fn create_listbox(p: isize, h: isize, id: usize, x: i32, y: i32, w: i32, h2: i32) {
-    CreateWindowExW(0, to_wide("ListBox").as_ptr(), null(),
+    CreateWindowExW(
+        0,
+        to_wide("ListBox").as_ptr(),
+        null(),
         (0x00010000 /* WS_BORDER */ | 0x00200000 /* WS_VSCROLL */
          | 0x00000002 /* LBS_NOTIFY */ | 0x00000040 /* LBS_HASSTRINGS */
          | WS_CHILD | WS_VISIBLE | WS_TABSTOP) as u32,
-        x, y, w, h2, p, id as isize, h, null_mut());
+        x,
+        y,
+        w,
+        h2,
+        p,
+        id as isize,
+        h,
+        null_mut(),
+    );
 }
 
 /// Populate the ListBox with formatted remap entries.
 unsafe fn populate_remap_list(hwnd: isize) {
-    let _hlist = match getDlgItem(hwnd, IDC_LST_REMAPS) { Some(h) => h, None => return };
+    let _hlist = match getDlgItem(hwnd, IDC_LST_REMAPS) {
+        Some(h) => h,
+        None => return,
+    };
     // Clear existing items.
     while SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_DELETESTRING, 0, 0) > 0 {}
     let cfg = crate::CONFIG.read();
     for entry in &cfg.buttons.advanced {
         let desc = format_remap_entry(entry);
-        SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_ADDSTRING, 0, to_wide(&desc).as_ptr() as isize);
+        SendDlgItemMessageW(
+            hwnd,
+            IDC_LST_REMAPS as i32,
+            LB_ADDSTRING,
+            0,
+            to_wide(&desc).as_ptr() as isize,
+        );
     }
 }
 
 /// Format a RemapEntry as a human-readable string for the ListBox.
 fn format_remap_entry(entry: &crate::remap::RemapEntry) -> String {
-    use crate::remap::{Trigger, Effect, ClickDuration, SwipeDirection, MouseButton};
+    use crate::remap::{ClickDuration, Effect, MouseButton, SwipeDirection, Trigger};
 
     let trigger_str = match &entry.trigger {
-        Trigger::Button { button, level, duration } => {
+        Trigger::Button {
+            button,
+            level,
+            duration,
+        } => {
             let btn = match button {
-                MouseButton::Left => "左键", MouseButton::Right => "右键",
-                MouseButton::Middle => "中键", MouseButton::X1 => "X1", MouseButton::X2 => "X2",
+                MouseButton::Left => "左键",
+                MouseButton::Right => "右键",
+                MouseButton::Middle => "中键",
+                MouseButton::X1 => "X1",
+                MouseButton::X2 => "X2",
             };
-            let dur = match duration { ClickDuration::Click => "单击", ClickDuration::Hold => "长按" };
-            let lvl = if *level > 1 { format!(" x{level}") } else { String::new() };
+            let dur = match duration {
+                ClickDuration::Click => "单击",
+                ClickDuration::Hold => "长按",
+            };
+            let lvl = if *level > 1 {
+                format!(" x{level}")
+            } else {
+                String::new()
+            };
             format!("{btn}{dur}{lvl}")
         }
         Trigger::Scroll => "滚轮".to_string(),
@@ -351,10 +603,18 @@ fn format_remap_entry(entry: &crate::remap::RemapEntry) -> String {
 
     let mod_str = if entry.modifiers.keyboard != 0 {
         let mut parts = Vec::new();
-        if entry.modifiers.keyboard & 0x100 != 0 { parts.push("Ctrl"); }
-        if entry.modifiers.keyboard & 0x200 != 0 { parts.push("Shift"); }
-        if entry.modifiers.keyboard & 0x400 != 0 { parts.push("Alt"); }
-        if entry.modifiers.keyboard & 0x800 != 0 { parts.push("Win"); }
+        if entry.modifiers.keyboard & 0x100 != 0 {
+            parts.push("Ctrl");
+        }
+        if entry.modifiers.keyboard & 0x200 != 0 {
+            parts.push("Shift");
+        }
+        if entry.modifiers.keyboard & 0x400 != 0 {
+            parts.push("Alt");
+        }
+        if entry.modifiers.keyboard & 0x800 != 0 {
+            parts.push("Win");
+        }
         format!("+{}", parts.join("+"))
     } else {
         String::new()
@@ -365,16 +625,20 @@ fn format_remap_entry(entry: &crate::remap::RemapEntry) -> String {
         Effect::Disabled => "禁用",
         Effect::TaskView => "TaskView (Win+Tab)",
         Effect::ShowDesktop => "ShowDesktop (Win+D)",
-        Effect::NavigationSwipe { direction: SwipeDirection::Back } => "后退",
-        Effect::NavigationSwipe { direction: SwipeDirection::Forward } => "前进",
+        Effect::NavigationSwipe {
+            direction: SwipeDirection::Back,
+        } => "后退",
+        Effect::NavigationSwipe {
+            direction: SwipeDirection::Forward,
+        } => "前进",
         Effect::SymbolicHotkey { .. } => "热键",
-        Effect::MouseButtonClicks { button, .. } => {
-            match button {
-                MouseButton::X1 => "X1 点击", MouseButton::X2 => "X2 点击",
-                MouseButton::Left => "左键点击", MouseButton::Right => "右键点击",
-                MouseButton::Middle => "中键点击",
-            }
-        }
+        Effect::MouseButtonClicks { button, .. } => match button {
+            MouseButton::X1 => "X1 点击",
+            MouseButton::X2 => "X2 点击",
+            MouseButton::Left => "左键点击",
+            MouseButton::Right => "右键点击",
+            MouseButton::Middle => "中键点击",
+        },
         Effect::ModifiedScroll { .. } => "修饰滚动",
         Effect::ModifiedDrag { .. } => "修饰拖拽",
         Effect::SystemDefinedEvent { .. } => "系统事件",
@@ -395,9 +659,17 @@ unsafe fn load_config_to_controls(hwnd: isize) {
     set_check(hwnd, IDC_CHK_SMOOTH, cfg.scroll.smooth);
     set_edit_text(hwnd, IDC_EDT_SPEED, &cfg.scroll.speed.to_string());
     set_edit_text(hwnd, IDC_EDT_STEP, &cfg.scroll.step.to_string());
-    set_edit_text(hwnd, IDC_EDT_SHIFT_SPEEDUP, &cfg.scroll.shift_speedup.to_string());
+    set_edit_text(
+        hwnd,
+        IDC_EDT_SHIFT_SPEEDUP,
+        &cfg.scroll.shift_speedup.to_string(),
+    );
     set_edit_text(hwnd, IDC_EDT_STOP_SPEED, &cfg.scroll.stop_speed.to_string());
-    set_edit_text(hwnd, IDC_EDT_BASE_MS, &cfg.scroll.base_ms_per_step.to_string());
+    set_edit_text(
+        hwnd,
+        IDC_EDT_BASE_MS,
+        &cfg.scroll.base_ms_per_step.to_string(),
+    );
     set_check(hwnd, IDC_CHK_ACCEL, cfg.accel.enabled);
     set_edit_text(hwnd, IDC_EDT_SENS, &cfg.accel.sensitivity.to_string());
 }
@@ -453,7 +725,10 @@ unsafe fn set_edit_text(hwnd: isize, id: usize, text: &str) {
     }
 }
 unsafe fn get_edit_text(hwnd: isize, id: usize) -> String {
-    let h = match getDlgItem(hwnd, id) { Some(h) => h, None => return String::new() };
+    let h = match getDlgItem(hwnd, id) {
+        Some(h) => h,
+        None => return String::new(),
+    };
     let mut buf = [0u16; 128];
     let len = GetWindowTextW(h, buf.as_mut_ptr(), 128);
     String::from_utf16_lossy(&buf[..len as usize])
@@ -461,11 +736,19 @@ unsafe fn get_edit_text(hwnd: isize, id: usize) -> String {
 #[allow(non_snake_case)]
 unsafe fn getDlgItem(hwnd: isize, id: usize) -> Option<isize> {
     let h = GetDlgItem(hwnd, id as i32);
-    if h != 0 { Some(h) } else { None }
+    if h != 0 {
+        Some(h)
+    } else {
+        None
+    }
 }
 unsafe fn get_parent_hwnd(hwnd: isize) -> Option<isize> {
     let p = windows_sys::Win32::UI::WindowsAndMessaging::GetParent(hwnd);
-    if p != 0 { Some(p) } else { None }
+    if p != 0 {
+        Some(p)
+    } else {
+        None
+    }
 }
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -487,7 +770,14 @@ fn is_autostart_enabled() -> bool {
         let mut buf = [0u16; 260];
         let mut buf_len = (buf.len() * 2) as u32;
         let wide_name = to_wide(AUTOSTART_NAME);
-        let rc = RegQueryValueExW(key, wide_name.as_ptr(), null_mut(), null_mut(), buf.as_mut_ptr() as *mut u8, &mut buf_len);
+        let rc = RegQueryValueExW(
+            key,
+            wide_name.as_ptr(),
+            null_mut(),
+            null_mut(),
+            buf.as_mut_ptr() as *mut u8,
+            &mut buf_len,
+        );
         RegCloseKey(key);
         rc == 0 && buf_len > 0
     }
@@ -498,7 +788,14 @@ fn set_autostart(enabled: bool) {
     unsafe {
         let mut key: isize = 0;
         let wide_key = to_wide(AUTOSTART_KEY);
-        if RegOpenKeyExW(HKEY_CURRENT_USER, wide_key.as_ptr(), 0, KEY_ALL_ACCESS, &mut key) != 0 {
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_key.as_ptr(),
+            0,
+            KEY_ALL_ACCESS,
+            &mut key,
+        ) != 0
+        {
             return;
         }
         let wide_name = to_wide(AUTOSTART_NAME);
@@ -506,12 +803,24 @@ fn set_autostart(enabled: bool) {
             // Get current exe path.
             let mut exe_buf = [0u16; 260];
             let len = windows_sys::Win32::System::LibraryLoader::GetModuleFileNameW(
-                0, exe_buf.as_mut_ptr(), 260,
+                0,
+                exe_buf.as_mut_ptr(),
+                260,
             );
-            if len == 0 { RegCloseKey(key); return; }
+            if len == 0 {
+                RegCloseKey(key);
+                return;
+            }
             let exe_path = &exe_buf[..len as usize];
             let data_len = (exe_len(exe_path) + 2) as u32; // +2 for null terminator bytes
-            RegSetValueExW(key, wide_name.as_ptr(), 0, REG_SZ, exe_path.as_ptr() as *const u8, data_len);
+            RegSetValueExW(
+                key,
+                wide_name.as_ptr(),
+                0,
+                REG_SZ,
+                exe_path.as_ptr() as *const u8,
+                data_len,
+            );
         } else {
             RegDeleteValueW(key, wide_name.as_ptr());
         }
@@ -548,43 +857,88 @@ pub fn open_profiles(parent: isize) {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: 0,
             lpfnWndProc: Some(profiles_wnd_proc),
-            cbClsExtra: 0, cbWndExtra: 0, hInstance: hmod,
-            hIcon: 0, hCursor: LoadCursorW(0, IDC_ARROW),
-            hbrBackground: 0, lpszMenuName: null(),
-            lpszClassName: class_name.as_ptr(), hIconSm: 0,
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hmod,
+            hIcon: 0,
+            hCursor: LoadCursorW(0, IDC_ARROW),
+            hbrBackground: 0,
+            lpszMenuName: null(),
+            lpszClassName: class_name.as_ptr(),
+            hIconSm: 0,
         };
         RegisterClassExW(&wc);
     });
     unsafe {
-        let hwnd = CreateWindowExW(0,
+        let hwnd = CreateWindowExW(
+            0,
             to_wide(PROFILES_CLASS).as_ptr(),
             to_wide("应用配置文件 — Win Mouse Fix").as_ptr(),
             WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-            300, 200, 460, 360,
-            parent, 0, GetModuleHandleW(null()), null_mut(),
+            300,
+            200,
+            460,
+            360,
+            parent,
+            0,
+            GetModuleHandleW(null()),
+            null_mut(),
         );
-        if hwnd != 0 { ShowWindow(hwnd, 9); }
+        if hwnd != 0 {
+            ShowWindow(hwnd, 9);
+        }
     }
 }
 
 #[allow(non_upper_case_globals)]
 unsafe extern "system" fn profiles_wnd_proc(
-    hwnd: isize, msg: u32, wparam: usize, _lparam: isize,
+    hwnd: isize,
+    msg: u32,
+    wparam: usize,
+    _lparam: isize,
 ) -> isize {
     match msg {
         WM_CREATE => {
             let hmod = GetModuleHandleW(null());
             // Exe name input.
             create_label(hwnd, hmod, 0, "进程名 (如 chrome.exe):", 20, 16);
-            CreateWindowExW(0, to_wide("Edit").as_ptr(), null(),
+            CreateWindowExW(
+                0,
+                to_wide("Edit").as_ptr(),
+                null(),
                 0x0080u32 | WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                20, 38, 280, 22, hwnd, IDC_EDT_EXE as isize, hmod, null_mut());
+                20,
+                38,
+                280,
+                22,
+                hwnd,
+                IDC_EDT_EXE as isize,
+                hmod,
+                null_mut(),
+            );
             create_button(hwnd, hmod, IDC_BTN_ADD, "添加", 310, 36, 60, 26);
             create_button(hwnd, hmod, IDC_BTN_DEL, "删除", 380, 36, 60, 26);
             // Profiles list.
-            CreateWindowExW(0, to_wide("ListBox").as_ptr(), null(),
-                (0x00010000 | 0x00200000 | 0x00000002 | 0x00000040 | WS_CHILD | WS_VISIBLE | WS_TABSTOP) as u32,
-                20, 72, 420, 210, hwnd, IDC_LST_PROFILES as isize, hmod, null_mut());
+            CreateWindowExW(
+                0,
+                to_wide("ListBox").as_ptr(),
+                null(),
+                (0x00010000
+                    | 0x00200000
+                    | 0x00000002
+                    | 0x00000040
+                    | WS_CHILD
+                    | WS_VISIBLE
+                    | WS_TABSTOP) as u32,
+                20,
+                72,
+                420,
+                210,
+                hwnd,
+                IDC_LST_PROFILES as isize,
+                hmod,
+                null_mut(),
+            );
             // OK / Cancel.
             create_button(hwnd, hmod, IDCProfiles_OK, "确定", 240, 300, 90, 28);
             create_button(hwnd, hmod, IDCProfiles_CANCEL, "取消", 340, 300, 90, 28);
@@ -611,7 +965,8 @@ unsafe extern "system" fn profiles_wnd_proc(
                     }
                 }
                 IDC_BTN_DEL => {
-                    let sel = SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_GETCURSEL, 0, 0);
+                    let sel =
+                        SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_GETCURSEL, 0, 0);
                     if sel >= 0 {
                         let mut cfg = crate::CONFIG.write();
                         let idx = sel as usize;
@@ -623,8 +978,12 @@ unsafe extern "system" fn profiles_wnd_proc(
                         populate_profile_list(hwnd);
                     }
                 }
-                IDCProfiles_OK => { DestroyWindow(hwnd); }
-                IDCProfiles_CANCEL => { DestroyWindow(hwnd); }
+                IDCProfiles_OK => {
+                    DestroyWindow(hwnd);
+                }
+                IDCProfiles_CANCEL => {
+                    DestroyWindow(hwnd);
+                }
                 _ => {}
             }
             0
@@ -635,12 +994,21 @@ unsafe extern "system" fn profiles_wnd_proc(
 }
 
 unsafe fn populate_profile_list(hwnd: isize) {
-    let _hlist = match getDlgItem(hwnd, IDC_LST_PROFILES) { Some(h) => h, None => return };
+    let _hlist = match getDlgItem(hwnd, IDC_LST_PROFILES) {
+        Some(h) => h,
+        None => return,
+    };
     while SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_DELETESTRING, 0, 0) > 0 {}
     let cfg = crate::CONFIG.read();
     for p in &cfg.profiles {
         let exe = p.match_exe.as_deref().unwrap_or("(any)");
         let desc = format!("{exe} → {} 项覆盖", p.config.len());
-        SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_ADDSTRING, 0, to_wide(&desc).as_ptr() as isize);
+        SendDlgItemMessageW(
+            hwnd,
+            IDC_LST_PROFILES as i32,
+            LB_ADDSTRING,
+            0,
+            to_wide(&desc).as_ptr() as isize,
+        );
     }
 }

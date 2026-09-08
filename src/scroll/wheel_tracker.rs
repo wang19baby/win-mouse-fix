@@ -111,7 +111,11 @@ struct ExponentialSmoother {
 
 impl ExponentialSmoother {
     fn new(weight: f64) -> Self {
-        Self { weight, state: 0.0, initialized: false }
+        Self {
+            weight,
+            state: 0.0,
+            initialized: false,
+        }
     }
 
     /// Reset to uninitialised state (next `add` will seed).
@@ -161,7 +165,6 @@ pub struct ScrollAnalyzer {
     last_result: Option<ScrollAnalysis>,
 
     // ── Config params (wired from ScrollConfig) ─────────────────────────────
-
     /// Swipe threshold in ticks. If `scrollSwipeThreshold_inTicks > tick_counter`,
     /// the swipe is reset instead of incremented. mac: `scrollConfig.scrollSwipeThreshold_inTicks`
     swipe_threshold: u32,
@@ -179,8 +182,7 @@ pub struct ScrollAnalyzer {
     precise: bool,
 }
 
-     impl ScrollAnalyzer {
-
+impl ScrollAnalyzer {
     /// Construct a new analyzer.
     ///
     /// `time_smoothing_weight` — exponential smoothing weight for `timeBetweenTicks`.
@@ -206,7 +208,9 @@ pub struct ScrollAnalyzer {
     ) -> Self {
         Self {
             time_smoother: ExponentialSmoother::new(time_smoothing_weight),
-            velocity_smoother: DoubleExponentialSmoother::with_seeds(velocity_a, velocity_y, 0.0, 0.0),
+            velocity_smoother: DoubleExponentialSmoother::with_seeds(
+                velocity_a, velocity_y, 0.0, 0.0,
+            ),
             last_dir: Direction::None,
             last_tick_time: None,
             tick_counter: 0,
@@ -289,7 +293,10 @@ pub struct ScrollAnalyzer {
             }
 
             // Increment swipe counter (mac line 175)
-            if self.swipe_threshold <= self.tick_counter && interval_ok && tick_speed >= self.swipe_min_tick_speed {
+            if self.swipe_threshold <= self.tick_counter
+                && interval_ok
+                && tick_speed >= self.swipe_min_tick_speed
+            {
                 self.swipe_counter += 1;
             }
 
@@ -462,10 +469,16 @@ impl WheelTracker {
         fast_scroll_exponential: f64,
     ) -> Self {
         let accel = crate::scroll::curve::BezierAccelCurve::new(
-            accel_x_min, accel_x_max, accel_y_min, accel_y_max, accel_curvature,
+            accel_x_min,
+            accel_x_max,
+            accel_y_min,
+            accel_y_max,
+            accel_curvature,
         );
         let speedup = crate::scroll::curve::ScrollSpeedupCurve::new(
-            fast_scroll_threshold, fast_scroll_initial, fast_scroll_exponential,
+            fast_scroll_threshold,
+            fast_scroll_initial,
+            fast_scroll_exponential,
         );
         Self {
             analyzer: ScrollAnalyzer::new(
@@ -667,8 +680,8 @@ mod tests {
         let t0 = Instant::now();
         let t1 = t0 + std::time::Duration::from_millis(50);
         let t2 = t0 + std::time::Duration::from_millis(100);
-        a.on_tick(120, t0);  // tick_count=0
-        a.on_tick(120, t1);  // tick_count=1
+        a.on_tick(120, t0); // tick_count=0
+        a.on_tick(120, t1); // tick_count=1
         let r = a.on_tick(-120, t2); // direction changed, gap=50ms < 160ms
         assert_eq!(r.tick_count, 0);
         assert!(r.direction_changed);
@@ -720,8 +733,8 @@ mod tests {
         let mut a = ScrollAnalyzer::new(0.5, 1.0, 1.0, 2, 0.375, 16.0, 3, false);
         let t0 = Instant::now();
         let t1 = t0 + std::time::Duration::from_millis(50);
-        a.on_tick(120, t0);  // tick 0: tick_counter=0
-        a.on_tick(120, t1);  // tick 1: tick_counter=1 (consecutive)
+        a.on_tick(120, t0); // tick 0: tick_counter=0
+        a.on_tick(120, t1); // tick 1: tick_counter=1 (consecutive)
         a.complete_swipe();
         assert_eq!(a.swipe_counter, 1);
         assert_eq!(a.tick_counter, 1);
@@ -738,9 +751,9 @@ mod tests {
         let t0 = Instant::now();
         let t1 = t0 + std::time::Duration::from_millis(50);
         let t2 = t0 + std::time::Duration::from_millis(100);
-        a.on_tick(120, t0);  // tick 0
-        a.on_tick(120, t1);  // tick 1 (consecutive, swipe_sequence += 1)
-        a.on_tick(120, t2);  // tick 2 (consecutive, swipe_sequence += 1)
+        a.on_tick(120, t0); // tick 0
+        a.on_tick(120, t1); // tick 1 (consecutive, swipe_sequence += 1)
+        a.on_tick(120, t2); // tick 2 (consecutive, swipe_sequence += 1)
         a.complete_swipe();
         assert_eq!(a.swipe_counter, 1);
         a.complete_swipe();
@@ -762,8 +775,8 @@ mod tests {
         a.on_tick(120, t0);
         a.on_tick(120, t1); // consecutive → ticks_in_swipe_sequence += 1 → 1
         a.on_tick(120, t2); // consecutive → ticks_in_swipe_sequence += 1 → 2
-        // At t2: 2 ticks in 100ms → 20 tick/s
-        // After 400ms more (t3): still 2 ticks in 500ms → 4 tick/s
+                            // At t2: 2 ticks in 100ms → 20 tick/s
+                            // After 400ms more (t3): still 2 ticks in 500ms → 4 tick/s
         let speed = a.swipe_tick_speed(t3);
         assert!(approx_eq(speed, 4.0));
         // After 900ms more (t4): 2 ticks in 1000ms → 2 tick/s

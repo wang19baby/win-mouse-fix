@@ -1,29 +1,27 @@
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
-    MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, VK_SPACE,
-};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, KillTimer, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT,
-    MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
-    XBUTTON1, XBUTTON2,
+    CallNextHookEx, KillTimer, MSLLHOOKSTRUCT, SetTimer,
+    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
+    XBUTTON2, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+    MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VK_SPACE,
 };
 
-use crate::accel::PointerAccel;
+use crate::CONFIG;
 use crate::config::Config;
 use crate::gesture::{drag_scroll_refine, DragController};
-use crate::remap::{
-    ActiveModifiers, ClickCycleTracker, Effect, ModifiedDragType, ModifiedScrollModification,
-    MouseButton, RemapEngine, SimpleRemapTable,
-};
-use crate::scroll::engine::WheelInput;
-use crate::CONFIG;
-use parking_lot::{Mutex, RwLock};
+use crate::accel::PointerAccel;
 use std::sync::atomic::{AtomicBool, Ordering};
+use parking_lot::{Mutex, RwLock};
+use crate::scroll::engine::WheelInput;
+use crate::remap::{MouseButton, SimpleRemapTable, RemapEngine, ClickCycleTracker, ActiveModifiers, Effect, ModifiedScrollModification, ModifiedDragType};
 
 /// Sender to the injector thread. `None` when scroll is disabled or smooth is off.
 /// Uses `SyncSender` so `try_send()` is available in the hook (never blocks).
@@ -69,7 +67,6 @@ static DRAG: RwLock<Option<DragController>> = RwLock::new(None);
 
 /// Output mode for a button-drag gesture (selected by `cfg.drag.mode`).
 /// Discriminants are stored in `DRAG_MODE` as a u8 — must be consecutive 0..4.
-#[allow(dead_code)]
 enum DragOutput {
     Move = 0,
     Scroll = 1,
@@ -79,7 +76,6 @@ enum DragOutput {
 }
 
 /// Map the config `drag.mode` string to a [`DragOutput`].
-#[allow(dead_code)]
 fn drag_output(mode: &str) -> DragOutput {
     match mode {
         "scroll" => DragOutput::Scroll,
@@ -114,9 +110,7 @@ pub struct DragState {
     pub drag_type: ModifiedDragType,
     /// The button that triggered this drag (needed for FakeDrag button-up).
     pub trigger_button: MouseButton,
-    #[allow(dead_code)]
     pub origin_x: i32,
-    #[allow(dead_code)]
     pub origin_y: i32,
 }
 
@@ -224,9 +218,7 @@ pub fn poll_foreground_profile() {
     if *cur != exe {
         *cur = exe.clone();
         drop(cur);
-        crate::log::write(&format!(
-            "foreground window changed → {exe:?}; reloading profile"
-        ));
+        crate::log::write(&format!("foreground window changed → {exe:?}; reloading profile"));
         reload_active_config();
     }
 }
@@ -307,9 +299,7 @@ pub fn send_remote_text(text: &str) {
         let mut events: Vec<INPUT> = Vec::with_capacity(text.len() * 2);
         for ch in text.chars() {
             let code = ch as u16;
-            if code == 0 {
-                continue;
-            }
+            if code == 0 { continue; }
             let mut down = INPUT {
                 r#type: INPUT_KEYBOARD,
                 ..std::mem::zeroed()
@@ -360,51 +350,29 @@ pub fn send_remote_text(text: &str) {
 pub fn send_remote_gesture(g: &str) {
     // Long-press drag: simulate left button hold for window dragging
     match g {
-        "longpress_drag" => {
-            send_fake_drag_button_down(MouseButton::Left);
-            return;
-        }
-        "longpress_end" => {
-            send_fake_drag_button_up(MouseButton::Left);
-            return;
-        }
+        "longpress_drag" => { send_fake_drag_button_down(MouseButton::Left); return; }
+        "longpress_end" => { send_fake_drag_button_up(MouseButton::Left); return; }
         // 4-finger diagonal corner snaps = two sequential Win+Arrow chords
-        "snap_up_l" => {
-            send_remote_gesture("snap_l");
-            send_remote_gesture("snap_up");
-            return;
-        }
-        "snap_up_r" => {
-            send_remote_gesture("snap_r");
-            send_remote_gesture("snap_up");
-            return;
-        }
-        "snap_down_l" => {
-            send_remote_gesture("snap_l");
-            send_remote_gesture("snap_down");
-            return;
-        }
-        "snap_down_r" => {
-            send_remote_gesture("snap_r");
-            send_remote_gesture("snap_down");
-            return;
-        }
+        "snap_up_l"   => { send_remote_gesture("snap_l"); send_remote_gesture("snap_up"); return; }
+        "snap_up_r"   => { send_remote_gesture("snap_r"); send_remote_gesture("snap_up"); return; }
+        "snap_down_l" => { send_remote_gesture("snap_l"); send_remote_gesture("snap_down"); return; }
+        "snap_down_r" => { send_remote_gesture("snap_r"); send_remote_gesture("snap_down"); return; }
         _ => {}
     }
     unsafe {
         let keys: &[u16] = match g {
-            "taskview" => &[0x5B, 0x09],     // LWIN, TAB
-            "showdesktop" => &[0x5B, 0x44],  // LWIN, D
+            "taskview" => &[0x5B, 0x09], // LWIN, TAB
+            "showdesktop" => &[0x5B, 0x44], // LWIN, D
             "desk_l" => &[0x11, 0x5B, 0x25], // CTRL, LWIN, LEFT
             "desk_r" => &[0x11, 0x5B, 0x27], // CTRL, LWIN, RIGHT
-            "snap_l" => &[0x5B, 0x25],       // LWIN, LEFT
-            "snap_r" => &[0x5B, 0x27],       // LWIN, RIGHT
-            "snap_up" => &[0x5B, 0x26],      // LWIN, UP
-            "snap_down" => &[0x5B, 0x28],    // LWIN, DOWN
+            "snap_l" => &[0x5B, 0x25],      // LWIN, LEFT
+            "snap_r" => &[0x5B, 0x27],      // LWIN, RIGHT
+            "snap_up" => &[0x5B, 0x26],     // LWIN, UP
+            "snap_down" => &[0x5B, 0x28],   // LWIN, DOWN
             // 3-finger diagonals: top pair = Alt+Tab app switching,
             // bottom pair = move window between monitors (multi-monitor).
-            "up_l" => &[0x10, 0x12, 0x09], // SHIFT, ALT, TAB -> previous app (Shift+Alt+Tab)
-            "up_r" => &[0x12, 0x09],       // ALT, TAB        -> next app (Alt+Tab)
+            "up_l" => &[0x10, 0x12, 0x09],  // SHIFT, ALT, TAB -> previous app (Shift+Alt+Tab)
+            "up_r" => &[0x12, 0x09],        // ALT, TAB        -> next app (Alt+Tab)
             "down_l" => &[0x5B, 0x10, 0x25], // LWIN, SHIFT, LEFT -> window to left monitor
             "down_r" => &[0x5B, 0x10, 0x27], // LWIN, SHIFT, RIGHT -> window to right monitor
             _ => return,
@@ -533,25 +501,11 @@ fn button_event(ev: u32, ms: &MSLLHOOKSTRUCT) -> Option<(MouseButton, bool)> {
         WM_MBUTTONUP => Some((MouseButton::Middle, false)),
         WM_XBUTTONDOWN => {
             let xb = (ms.mouseData >> 16) as u16;
-            Some((
-                if xb == XBUTTON2 {
-                    MouseButton::X2
-                } else {
-                    MouseButton::X1
-                },
-                true,
-            ))
+            Some((if xb == XBUTTON2 { MouseButton::X2 } else { MouseButton::X1 }, true))
         }
         WM_XBUTTONUP => {
             let xb = (ms.mouseData >> 16) as u16;
-            Some((
-                if xb == XBUTTON2 {
-                    MouseButton::X2
-                } else {
-                    MouseButton::X1
-                },
-                false,
-            ))
+            Some((if xb == XBUTTON2 { MouseButton::X2 } else { MouseButton::X1 }, false))
         }
         _ => None,
     }
@@ -719,15 +673,16 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         let ev = wparam as u32;
         let ms = &*(lparam as *const MSLLHOOKSTRUCT);
         // Ignore events we synthesized (check LLMHF_INJECTED + our dwExtraInfo marker).
-        let is_our_injection = (ms.flags & LLMHF_INJECTED) != 0 || ms.dwExtraInfo == 0xFA57_0000;
+        let is_our_injection = (ms.flags & LLMHF_INJECTED) != 0
+            || ms.dwExtraInfo == 0xFA57_0000;
         // Foreign injection detection: some tools (e.g. WeChat screenshot) inject mouse
         // events via SendInput without setting LLMHF_INJECTED. They arrive as a quick
         // down+up pair at the same coordinates. We detect this by checking for an
         // injected-looking LMB with no LLMHF_INJECTED flag — these should pass through
         // CallNextHookEx without entering the remap path, so the target app receives
         // the raw event and can handle it (e.g. WeChat needs to see the injection).
-        let is_foreign_injected_lmb =
-            ms.flags == 0 && ms.dwExtraInfo == 0 && (ev == 0x201 || ev == 0x202 || ev == 0x203);
+        let is_foreign_injected_lmb = (ms.flags == 0 && ms.dwExtraInfo == 0
+            && (ev == 0x201 || ev == 0x202 || ev == 0x203));
         if is_our_injection || is_foreign_injected_lmb {
             return CallNextHookEx(0, code, wparam, lparam);
         }
@@ -756,10 +711,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                 //                   Alt+Tab (UI is laid out horizontally); user expects
                 //                   wheel down to move selection to the right.
                 let forward = if hwheel { raw_delta > 0 } else { raw_delta < 0 };
-                crate::log::write(&format!(
-                    "wheel: ev={} hwheel={} raw_delta={} -> step({})",
-                    ev, hwheel, raw_delta, forward
-                ));
+                crate::log::write(&format!("wheel: ev={} hwheel={} raw_delta={} -> step({})",
+                    ev, hwheel, raw_delta, forward));
                 if crate::win::window_switcher::step(forward) {
                     return 1; // swallowed: drove the switcher
                 }
@@ -780,99 +733,90 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             // Window-drag gesture: behaviour depends on DRAG_MODE atomic.
             if drag_on {
                 match DRAG_MODE.load(Ordering::Relaxed) {
-                    0u8 => {
-                        // DragOutput::Move
-                        if let Some(ctrl) = DRAG.read().as_ref() {
-                            if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
-                                crate::win::window::move_window(ctrl.hwnd(), x, y);
-                            }
+                0u8 => {
+                    // DragOutput::Move
+                    if let Some(ctrl) = DRAG.read().as_ref() {
+                        if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
+                            crate::win::window::move_window(ctrl.hwnd(), x, y);
+
                         }
                     }
-                    1u8 => {
-                        // DragOutput::Scroll
-                        let mut drag = DRAG.write();
-                        if let Some(ctrl) = drag.as_mut() {
-                            let (dx, dy) = ctrl.consume_delta(ms.pt.x, ms.pt.y);
-                            if let Some(tx) = SCROLL_TX.lock().as_ref() {
-                                let refine = drag_scroll_refine(
-                                    crate::modifiers::shift_held(),
-                                    (crate::modifiers::state() & crate::modifiers::CTRL) != 0,
-                                );
-                                let scale = if refine.precision { 0.5_f64 } else { 1.0 };
-                                if refine.horizontal_only {
-                                    let h = (-(dx as f64 + dy as f64) * scale).round() as i32;
-                                    if h != 0 {
-                                        let _ = tx.try_send(WheelInput {
-                                            delta: h,
-                                            horizontal: true,
-                                        });
-                                    }
-                                } else {
-                                    let v = (-(dy as f64) * scale).round() as i32;
-                                    let h = (-(dx as f64) * scale).round() as i32;
-                                    if v != 0 {
-                                        let _ = tx.try_send(WheelInput {
-                                            delta: v,
-                                            horizontal: false,
-                                        });
-                                    }
-                                    if h != 0 {
-                                        let _ = tx.try_send(WheelInput {
-                                            delta: h,
-                                            horizontal: true,
-                                        });
-                                    }
+                }
+                1u8 => {
+                    // DragOutput::Scroll
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        let (dx, dy) = ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        if let Some(tx) = SCROLL_TX.lock().as_ref() {
+                            let refine = drag_scroll_refine(
+                                crate::modifiers::shift_held(),
+                                (crate::modifiers::state() & crate::modifiers::CTRL) != 0,
+                            );
+                            let scale = if refine.precision { 0.5_f64 } else { 1.0 };
+                            if refine.horizontal_only {
+                                let h = (-(dx as f64 + dy as f64) * scale).round() as i32;
+                                if h != 0 {
+                                    let _ = tx.try_send(WheelInput { delta: h, horizontal: true });
+                                }
+                            } else {
+                                let v = (-(dy as f64) * scale).round() as i32;
+                                let h = (-(dx as f64) * scale).round() as i32;
+                                if v != 0 {
+                                    let _ = tx.try_send(WheelInput { delta: v, horizontal: false });
+                                }
+                                if h != 0 {
+                                    let _ = tx.try_send(WheelInput { delta: h, horizontal: true });
                                 }
                             }
                         }
                     }
-                    2u8 => {
-                        // DragOutput::Navigate
-                        let mut drag = DRAG.write();
-                        if let Some(ctrl) = drag.as_mut() {
-                            ctrl.consume_delta(ms.pt.x, ms.pt.y);
-                            let (dx, dy) = ctrl.total_delta();
-                            const NAV_THRESH: i32 = 60;
-                            if dx.abs() > dy.abs() && dx.abs() > NAV_THRESH {
-                                let direction = if dx > 0 {
-                                    crate::remap::SwipeDirection::Forward
-                                } else {
-                                    crate::remap::SwipeDirection::Back
-                                };
-                                crate::remap::execute_effect(
-                                    &crate::remap::Effect::NavigationSwipe { direction },
-                                );
-                                ctrl.reset_accum();
-                            }
+                }
+                2u8 => {
+                    // DragOutput::Navigate
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        let (dx, dy) = ctrl.total_delta();
+                        const NAV_THRESH: i32 = 60;
+                        if dx.abs() > dy.abs() && dx.abs() > NAV_THRESH {
+                            let direction = if dx > 0 {
+                                crate::remap::SwipeDirection::Forward
+                            } else {
+                                crate::remap::SwipeDirection::Back
+                            };
+                            crate::remap::execute_effect(&crate::remap::Effect::NavigationSwipe { direction });
+                            ctrl.reset_accum();
+
                         }
                     }
-                    3u8 => {
-                        // DragOutput::TaskView
-                        let mut drag = DRAG.write();
-                        if let Some(ctrl) = drag.as_mut() {
-                            ctrl.consume_delta(ms.pt.x, ms.pt.y);
-                            let (_dx, dy) = ctrl.total_delta();
-                            const TASKVIEW_THRESH: i32 = 80;
-                            if dy < -TASKVIEW_THRESH {
-                                crate::remap::execute_effect(&crate::remap::Effect::TaskView);
-                                ctrl.reset_accum();
-                            }
+                }
+                3u8 => {
+                    // DragOutput::TaskView
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        let (_dx, dy) = ctrl.total_delta();
+                        const TASKVIEW_THRESH: i32 = 80;
+                        if dy < -TASKVIEW_THRESH {
+                            crate::remap::execute_effect(&crate::remap::Effect::TaskView);
+                            ctrl.reset_accum();
                         }
                     }
-                    4u8 => {
-                        // DragOutput::ShowDesktop
-                        let mut drag = DRAG.write();
-                        if let Some(ctrl) = drag.as_mut() {
-                            ctrl.consume_delta(ms.pt.x, ms.pt.y);
-                            let (_dx, dy) = ctrl.total_delta();
-                            const SHOWDESKTOP_THRESH: i32 = 80;
-                            if dy > SHOWDESKTOP_THRESH {
-                                crate::remap::execute_effect(&crate::remap::Effect::ShowDesktop);
-                                ctrl.reset_accum();
-                            }
+                }
+                4u8 => {
+                    // DragOutput::ShowDesktop
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        let (_dx, dy) = ctrl.total_delta();
+                        const SHOWDESKTOP_THRESH: i32 = 80;
+                        if dy > SHOWDESKTOP_THRESH {
+                            crate::remap::execute_effect(&crate::remap::Effect::ShowDesktop);
+                            ctrl.reset_accum();
                         }
                     }
-                    _ => {}
+                }
+                _ => {}
                 }
             }
         }
@@ -999,13 +943,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         if let Some(hwnd) = crate::win::window::window_at_cursor(&ms.pt) {
                             if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
                                 // Store hwnd + offset; swallowing happens in mousemove.
-                                ctrl.begin(
-                                    hwnd,
-                                    ms.pt.x - rect.left,
-                                    ms.pt.y - rect.top,
-                                    ms.pt.x,
-                                    ms.pt.y,
-                                );
+                                ctrl.begin(hwnd, ms.pt.x - rect.left, ms.pt.y - rect.top, ms.pt.x, ms.pt.y);
                             }
                         }
                     } else if !down && ctrl.is_active() && ctrl.matches_release(btn) {
@@ -1065,25 +1003,18 @@ fn stop_click_timer() {
     }
 }
 
+
 /// Called on each WM_TIMER message to advance ClickCycle hold detection.
 /// Runs tick() on the tracker and fires any hold effects that have expired.
 /// Invoked from the tray window's `wnd_proc` (the LL mouse hook never sees WM_TIMER).
 pub(crate) fn run_click_tick() {
     // Poll middle-button via GetAsyncKeyState (for mice whose driver intercepts
     // middle-click below the LL hook). Guard so one crash never cascades.
-    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        crate::win::window_switcher::poll_middle,
-    ))
-    .is_err()
-    {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(crate::win::window_switcher::poll_middle)).is_err() {
         crate::log::write("run_click_tick: poll_middle panicked");
     }
     // Guard tick() so Alt-stuck state is never caused by a panic in the timer path.
-    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        crate::win::window_switcher::tick,
-    ))
-    .is_err()
-    {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(crate::win::window_switcher::tick)).is_err() {
         crate::log::write("run_click_tick: window_switcher::tick panicked");
     }
 
@@ -1107,7 +1038,6 @@ pub(crate) fn run_click_tick() {
 
 // ─── FakeDrag helpers ─────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
 /// Send a mouse move event while a button is held (for FakeDrag).
 /// The button was already sent as held-down when the drag started.
 fn send_fake_drag_move(btn: MouseButton, dx: i32, dy: i32) {
@@ -1118,17 +1048,9 @@ fn send_fake_drag_move(btn: MouseButton, dx: i32, dy: i32) {
         _ => 0u32,
     };
     unsafe {
-        let mut input = INPUT {
-            r#type: INPUT_MOUSE,
-            ..std::mem::zeroed()
-        };
+        let mut input = INPUT { r#type: INPUT_MOUSE, ..std::mem::zeroed() };
         input.Anonymous.mi = MOUSEINPUT {
-            dx,
-            dy,
-            mouseData: data,
-            dwFlags: flags,
-            time: 0,
-            dwExtraInfo: OUR_MARKER,
+            dx, dy, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: OUR_MARKER,
         };
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
@@ -1144,17 +1066,9 @@ fn send_fake_drag_button_up(btn: MouseButton) {
         MouseButton::X2 => (MOUSEEVENTF_XUP, XBUTTON2 as u32),
     };
     unsafe {
-        let mut input = INPUT {
-            r#type: INPUT_MOUSE,
-            ..std::mem::zeroed()
-        };
+        let mut input = INPUT { r#type: INPUT_MOUSE, ..std::mem::zeroed() };
         input.Anonymous.mi = MOUSEINPUT {
-            dx: 0,
-            dy: 0,
-            mouseData: data,
-            dwFlags: flags,
-            time: 0,
-            dwExtraInfo: OUR_MARKER,
+            dx: 0, dy: 0, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: OUR_MARKER,
         };
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
@@ -1170,17 +1084,9 @@ fn send_fake_drag_button_down(btn: MouseButton) {
         MouseButton::X2 => (MOUSEEVENTF_XDOWN, XBUTTON2 as u32),
     };
     unsafe {
-        let mut input = INPUT {
-            r#type: INPUT_MOUSE,
-            ..std::mem::zeroed()
-        };
+        let mut input = INPUT { r#type: INPUT_MOUSE, ..std::mem::zeroed() };
         input.Anonymous.mi = MOUSEINPUT {
-            dx: 0,
-            dy: 0,
-            mouseData: data,
-            dwFlags: flags,
-            time: 0,
-            dwExtraInfo: OUR_MARKER,
+            dx: 0, dy: 0, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: OUR_MARKER,
         };
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }

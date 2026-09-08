@@ -18,6 +18,6 @@
 pub mod curve;
 pub mod engine;
 pub mod injector;
-pub mod subpixel;
 pub mod smoother;
+pub mod subpixel;
 pub mod wheel_tracker;

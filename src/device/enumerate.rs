@@ -10,19 +10,19 @@
 //! path (for `CreateFileW`), vid/pid, and serial string.
 
 use std::ptr::{null, null_mut};
+use windows_sys::core::GUID;
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
     SetupDiGetDeviceInterfaceDetailW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
     SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
 };
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
-    GUID_DEVINTERFACE_HID, HIDD_ATTRIBUTES, HidD_GetAttributes, HidD_GetSerialNumberString,
+    HidD_GetAttributes, HidD_GetSerialNumberString, GUID_DEVINTERFACE_HID, HIDD_ATTRIBUTES,
 };
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
-use windows_sys::core::GUID;
 
 const LOGITECH_VID: u16 = 0x046D;
 
@@ -79,12 +79,7 @@ pub fn enumerate_logitech() -> Vec<HidDeviceInfo> {
 }
 
 unsafe fn enumerate_one_guid(guid: &GUID) -> Vec<HidDeviceInfo> {
-    let dev_info = SetupDiGetClassDevsW(
-        guid,
-        null(),
-        0,
-        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
-    );
+    let dev_info = SetupDiGetClassDevsW(guid, null(), 0, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
     if dev_info == INVALID_HANDLE_VALUE {
         return Vec::new();
     }
@@ -101,14 +96,7 @@ unsafe fn enumerate_one_guid(guid: &GUID) -> Vec<HidDeviceInfo> {
         index += 1;
 
         let mut needed: u32 = 0;
-        SetupDiGetDeviceInterfaceDetailW(
-            dev_info,
-            &iface,
-            null_mut(),
-            0,
-            &mut needed,
-            null_mut(),
-        );
+        SetupDiGetDeviceInterfaceDetailW(dev_info, &iface, null_mut(), 0, &mut needed, null_mut());
         if needed == 0 {
             continue;
         }

@@ -2,14 +2,15 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_MOVE, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
-};
 use crate::config::Config;
 use crate::scroll::curve::{BezierAccelCurve, HybridCurve};
+use crate::scroll::engine::WheelInput;
 use crate::scroll::subpixel::SubPixelAccumulator;
 use crate::scroll::wheel_tracker::WheelTracker;
-use crate::scroll::engine::WheelInput;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_MOVE, MOUSEEVENTF_WHEEL,
+    MOUSEINPUT,
+};
 /// Tick cadence (~125 Hz = 8 ms).
 const TICK_MS: u64 = 8;
 /// Milliseconds after last tick before coast begins.
@@ -56,11 +57,7 @@ impl Coast2D {
     /// Public so PR-C tests can exercise the EMA behaviour without
     /// constructing a full `ScrollInjector`.
     #[allow(dead_code)]
-    pub fn update_direction_ema(
-        prev: (f64, f64),
-        dy: i32,
-        dx: i32,
-    ) -> (f64, f64) {
+    pub fn update_direction_ema(prev: (f64, f64), dy: i32, dx: i32) -> (f64, f64) {
         if dy == 0 && dx == 0 {
             return prev;
         }
@@ -84,7 +81,6 @@ impl Coast2D {
     fn update_direction(&mut self, dy: i32, dx: i32) {
         self.direction = Self::update_direction_ema(self.direction, dy, dx);
     }
-
 
     fn cancel(&mut self) {
         self.animating = false;
@@ -134,12 +130,8 @@ impl ScrollInjector {
         }
         let curve = self.shift_curve.as_ref().expect("checked is_some above");
         let hold = crate::modifiers::shift_hold_secs();
-        crate::scroll::curve::evaluate_shift_speedup(
-            curve,
-            hold,
-            self.shift_speedup_max_hold,
-        )
-        .max(1.0)
+        crate::scroll::curve::evaluate_shift_speedup(curve, hold, self.shift_speedup_max_hold)
+            .max(1.0)
     }
 
     /// Main loop: receive raw wheel events, drive trackers, emit smoothed deltas.
@@ -151,7 +143,11 @@ impl ScrollInjector {
                     "[wheel] rx_event delta={} horiz={}",
                     ev.delta, ev.horizontal
                 ));
-                let (dy, dx) = if ev.horizontal { (0, ev.delta) } else { (ev.delta, 0) };
+                let (dy, dx) = if ev.horizontal {
+                    (0, ev.delta)
+                } else {
+                    (ev.delta, 0)
+                };
                 self.handle_physical_tick(dy, dx, t0);
             }
             let now = Instant::now();
@@ -178,8 +174,18 @@ impl ScrollInjector {
             self.coast.scroll_dist = 0.0;
             self.coast.direction = (0.0, 0.0);
         }
-        let mult_v = (self.vertical.axis().speedup_curve().evaluate(va.swipe_count)).min(5.0);
-        let mult_h = (self.horizontal.axis().speedup_curve().evaluate(ha.swipe_count)).min(5.0);
+        let mult_v = (self
+            .vertical
+            .axis()
+            .speedup_curve()
+            .evaluate(va.swipe_count))
+        .min(5.0);
+        let mult_h = (self
+            .horizontal
+            .axis()
+            .speedup_curve()
+            .evaluate(ha.swipe_count))
+        .min(5.0);
         let multiplier = ((mult_v + mult_h) * 0.5).max(mult_v.min(mult_h));
         let shift = self.current_shift_factor();
         let tick_dist = ((dy.abs() + dx.abs()) as f64) * multiplier * shift;
@@ -221,8 +227,7 @@ impl ScrollInjector {
         }
         if let Some(last) = self.coast.last_tick {
             let elapsed_ms = now.duration_since(last).as_secs_f64() * 1000.0;
-            let enough_for_coast = self.coast.scroll_dist >= 240.0
-                && self.coast.swipe_count >= 2.0;
+            let enough_for_coast = self.coast.scroll_dist >= 240.0 && self.coast.swipe_count >= 2.0;
             if elapsed_ms >= COAST_DELAY_MS && enough_for_coast {
                 self.start_coast(now);
             }
@@ -239,8 +244,7 @@ impl ScrollInjector {
         let v_exp = self.vertical.config_drag_exponent();
         let h_exp = self.horizontal.config_drag_exponent();
         let exp = (v_exp + h_exp) * 0.5;
-        let stop = (self.vertical.config_stop_speed()
-            + self.horizontal.config_stop_speed()) * 0.5;
+        let stop = (self.vertical.config_stop_speed() + self.horizontal.config_stop_speed()) * 0.5;
         let base_ms = 250.0;
         let curve = HybridCurve::new(
             self.vertical.axis().accel_curve(),
@@ -269,11 +273,18 @@ impl ScrollInjector {
             self.maybe_start_coast(now);
             return (0, 0);
         }
-        let dt = self.coast.anim_start
+        let dt = self
+            .coast
+            .anim_start
             .map(|s| now.duration_since(s).as_secs_f64())
             .unwrap_or(0.0)
             .min(MAX_ANIMATION_SECS);
-        let total_dur = self.coast.curve.as_ref().map(|c| c.total_duration()).unwrap_or(0.5);
+        let total_dur = self
+            .coast
+            .curve
+            .as_ref()
+            .map(|c| c.total_duration())
+            .unwrap_or(0.5);
         let t_norm = (dt / total_dur).min(1.0);
         let (dy, dx) = if let Some(curve) = self.coast.curve.as_ref() {
             let new_frac = curve.evaluate(t_norm);
@@ -312,23 +323,55 @@ pub fn start(cfg: &Config) -> Option<std::sync::mpsc::SyncSender<WheelInput>> {
     let injector = ScrollInjector {
         rx,
         vertical: WheelTracker::new(
-            s.drag_exponent, s.drag_coefficient, s.stop_speed, s.speed, s.step,
-            s.time_smoothing_weight, s.velocity_a, s.velocity_y,
-            s.swipe_threshold, s.swipe_max_interval, s.swipe_min_tick_speed,
-            s.smoothness, s.precise, s.tick_interval_accel_end, s.tick_interval_max,
+            s.drag_exponent,
+            s.drag_coefficient,
+            s.stop_speed,
+            s.speed,
+            s.step,
+            s.time_smoothing_weight,
+            s.velocity_a,
+            s.velocity_y,
+            s.swipe_threshold,
+            s.swipe_max_interval,
+            s.swipe_min_tick_speed,
+            s.smoothness,
+            s.precise,
+            s.tick_interval_accel_end,
+            s.tick_interval_max,
             s.base_ms_per_step,
-            s.accel_x_min, s.accel_x_max, s.accel_y_min, s.accel_y_max,
-            s.accel_curvature, s.fast_scroll_threshold, s.fast_scroll_initial,
+            s.accel_x_min,
+            s.accel_x_max,
+            s.accel_y_min,
+            s.accel_y_max,
+            s.accel_curvature,
+            s.fast_scroll_threshold,
+            s.fast_scroll_initial,
             s.fast_scroll_exponential,
         ),
         horizontal: WheelTracker::new(
-            s.drag_exponent, s.drag_coefficient, s.stop_speed, s.speed, s.step,
-            s.time_smoothing_weight, s.velocity_a, s.velocity_y,
-            s.swipe_threshold, s.swipe_max_interval, s.swipe_min_tick_speed,
-            s.smoothness, s.precise, s.tick_interval_accel_end, s.tick_interval_max,
+            s.drag_exponent,
+            s.drag_coefficient,
+            s.stop_speed,
+            s.speed,
+            s.step,
+            s.time_smoothing_weight,
+            s.velocity_a,
+            s.velocity_y,
+            s.swipe_threshold,
+            s.swipe_max_interval,
+            s.swipe_min_tick_speed,
+            s.smoothness,
+            s.precise,
+            s.tick_interval_accel_end,
+            s.tick_interval_max,
             s.base_ms_per_step,
-            s.accel_x_min, s.accel_x_max, s.accel_y_min, s.accel_y_max,
-            s.accel_curvature, s.fast_scroll_threshold, s.fast_scroll_initial,
+            s.accel_x_min,
+            s.accel_x_max,
+            s.accel_y_min,
+            s.accel_y_max,
+            s.accel_curvature,
+            s.fast_scroll_threshold,
+            s.fast_scroll_initial,
             s.fast_scroll_exponential,
         ),
         shift_curve: match s.shift_speedup_curve.as_ref() {
@@ -384,7 +427,6 @@ pub fn send_mouse_move(dx: i32, dy: i32) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,7 +470,10 @@ mod tests {
             dir = Coast2D::update_direction_ema(dir, 100, 100);
         }
         dir = Coast2D::update_direction_ema(dir, 100, 0);
-        assert!(dir.1 > 0.2, "single vertical tick should not erase prior dx");
+        assert!(
+            dir.1 > 0.2,
+            "single vertical tick should not erase prior dx"
+        );
         assert!(dir.0 > dir.1);
     }
 

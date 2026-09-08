@@ -12,6 +12,7 @@ use crate::config::AccelConfig;
 /// Returns `min_factor` at rest/slow speed and rises toward `max_factor` as
 /// speed grows, saturating via a smooth `speed/(speed+sensitivity)` curve.
 /// Pure and monotonic; no Win32, fully testable.
+#[allow(dead_code)]
 pub fn accel_factor(speed: f64, cfg: &AccelConfig) -> f64 {
     if speed <= 0.0 {
         return cfg.min_factor;
@@ -22,7 +23,9 @@ pub fn accel_factor(speed: f64, cfg: &AccelConfig) -> f64 {
 }
 
 /// Tracks cursor position across move events and produces accelerated deltas.
+#[allow(dead_code)]
 pub struct PointerAccel {
+    #[allow(dead_code)]
     last: Option<(i32, i32)>,
 }
 
@@ -33,6 +36,7 @@ impl PointerAccel {
 
     /// Given the current absolute cursor position, return the relative delta to
     /// inject (already accelerated), or `None` for the first sample (no history).
+    #[allow(dead_code)]
     pub fn on_move(&mut self, x: i32, y: i32, cfg: &AccelConfig) -> Option<(i32, i32)> {
         let prev = match self.last {
             Some(p) => p,
@@ -47,12 +51,16 @@ impl PointerAccel {
         let dy = y - prev.1;
         let speed = ((dx * dx + dy * dy) as f64).sqrt();
         let f = accel_factor(speed, cfg);
-        Some((((dx as f64) * f).round() as i32, ((dy as f64) * f).round() as i32))
+        Some((
+            ((dx as f64) * f).round() as i32,
+            ((dy as f64) * f).round() as i32,
+        ))
     }
 
     /// Re-sync the tracker to the actual cursor position after an injected
     /// move.  Call this after `send_mouse_move` so that screen-edge clamping
     /// doesn't cause the tracker to drift.
+    #[allow(dead_code)]
     pub fn re_sync(&mut self, actual_x: i32, actual_y: i32) {
         self.last = Some((actual_x, actual_y));
     }
@@ -92,7 +100,7 @@ mod tests {
         let c = cfg();
         let mut a = PointerAccel::new();
         assert_eq!(a.on_move(0, 0, &c), None); // first sample: no history
-        // Slow move (~10px) -> ~1.0x -> unchanged.
+                                               // Slow move (~10px) -> ~1.0x -> unchanged.
         assert_eq!(a.on_move(10, 0, &c), Some((10, 0)));
         // Fast move (1000px) -> ~1.5x -> ~1500.
         let (dx, dy) = a.on_move(1010, 0, &c).unwrap();

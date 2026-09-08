@@ -7,11 +7,11 @@
 
 use std::sync::Arc;
 
- use std::io::{Read, Write};
- use std::net::{IpAddr, SocketAddr, TcpStream};
- use std::sync::LazyLock;
-use std::time::Duration;
+use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::os::windows::process::CommandExt;
+use std::sync::LazyLock;
+use std::time::Duration;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -51,7 +51,7 @@ pub fn start_server() {
     std::thread::spawn(start_server_impl);
 }
 
-	fn start_server_impl() {
+fn start_server_impl() {
     let ip = match local_ip() {
         Some(ip) => ip,
         None => {
@@ -98,7 +98,12 @@ pub fn stop_server() {
     crate::log::write("remote: trackpad server stopped");
 }
 
-fn listen(ip: IpAddr, port: u16, token: String, _listen_tx: std::sync::mpsc::Sender<std::net::TcpListener>) {
+fn listen(
+    ip: IpAddr,
+    port: u16,
+    token: String,
+    _listen_tx: std::sync::mpsc::Sender<std::net::TcpListener>,
+) {
     let addr = SocketAddr::new(ip, port);
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
@@ -149,9 +154,7 @@ fn handle_conn(mut stream: TcpStream, token: String) {
         .peer_addr()
         .map(|a| a.ip().to_string())
         .unwrap_or_default();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
 
     // Read HTTP headers up to the blank line.
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -185,7 +188,9 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                         if let Some(pos) = low.find("sec-websocket-key:") {
                             ws_key = line[pos + "sec-websocket-key:".len()..].trim().to_string();
                         } else if let Some(pos) = low.find("sec-websocket-extensions:") {
-                            ws_ext = line[pos + "sec-websocket-extensions:".len()..].trim().to_string();
+                            ws_ext = line[pos + "sec-websocket-extensions:".len()..]
+                                .trim()
+                                .to_string();
                         }
                     }
 
@@ -196,7 +201,8 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                     is_report = req_path.starts_with("/report");
                     is_manifest = req_path == "/manifest.json";
                     _is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
-                    is_winlist = req_path == "/winlist.html" || req_path.starts_with("/winlist.html?");
+                    is_winlist =
+                        req_path == "/winlist.html" || req_path.starts_with("/winlist.html?");
                     break;
                 }
                 if buf.len() > 16384 {
@@ -207,38 +213,30 @@ fn handle_conn(mut stream: TcpStream, token: String) {
         }
     }
 
-
-
-
     dbg_log(&format!(
         "remote: conn from {ip} is_ws={is_ws} is_qr={is_qr} first_line='{first_line}'"
     ));
     if is_ws {
-
         dbg_log(&format!(
             "remote: ws conn from {ip} key_len={} first_line='{first_line}'",
             ws_key.len()
         ));
 
         if ws_key.is_empty() || ws_handshake(&mut stream, &ws_key, &ws_ext).is_err() {
-            
-dbg_log(&format!("remote: ws handshake FAIL from {ip}"));
+            dbg_log(&format!("remote: ws handshake FAIL from {ip}"));
             return;
         }
-        
-dbg_log(&format!("remote: ws handshake OK from {ip}"));
+
+        dbg_log(&format!("remote: ws handshake OK from {ip}"));
         ws_loop(stream, &token);
-
-
     } else if is_qr {
         serve_qr_page(&mut stream);
     } else if is_diag {
         serve_diag(&mut stream);
     } else if is_report {
         dbg_log(&format!("remote: CLIENT REPORT from {ip}: {first_line}"));
-        let _ = stream.write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
-        );
+        let _ = stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
     } else if is_manifest {
         serve_manifest(&mut stream);
     } else if is_winlist {
@@ -276,18 +274,19 @@ fn ws_handshake(stream: &mut TcpStream, key: &str, ext: &str) -> std::io::Result
         ));
     }
     let accept = ws_accept(key);
-    let resp = format!(        "HTTP/1.1 101 Switching Protocols\r\n\
+    let resp = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
          Upgrade: websocket\r\n\
          Connection: Upgrade\r\n\
          Sec-WebSocket-Accept: {accept}\r\n\
          \r\n"
     );
     let hexstr: String = resp.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-    dbg_log(&format!("remote: ws_handshake key='{key}' accept='{accept}' ext='{ext}' resp_hex={hexstr}"));
+    dbg_log(&format!(
+        "remote: ws_handshake key='{key}' accept='{accept}' ext='{ext}' resp_hex={hexstr}"
+    ));
     stream.write_all(resp.as_bytes())
 }
-
-
 
 fn ws_loop(mut stream: TcpStream, token: &str) {
     let ip = stream
@@ -298,8 +297,8 @@ fn ws_loop(mut stream: TcpStream, token: &str) {
     // in handle_conn would close a connected-but-quiet trackpad after 10s.
     // Instead probe liveness with a WebSocket ping and only reap peers that stop
     // answering (e.g. phone out of range). Browsers auto-pong, so idle stays up.
-    
-dbg_log(&format!("remote: ws loop start {ip}"));
+
+    dbg_log(&format!("remote: ws loop start {ip}"));
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let mut authed = false;
     let mut failed_probes = 0; // reap peers that never answer a ping
@@ -330,7 +329,8 @@ dbg_log(&format!("remote: ws loop start {ip}"));
                             // to be installed on the main thread (where the message pump runs).
                             // The main thread's message loop will process this request and call
                             // start_win_event_hooks() on the correct thread.
-                            crate::win::window_list::REMOTE_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+                            crate::win::window_list::REMOTE_ACTIVE
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
                             crate::win::message_loop::request_hook_install();
 
                             // Push the full window list immediately so the
@@ -344,7 +344,11 @@ dbg_log(&format!("remote: ws loop start {ip}"));
                                 "desktops": desktops,
                                 "count": count,
                             });
-                            let _ = crate::remote::write_frame(&mut stream, 0x1, json.to_string().as_bytes());
+                            let _ = crate::remote::write_frame(
+                                &mut stream,
+                                0x1,
+                                json.to_string().as_bytes(),
+                            );
                             dbg_log(&format!("remote: ws {ip} authed -> window_list pushed ({count} windows), REMOTE_ACTIVE=true"));
                         }
                     }
@@ -370,15 +374,21 @@ dbg_log(&format!("remote: ws loop start {ip}"));
                 // Probe with a WebSocket ping; if we can't write it the peer is
                 // dead, otherwise keep the channel alive — browsers auto-pong.
                 if write_frame(&mut stream, 0x9, &[]).is_err() {
-                    dbg_log(&format!("remote: ws {ip} read-err + probe write fail -> drop"));
+                    dbg_log(&format!(
+                        "remote: ws {ip} read-err + probe write fail -> drop"
+                    ));
                     return;
                 }
                 failed_probes += 1;
                 if failed_probes > 3 {
-                    dbg_log(&format!("remote: ws {ip} {failed_probes} probes unanswered -> drop"));
+                    dbg_log(&format!(
+                        "remote: ws {ip} {failed_probes} probes unanswered -> drop"
+                    ));
                     return;
                 }
-                dbg_log(&format!("remote: ws {ip} read-err -> ping probe sent ({failed_probes})"));
+                dbg_log(&format!(
+                    "remote: ws {ip} read-err -> ping probe sent ({failed_probes})"
+                ));
             }
         }
     }
@@ -568,7 +578,11 @@ fn dispatch(
     authed: &mut bool,
     stream: &mut TcpStream,
 ) -> std::io::Result<()> {
-    dbg_log(&format!("dispatch: raw payload len={} text={:.200}", payload.len(), String::from_utf8_lossy(payload)));
+    dbg_log(&format!(
+        "dispatch: raw payload len={} text={:.200}",
+        payload.len(),
+        String::from_utf8_lossy(payload)
+    ));
     let v: serde_json::Value = match serde_json::from_slice(payload) {
         Ok(v) => v,
         Err(_) => return Ok(()), // ignore malformed
@@ -593,7 +607,10 @@ fn dispatch(
                     "windows": windows,
                     "desktops": desktops,
                 });
-                dbg_log(&format!("dispatch: window_list pushed to client ({} windows)", windows.len()));
+                dbg_log(&format!(
+                    "dispatch: window_list pushed to client ({} windows)",
+                    windows.len()
+                ));
                 let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
             } else {
                 // the browser delivers the reject message and stops retrying
@@ -665,7 +682,10 @@ fn dispatch(
                 "desktops": desktops,
                 "count": count,
             });
-            crate::log::write(&format!("dispatch: sending window_list reply windows={}", count));
+            crate::log::write(&format!(
+                "dispatch: sending window_list reply windows={}",
+                count
+            ));
             let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
         }
         "switch_window" => {
@@ -760,8 +780,10 @@ fn serve_manifest(stream: &mut TcpStream) {
     let _ = stream.write_all(body);
 }
 
+#[allow(dead_code)]
 static SW_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sw.js"));
 
+#[allow(dead_code)]
 fn serve_sw(stream: &mut TcpStream) {
     let body = SW_JS.as_bytes();
     let header = format!(
@@ -873,7 +895,6 @@ fn local_ip() -> Option<IpAddr> {
     None
 }
 
-
 fn pick_port(ip: IpAddr) -> Option<u16> {
     for p in 18765..=18775 {
         if std::net::TcpListener::bind(SocketAddr::new(ip, p)).is_ok() {
@@ -973,7 +994,13 @@ fn sha1(data: &[u8]) -> [u8; 20] {
     fn rol(v: u32, n: u32) -> u32 {
         (v << n) | (v >> (32 - n))
     }
-    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
     let ml = (data.len() as u64) * 8;
     let mut msg = data.to_vec();
     msg.push(0x80);
@@ -1030,8 +1057,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
 }
 
 fn base64(data: &[u8]) -> String {
-    const T: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut s = String::new();
     for chunk in data.chunks(3) {
         let b = [
@@ -1042,19 +1068,29 @@ fn base64(data: &[u8]) -> String {
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32);
         s.push(T[((n >> 18) & 63) as usize] as char);
         s.push(T[((n >> 12) & 63) as usize] as char);
-        s.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        s.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        s.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        s.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     s
 }
 
 // ─── embedded trackpad page ─────────────────────────────────────────────────
 
-
-const TRACKPAD_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/trackpad.html"));
+const TRACKPAD_HTML: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/trackpad.html"));
 const QR_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/qr.html"));
-const MANIFEST_JSON: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/manifest.json"));
-const WINLIST_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/winlist.html"));
+const MANIFEST_JSON: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/manifest.json"));
+const WINLIST_HTML: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/winlist.html"));
 
 #[cfg(test)]
 mod tests {
@@ -1131,8 +1167,7 @@ mod tests {
             // Count `var <name> =` declarations (rough heuristic, skips
             // re-declarations of same name in different scopes which are
             // legal in JS).
-            let mut counts: std::collections::HashMap<&str, u32> =
-                std::collections::HashMap::new();
+            let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
             let bytes = body.as_bytes();
             let mut i = 0;
             while i < bytes.len() {
@@ -1208,17 +1243,33 @@ mod tests {
                 let c = bytes[i];
                 let next = bytes.get(i + 1).copied();
                 if in_line_com {
-                    if c == b'\n' { in_line_com = false; }
+                    if c == b'\n' {
+                        in_line_com = false;
+                    }
                 } else if in_block_com {
-                    if c == b'*' && next == Some(b'/') { in_block_com = false; i += 1; }
+                    if c == b'*' && next == Some(b'/') {
+                        in_block_com = false;
+                        i += 1;
+                    }
                 } else if let Some(q) = in_str {
-                    if c == b'\\' { i += 1; }
-                    else if c == q { in_str = None; }
+                    if c == b'\\' {
+                        i += 1;
+                    } else if c == q {
+                        in_str = None;
+                    }
                 } else {
                     match c {
-                        b'/' if next == Some(b'/') => { in_line_com = true; i += 1; }
-                        b'/' if next == Some(b'*') => { in_block_com = true; i += 1; }
-                        b'"' | b'\'' | b'`' => { in_str = Some(c); }
+                        b'/' if next == Some(b'/') => {
+                            in_line_com = true;
+                            i += 1;
+                        }
+                        b'/' if next == Some(b'*') => {
+                            in_block_com = true;
+                            i += 1;
+                        }
+                        b'"' | b'\'' | b'`' => {
+                            in_str = Some(c);
+                        }
                         b'{' => depth[0] += 1,
                         b'}' => depth[0] -= 1,
                         b'(' => depth[1] += 1,
@@ -1239,11 +1290,21 @@ mod tests {
             //    declared as a `var NAME = ...` (or `var A = ..., NAME = ...`)
             //    somewhere in this script block. Catches the LONGPRESS_MS bug.
             let required = [
- & "SENS", "ACCEL_REF", "ACCEL_SLOPE", "ACCEL_MAX_MULT",
- & "MOVE_EMA", "SCROLL_GAIN", "TAP_MS", "TAP_PX",
- & "SWIPE_PX", "DECIDE_PX", "PINCH_BIAS", "DIAG_MIN",
- & "DIAG_RATIO", "LONGPRESS_MS",
- ];
+                &"SENS",
+                "ACCEL_REF",
+                "ACCEL_SLOPE",
+                "ACCEL_MAX_MULT",
+                &"MOVE_EMA",
+                "SCROLL_GAIN",
+                "TAP_MS",
+                "TAP_PX",
+                &"SWIPE_PX",
+                "DECIDE_PX",
+                "PINCH_BIAS",
+                "DIAG_MIN",
+                &"DIAG_RATIO",
+                "LONGPRESS_MS",
+            ];
             // Manual word-boundary check: find every occurrence of `name`
             // and ensure neither side is an identifier character.
             let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
@@ -1254,8 +1315,8 @@ mod tests {
                 while j + needle.len() <= bytes.len() {
                     if &bytes[j..j + needle.len()] == needle {
                         let prev_ok = j == 0 || !is_ident(bytes[j - 1]);
-                        let next_ok = j + needle.len() == bytes.len()
-                            || !is_ident(bytes[j + needle.len()]);
+                        let next_ok =
+                            j + needle.len() == bytes.len() || !is_ident(bytes[j + needle.len()]);
                         if prev_ok && next_ok {
                             hit = true;
                             break;
@@ -1280,10 +1341,18 @@ mod tests {
     fn trackpad_html_has_required_dom_ids() {
         let html = TRACKPAD_HTML;
         for id in &[
-            "pad", "status", "batteries", "fingers",
-            "banner", "bannerText",
-            "inputToggle", "inputBar", "textField",
-            "charCount", "collapseBtn", "sendBtn",
+            "pad",
+            "status",
+            "batteries",
+            "fingers",
+            "banner",
+            "bannerText",
+            "inputToggle",
+            "inputBar",
+            "textField",
+            "charCount",
+            "collapseBtn",
+            "sendBtn",
         ] {
             let needle = format!("id=\"{id}\"");
             assert!(
@@ -1320,12 +1389,19 @@ mod integration {
         let mut total = 0;
         while total < buf.len() {
             let n = s.read(&mut buf[total..]).unwrap();
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             total += n;
-            if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") { break; }
+            if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
         }
         let resp = String::from_utf8_lossy(&buf[..total]);
-        assert!(resp.contains("101"), "expected 101 switching protocols, got: {resp}");
+        assert!(
+            resp.contains("101"),
+            "expected 101 switching protocols, got: {resp}"
+        );
     }
 
     /// Read one server text frame's payload as a String.
@@ -1374,10 +1450,8 @@ mod integration {
         let mut s2 = connect_with_retry(port).expect("connect bad");
         s2.set_read_timeout(Some(Duration::from_secs(5))).ok();
         ws_handshake(&mut s2, "dGhlIHNhbXBsZSBub25jZQ==");
-        s2.write_all(&masked_text_frame(
-            b"{\"t\":\"auth\",\"token\":\"wrong\"}",
-        ))
-        .unwrap();
+        s2.write_all(&masked_text_frame(b"{\"t\":\"auth\",\"token\":\"wrong\"}"))
+            .unwrap();
         let reject = read_text(&mut s2);
         assert!(
             reject.contains("\"reject\""),
@@ -1641,7 +1715,10 @@ mod integration {
         //    none of the above dispatches panicked or closed the socket.
         s.write_all(&client_ping_frame()).unwrap();
         let (op, _) = client_read_frame(&mut s);
-        assert_eq!(op, 0xA, "expected pong (0xA) after dispatching all commands");
+        assert_eq!(
+            op, 0xA,
+            "expected pong (0xA) after dispatching all commands"
+        );
 
         // 5) a second command round still works post-pong
         s.write_all(&masked_text_frame(b"{\"t\":\"move\",\"dx\":1,\"dy\":1}"))
@@ -1686,9 +1763,11 @@ mod integration {
 
         // 2) then a clean close frame (0x8) with status code 1008
         let (op2, p2) = client_read_frame(&mut s);
-        assert_eq!(op2, 0x8, "expected a clean close frame, got opcode {op2} (a bare 1006 would loop the client)");
+        assert_eq!(
+            op2, 0x8,
+            "expected a clean close frame, got opcode {op2} (a bare 1006 would loop the client)"
+        );
         let code = ((p2[0] as u16) << 8) | (p2[1] as u16);
         assert_eq!(code, 1008, "expected close code 1008, got {code}");
     }
 }
-

@@ -3,16 +3,17 @@
 //! The BOLT/LIGHTSPEED receiver does NOT support standard HID++ 2.0, so we
 //! connect to G Hub's local WebSocket (ws://localhost:9010) to read battery.
 //! G Hub must be running; we auto-start it silently if needed.
-use tungstenite::{connect, Message};
-use tungstenite::client::IntoClientRequest;
 use crate::device::cache::BatteryInfo;
+use tungstenite::client::IntoClientRequest;
+use tungstenite::{connect, Message};
 
 /// Check if port 9010 is accepting connections (G Hub WebSocket ready).
 fn is_lghub_port_ready() -> bool {
     std::net::TcpStream::connect_timeout(
         &"127.0.0.1:9010".parse().unwrap(),
         std::time::Duration::from_millis(500),
-    ).is_ok()
+    )
+    .is_ok()
 }
 
 /// Verify G Hub's WebSocket is reachable, without ever starting G Hub itself.
@@ -34,10 +35,9 @@ fn ensure_lghub_running() -> bool {
 /// Read battery from G Hub WebSocket. Returns (percentage, charging).
 fn read_battery_ws() -> Option<(u8, bool)> {
     let mut request = "ws://localhost:9010".into_client_request().ok()?;
-    request.headers_mut().insert(
-        "Sec-WebSocket-Protocol",
-        "json".parse().ok()?,
-    );
+    request
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", "json".parse().ok()?);
 
     let (mut ws, _) = connect(request).ok()?;
 
@@ -49,8 +49,10 @@ fn read_battery_ws() -> Option<(u8, bool)> {
         serde_json::json!({
             "path": "/devices/list",
             "verb": "GET"
-        }).to_string(),
-    )).ok()?;
+        })
+        .to_string(),
+    ))
+    .ok()?;
 
     let devices_msg = ws.read_message().ok()?;
     let devices_text = match devices_msg {
@@ -63,7 +65,8 @@ fn read_battery_ws() -> Option<(u8, bool)> {
     let device_infos = json["payload"]["deviceInfos"].as_array()?;
 
     // Find first wireless device
-    let wireless = device_infos.iter()
+    let wireless = device_infos
+        .iter()
         .find(|d| d["connectionType"] == "WIRELESS")?;
     let id = wireless["id"].as_str()?;
 
@@ -72,8 +75,10 @@ fn read_battery_ws() -> Option<(u8, bool)> {
         serde_json::json!({
             "path": format!("/battery/{}/state", id),
             "verb": "GET"
-        }).to_string(),
-    )).ok()?;
+        })
+        .to_string(),
+    ))
+    .ok()?;
 
     let bat_msg = ws.read_message().ok()?;
     let bat_text = match bat_msg {
@@ -138,10 +143,9 @@ pub fn read_device_list() -> Option<Vec<serde_json::Value>> {
     }
 
     let mut request = "ws://localhost:9010".into_client_request().ok()?;
-    request.headers_mut().insert(
-        "Sec-WebSocket-Protocol",
-        "json".parse().ok()?,
-    );
+    request
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", "json".parse().ok()?);
 
     let (mut ws, _) = connect(request).ok()?;
     let _welcome = ws.read_message().ok()?;
@@ -150,8 +154,10 @@ pub fn read_device_list() -> Option<Vec<serde_json::Value>> {
         serde_json::json!({
             "path": "/devices/list",
             "verb": "GET"
-        }).to_string(),
-    )).ok()?;
+        })
+        .to_string(),
+    ))
+    .ok()?;
 
     let msg = ws.read_message().ok()?;
     let text = match msg {

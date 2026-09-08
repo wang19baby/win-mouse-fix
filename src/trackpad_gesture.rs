@@ -91,7 +91,11 @@ pub fn classify_swipe(
             GestureName::SnapDown
         }),
         (true, SwipeAxis::Diagonal { up, left }) => {
-            let base = if up { GestureName::SnapUp } else { GestureName::SnapDown };
+            let base = if up {
+                GestureName::SnapUp
+            } else {
+                GestureName::SnapDown
+            };
             gesture(if left {
                 GestureName::SnapUpLeft
             } else if matches!(base, GestureName::SnapUp) {
@@ -114,7 +118,11 @@ pub fn classify_swipe(
             GestureName::ShowDesktop
         }),
         (false, SwipeAxis::Diagonal { up, left }) => gesture(if up {
-            if left { GestureName::UpLeft } else { GestureName::UpRight }
+            if left {
+                GestureName::UpLeft
+            } else {
+                GestureName::UpRight
+            }
         } else if left {
             GestureName::DownLeft
         } else {
@@ -130,10 +138,7 @@ fn gesture(name: GestureName) -> GestureName {
 fn classify_axis(dx: f32, dy: f32, diag_min: f32, diag_ratio: f32) -> SwipeAxis {
     let ax = dx.abs();
     let ay = dy.abs();
-    let diag = ax > diag_min
-        && ay > diag_min
-        && ax < ay * diag_ratio
-        && ay < ax * diag_ratio;
+    let diag = ax > diag_min && ay > diag_min && ax < ay * diag_ratio && ay < ax * diag_ratio;
     if diag {
         SwipeAxis::Diagonal {
             up: dy < 0.0,
@@ -210,32 +215,40 @@ mod tests {
     #[test]
     fn ios_three_finger_swipe_up_fires_taskview() {
         let g = classify_swipe(
-            Platform::Ios, 3, 0.0, -100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Ios,
+            3,
+            0.0,
+            -100.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::TaskView));
     }
 
     #[test]
     fn ios_three_finger_swipe_down_fires_showdesktop() {
-        let g = classify_swipe(
-            Platform::Ios, 3, 0.0, 100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
-        );
+        let g = classify_swipe(Platform::Ios, 3, 0.0, 100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO);
         assert_eq!(g, Some(GestureName::ShowDesktop));
     }
 
     #[test]
     fn ios_three_finger_swipe_left_fires_desktop_left() {
         let g = classify_swipe(
-            Platform::Ios, 3, -100.0, 0.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Ios,
+            3,
+            -100.0,
+            0.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::DesktopLeft));
     }
 
     #[test]
     fn ios_three_finger_swipe_right_fires_desktop_right() {
-        let g = classify_swipe(
-            Platform::Ios, 3, 100.0, 0.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
-        );
+        let g = classify_swipe(Platform::Ios, 3, 100.0, 0.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO);
         assert_eq!(g, Some(GestureName::DesktopRight));
     }
 
@@ -243,7 +256,13 @@ mod tests {
     fn ios_four_finger_swipe_fires_snap_not_navigation() {
         // Four-finger on iOS is the "window snap" tier, not desktop nav.
         let g = classify_swipe(
-            Platform::Ios, 4, 0.0, -100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Ios,
+            4,
+            0.0,
+            -100.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::SnapUp));
     }
@@ -255,7 +274,13 @@ mod tests {
         // the OS handle it (or let the user move on with no trackpad side
         // effect).
         let g = classify_swipe(
-            Platform::Android, 3, 0.0, -100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Android,
+            3,
+            0.0,
+            -100.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, None);
     }
@@ -264,7 +289,13 @@ mod tests {
     fn android_four_finger_swipe_up_fires_taskview() {
         // On Android, the "navigation" tier starts at 4 fingers.
         let g = classify_swipe(
-            Platform::Android, 4, 0.0, -100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Android,
+            4,
+            0.0,
+            -100.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::TaskView));
     }
@@ -272,7 +303,13 @@ mod tests {
     #[test]
     fn android_four_finger_swipe_left_fires_desktop_left() {
         let g = classify_swipe(
-            Platform::Android, 4, -100.0, 0.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Android,
+            4,
+            -100.0,
+            0.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::DesktopLeft));
     }
@@ -280,7 +317,13 @@ mod tests {
     #[test]
     fn android_five_finger_swipe_fires_snap() {
         let g = classify_swipe(
-            Platform::Android, 5, 0.0, -100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Android,
+            5,
+            0.0,
+            -100.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::SnapUp));
     }
@@ -289,7 +332,13 @@ mod tests {
     fn android_six_finger_swipe_also_snap() {
         // Any count above max-tier should still snap (graceful overflow).
         let g = classify_swipe(
-            Platform::Android, 6, 0.0, 100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Android,
+            6,
+            0.0,
+            100.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::SnapDown));
     }
@@ -340,18 +389,14 @@ mod tests {
     #[test]
     fn swipe_below_threshold_returns_none() {
         // Tiny jitter shouldn't fire a snap/nav.
-        let g = classify_swipe(
-            Platform::Ios, 3, 5.0, -5.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
-        );
+        let g = classify_swipe(Platform::Ios, 3, 5.0, -5.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO);
         assert_eq!(g, None);
     }
 
     #[test]
     fn single_axis_motion_below_swipe_px_returns_none() {
         // dx dominates but only barely — within noise band.
-        let g = classify_swipe(
-            Platform::Ios, 3, 30.0, 5.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
-        );
+        let g = classify_swipe(Platform::Ios, 3, 30.0, 5.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO);
         assert_eq!(g, None);
     }
 
@@ -361,7 +406,13 @@ mod tests {
     fn clear_diagonal_on_ios_three_finger_emits_named_corner() {
         // dx and dy both well above DIAG_MIN and within DIAG_RATIO → diagonal.
         let g = classify_swipe(
-            Platform::Ios, 3, -80.0, -80.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Ios,
+            3,
+            -80.0,
+            -80.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::UpLeft));
     }
@@ -369,7 +420,13 @@ mod tests {
     #[test]
     fn clear_diagonal_on_android_four_finger_emits_named_corner() {
         let g = classify_swipe(
-            Platform::Android, 4, -80.0, -80.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Android,
+            4,
+            -80.0,
+            -80.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::UpLeft));
     }
@@ -378,7 +435,13 @@ mod tests {
     fn nearly_horizontal_swipe_does_not_count_as_diagonal() {
         // dx=100, dy=5 → ax >> ay, horizontal axis.
         let g = classify_swipe(
-            Platform::Ios, 3, -100.0, 5.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Ios,
+            3,
+            -100.0,
+            5.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert_eq!(g, Some(GestureName::DesktopLeft));
     }
@@ -388,11 +451,15 @@ mod tests {
     #[test]
     fn mirrored_horizontal_swipes_give_mirrored_gestures() {
         let left = classify_swipe(
-            Platform::Ios, 3, -100.0, 0.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Ios,
+            3,
+            -100.0,
+            0.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
-        let right = classify_swipe(
-            Platform::Ios, 3, 100.0, 0.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
-        );
+        let right = classify_swipe(Platform::Ios, 3, 100.0, 0.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO);
         assert_eq!(left, Some(GestureName::DesktopLeft));
         assert_eq!(right, Some(GestureName::DesktopRight));
     }
@@ -400,11 +467,15 @@ mod tests {
     #[test]
     fn mirrored_vertical_swipes_give_mirrored_gestures() {
         let up = classify_swipe(
-            Platform::Ios, 3, 0.0, -100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Ios,
+            3,
+            0.0,
+            -100.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
-        let down = classify_swipe(
-            Platform::Ios, 3, 0.0, 100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
-        );
+        let down = classify_swipe(Platform::Ios, 3, 0.0, 100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO);
         assert_eq!(up, Some(GestureName::TaskView));
         assert_eq!(down, Some(GestureName::ShowDesktop));
     }
@@ -416,7 +487,13 @@ mod tests {
         // Earlier change raised the iOS threshold to 4 — that broke iOS UX.
         // 3-finger swipe on iOS must remain a navigation gesture.
         let g = classify_swipe(
-            Platform::Ios, 3, 0.0, -100.0, SWIPE_PX, DIAG_MIN, DIAG_RATIO,
+            Platform::Ios,
+            3,
+            0.0,
+            -100.0,
+            SWIPE_PX,
+            DIAG_MIN,
+            DIAG_RATIO,
         );
         assert!(matches!(g, Some(GestureName::TaskView)));
         assert!(!matches!(g, Some(GestureName::SnapUp)));

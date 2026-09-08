@@ -25,8 +25,7 @@ impl BatteryInfo {
     }
 }
 
-pub static BATTERY: LazyLock<RwLock<Option<BatteryInfo>>> =
-    LazyLock::new(|| RwLock::new(None));
+pub static BATTERY: LazyLock<RwLock<Option<BatteryInfo>>> = LazyLock::new(|| RwLock::new(None));
 
 /// Last-known DPI state for the screen under the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,9 +42,11 @@ pub static DPI: LazyLock<RwLock<Option<DpiState>>> = LazyLock::new(|| RwLock::ne
 /// Returns the fresh value (or `None` if no monitor was found).
 pub fn update_dpi(base_dpi: u16, ref_dpi: i32, min_dpi: u16, max_dpi: u16) -> Option<DpiState> {
     let state = crate::device::dpi::cursor_monitor().map(|m| {
-        let target =
-            crate::device::dpi::target_dpi(base_dpi, ref_dpi, m.dpi_x, min_dpi, max_dpi);
-        DpiState { monitor_dpi: m.dpi_x, target_hw_dpi: target }
+        let target = crate::device::dpi::target_dpi(base_dpi, ref_dpi, m.dpi_x, min_dpi, max_dpi);
+        DpiState {
+            monitor_dpi: m.dpi_x,
+            target_hw_dpi: target,
+        }
     });
     *DPI.write() = state;
     state

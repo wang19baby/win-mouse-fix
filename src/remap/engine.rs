@@ -3,7 +3,10 @@
 //!
 //! Mirrors mac-mouse-fix's `RemapSwizzler.swift` + `RemapsAnalyzer.swift`.
 
-use super::{ActiveModifiers, ClickDuration, Effect, MouseButton, RemapEntry, RemapTable, Trigger, ActionPhase};
+use super::{
+    ActionPhase, ActiveModifiers, ClickDuration, Effect, MouseButton, RemapEntry, RemapTable,
+    Trigger,
+};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 
@@ -23,7 +26,12 @@ pub struct RemapEngine {
 impl RemapEngine {
     pub fn new(entries: Vec<RemapEntry>) -> Self {
         let table = RemapTable::from_entries(&entries);
-        Self { table, entries, scroll_cache: Mutex::new(HashMap::new()), drag_cache: Mutex::new(HashMap::new()) }
+        Self {
+            table,
+            entries,
+            scroll_cache: Mutex::new(HashMap::new()),
+            drag_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Reload with new entries.
@@ -90,11 +98,11 @@ impl RemapEngine {
         for entry in &self.entries {
             // Check trigger match.
             let trigger_level = match &entry.trigger {
-                Trigger::Button { button: b, level, duration }
-                    if *b == button =>
-                {
-                    Some((*level, duration.clone()))
-                }
+                Trigger::Button {
+                    button: b,
+                    level,
+                    duration,
+                } if *b == button => Some((*level, duration.clone())),
                 _ => None,
             };
 
@@ -131,7 +139,10 @@ impl RemapEngine {
     pub fn max_level_for_button(&self, button: MouseButton) -> u8 {
         let mut max = 0u8;
         for entry in &self.entries {
-            if let Trigger::Button { button: b, level, .. } = &entry.trigger {
+            if let Trigger::Button {
+                button: b, level, ..
+            } = &entry.trigger
+            {
                 if *b == button {
                     max = max.max(*level);
                 }
@@ -143,12 +154,16 @@ impl RemapEngine {
     /// Returns true if any entry modifies scroll.
     #[allow(dead_code)]
     pub fn modifies_scroll(&self) -> bool {
-        self.entries.iter().any(|e| matches!(e.trigger, Trigger::Scroll))
+        self.entries
+            .iter()
+            .any(|e| matches!(e.trigger, Trigger::Scroll))
     }
 
     /// Returns true if any entry modifies pointing.
     #[allow(dead_code)]
     pub fn modifies_pointing(&self) -> bool {
-        self.entries.iter().any(|e| matches!(e.trigger, Trigger::Drag))
+        self.entries
+            .iter()
+            .any(|e| matches!(e.trigger, Trigger::Drag))
     }
 }

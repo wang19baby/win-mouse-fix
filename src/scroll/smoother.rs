@@ -153,7 +153,10 @@ impl DoubleExponentialSmoother {
     /// Panics if no values have been fed.
     #[allow(dead_code)]
     pub fn last_smoothed(&self) -> f64 {
-        assert!(self.usage_count >= 1, "last_smoothed() requires at least 1 value");
+        assert!(
+            self.usage_count >= 1,
+            "last_smoothed() requires at least 1 value"
+        );
         self.Lprev
     }
 
@@ -177,10 +180,7 @@ mod tests {
         for i in 0..1000 {
             let out = s.smooth(42.0);
             if i > 0 {
-                assert!(
-                    out.is_finite(),
-                    "output went inf/nan at iteration {i}"
-                );
+                assert!(out.is_finite(), "output went inf/nan at iteration {i}");
             }
         }
         // After 1000 constant inputs the smoothed value should be very close to 42.

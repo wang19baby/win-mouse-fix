@@ -1,13 +1,14 @@
 //! Logitech device layer (Phase 8).
 //!
 //! Battery reading uses G Hub WebSocket API (auto-starts G Hub if needed).
-pub mod hidpp;
-pub mod enumerate;
+#![allow(dead_code)]
 pub mod battery;
 pub mod cache;
 pub mod dpi;
+pub mod enumerate;
+pub mod hidpp;
 
-use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_OK, MB_ICONINFORMATION};
+use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
 
 /// Read battery via G Hub WebSocket and show a MessageBox summary.
 pub fn log_battery_status() {

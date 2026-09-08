@@ -14,7 +14,7 @@ fn main() {
         (VK_MBUTTON as u32, "MBtn"),
         (VK_XBUTTON1 as u32, "X1"),
         (VK_XBUTTON2 as u32, "X2"),
-        (0x05, "XBtn3"),  // Some mice use 0x05 for middle
+        (0x05, "XBtn3"), // Some mice use 0x05 for middle
     ];
 
     let mut prev_states = vec![false; vk_names.len()];

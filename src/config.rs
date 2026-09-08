@@ -1,10 +1,10 @@
+use crate::remap::{LegacyRemapEntry, RemapEntry};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::SystemTime;
-use parking_lot::Mutex;
 use toml::{Table, Value};
-use crate::remap::{LegacyRemapEntry, RemapEntry};
 
 /// Caches the last successfully parsed configuration. A transient parse error
 /// (e.g. a typo while editing `config.toml`) must NOT silently reset every
@@ -64,10 +64,14 @@ impl BezierControlPoints {
     /// sustained Shift accelerates aggressively.
     pub fn default_shift_speedup() -> Self {
         Self {
-            x0: 0.0, y0: 1.0,
-            x1: 0.25, y1: 1.8,
-            x2: 0.7, y2: 4.0,
-            x3: 1.0, y3: 6.0,
+            x0: 0.0,
+            y0: 1.0,
+            x1: 0.25,
+            y1: 1.8,
+            x2: 0.7,
+            y2: 4.0,
+            x3: 1.0,
+            y3: 6.0,
         }
     }
 }
@@ -96,11 +100,11 @@ impl PartialEq for Config {
             && self.scroll == other.scroll
             && self.buttons.enabled == other.buttons.enabled
             && self.drag == other.drag
-                    && self.accel == other.accel
-        && self.dpi == other.dpi
-        && self.remote == other.remote
-        && self.touch == other.touch
-        && self.profiles == other.profiles
+            && self.accel == other.accel
+            && self.dpi == other.dpi
+            && self.remote == other.remote
+            && self.touch == other.touch
+            && self.profiles == other.profiles
     }
 }
 
@@ -193,35 +197,87 @@ pub struct ScrollConfig {
     pub precise: bool,
 }
 
-fn default_scroll_step() -> f64 { 120.0 }
-fn default_drag_exponent() -> f64 { 1.05 }
-fn default_drag_coefficient() -> f64 { 15.0 }
-fn default_stop_speed() -> f64 { 30.0 }
+fn default_scroll_step() -> f64 {
+    120.0
+}
+fn default_drag_exponent() -> f64 {
+    1.05
+}
+fn default_drag_coefficient() -> f64 {
+    15.0
+}
+fn default_stop_speed() -> f64 {
+    30.0
+}
 fn default_shift_speedup_curve() -> Option<BezierControlPoints> {
     Some(BezierControlPoints::default_shift_speedup())
 }
-fn default_shift_speedup_max_hold() -> f64 { 0.6 }
-fn default_time_smoothing_weight() -> f64 { 0.5 }
-fn default_velocity_a() -> f64 { 1.0 }
-fn default_velocity_y() -> f64 { 1.0 }
-fn default_tick_interval_min() -> f64 { 0.001 }
-fn default_tick_interval_max() -> f64 { 0.160 }
-fn default_tick_interval_accel_end() -> f64 { 0.015 }
-fn default_swipe_max_interval() -> f64 { 0.375 }
-fn default_swipe_min_tick_speed() -> f64 { 16.0 }
-fn default_swipe_threshold() -> u32 { 2 }
-fn default_swipe_max_ticks() -> u32 { 11 }
-fn default_accel_x_min() -> f64 { 6.25 }
-fn default_accel_x_max() -> f64 { 66.667 }
-fn default_accel_y_min() -> f64 { 30.0 }
-fn default_accel_y_max() -> f64 { 120.0 }
-fn default_accel_curvature() -> f64 { 3.0 }
-fn default_fast_scroll_threshold() -> u32 { 3 }
-fn default_fast_scroll_initial() -> f64 { 1.33 }
-fn default_fast_scroll_exponential() -> f64 { 7.5 }
-fn default_base_ms_per_step() -> f64 { -1.0 }
-fn default_smoothness() -> u8 { 3 }
-fn default_shift_speedup() -> f64 { 1.0 }
+fn default_shift_speedup_max_hold() -> f64 {
+    0.6
+}
+fn default_time_smoothing_weight() -> f64 {
+    0.5
+}
+fn default_velocity_a() -> f64 {
+    1.0
+}
+fn default_velocity_y() -> f64 {
+    1.0
+}
+fn default_tick_interval_min() -> f64 {
+    0.001
+}
+fn default_tick_interval_max() -> f64 {
+    0.160
+}
+fn default_tick_interval_accel_end() -> f64 {
+    0.015
+}
+fn default_swipe_max_interval() -> f64 {
+    0.375
+}
+fn default_swipe_min_tick_speed() -> f64 {
+    16.0
+}
+fn default_swipe_threshold() -> u32 {
+    2
+}
+fn default_swipe_max_ticks() -> u32 {
+    11
+}
+fn default_accel_x_min() -> f64 {
+    6.25
+}
+fn default_accel_x_max() -> f64 {
+    66.667
+}
+fn default_accel_y_min() -> f64 {
+    30.0
+}
+fn default_accel_y_max() -> f64 {
+    120.0
+}
+fn default_accel_curvature() -> f64 {
+    3.0
+}
+fn default_fast_scroll_threshold() -> u32 {
+    3
+}
+fn default_fast_scroll_initial() -> f64 {
+    1.33
+}
+fn default_fast_scroll_exponential() -> f64 {
+    7.5
+}
+fn default_base_ms_per_step() -> f64 {
+    -1.0
+}
+fn default_smoothness() -> u8 {
+    3
+}
+fn default_shift_speedup() -> f64 {
+    1.0
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ButtonsConfig {
@@ -295,7 +351,12 @@ pub struct AccelConfig {
 
 impl Default for AccelConfig {
     fn default() -> Self {
-        AccelConfig { enabled: false, sensitivity: 1000.0, min_factor: 1.0, max_factor: 2.0 }
+        AccelConfig {
+            enabled: false,
+            sensitivity: 1000.0,
+            min_factor: 1.0,
+            max_factor: 2.0,
+        }
     }
 }
 
@@ -315,10 +376,18 @@ pub struct DpiConfig {
     pub max_dpi: u16,
 }
 
-fn default_dpi_auto_switch() -> bool { false }
-fn default_dpi_base() -> u16 { 800 }
-fn default_dpi_min() -> u16 { 200 }
-fn default_dpi_max() -> u16 { 4000 }
+fn default_dpi_auto_switch() -> bool {
+    false
+}
+fn default_dpi_base() -> u16 {
+    800
+}
+fn default_dpi_min() -> u16 {
+    200
+}
+fn default_dpi_max() -> u16 {
+    4000
+}
 
 impl Default for DpiConfig {
     fn default() -> Self {
@@ -341,8 +410,12 @@ pub struct RemoteConfig {
     pub port: u16,
 }
 
-fn default_remote_enabled() -> bool { false }
-fn default_remote_port() -> u16 { 18765 }
+fn default_remote_enabled() -> bool {
+    false
+}
+fn default_remote_port() -> u16 {
+    18765
+}
 
 impl Default for RemoteConfig {
     fn default() -> Self {
@@ -387,20 +460,48 @@ pub struct TouchConfig {
     pub longpress_ms: u32,
 }
 
-fn default_touch_gain() -> f64 { 6.7 }
-fn default_touch_accel_ref() -> f64 { 10.0 }
-fn default_touch_accel_slope() -> f64 { 10.0 }
-fn default_touch_accel_max_mult() -> f64 { 2.0 }
-fn default_touch_move_ema() -> f64 { 0.35 }
-fn default_touch_scroll_gain() -> f64 { 5.5 }
-fn default_touch_tap_ms() -> u32 { 220 }
-fn default_touch_tap_px() -> f64 { 10.0 }
-fn default_touch_swipe_px() -> f64 { 45.0 }
-fn default_touch_decide_px() -> f64 { 12.0 }
-fn default_touch_pinch_bias() -> f64 { 1.5 }
-fn default_touch_diag_min() -> f64 { 20.0 }
-fn default_touch_diag_ratio() -> f64 { 1.6 }
-fn default_touch_longpress_ms() -> u32 { 400 }
+fn default_touch_gain() -> f64 {
+    6.7
+}
+fn default_touch_accel_ref() -> f64 {
+    10.0
+}
+fn default_touch_accel_slope() -> f64 {
+    10.0
+}
+fn default_touch_accel_max_mult() -> f64 {
+    2.0
+}
+fn default_touch_move_ema() -> f64 {
+    0.35
+}
+fn default_touch_scroll_gain() -> f64 {
+    5.5
+}
+fn default_touch_tap_ms() -> u32 {
+    220
+}
+fn default_touch_tap_px() -> f64 {
+    10.0
+}
+fn default_touch_swipe_px() -> f64 {
+    45.0
+}
+fn default_touch_decide_px() -> f64 {
+    12.0
+}
+fn default_touch_pinch_bias() -> f64 {
+    1.5
+}
+fn default_touch_diag_min() -> f64 {
+    20.0
+}
+fn default_touch_diag_ratio() -> f64 {
+    1.6
+}
+fn default_touch_longpress_ms() -> u32 {
+    400
+}
 
 impl Default for TouchConfig {
     fn default() -> Self {
@@ -461,22 +562,45 @@ impl Default for Profile {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            general: GeneralConfig { start_hidden: true, log_path: None },
+            general: GeneralConfig {
+                start_hidden: true,
+                log_path: None,
+            },
             scroll: ScrollConfig {
-                enabled: false, smooth: true, speed: 1.0, invert: false,
-                step: 120.0, drag_exponent: 1.05, drag_coefficient: 15.0,
-                stop_speed: 30.0, shift_speedup: 1.0, shift_horizontal: false,
+                enabled: false,
+                smooth: true,
+                speed: 1.0,
+                invert: false,
+                step: 120.0,
+                drag_exponent: 1.05,
+                drag_coefficient: 15.0,
+                stop_speed: 30.0,
+                shift_speedup: 1.0,
+                shift_horizontal: false,
                 shift_speedup_curve: Some(BezierControlPoints::default_shift_speedup()),
-                shift_speedup_max_hold: 0.6, shift_speedup_linear: false,
-                time_smoothing_weight: 0.5, velocity_a: 1.0, velocity_y: 1.0,
-                tick_interval_min: 0.001, tick_interval_max: 0.160,
-                tick_interval_accel_end: 0.015, swipe_max_interval: 0.375,
-                swipe_min_tick_speed: 16.0, swipe_threshold: 2, swipe_max_ticks: 11,
-                accel_x_min: 6.25, accel_x_max: 66.667,
-                accel_y_min: 30.0, accel_y_max: 120.0, accel_curvature: 3.0,
-                fast_scroll_threshold: 3, fast_scroll_initial: 1.33,
-                fast_scroll_exponential: 7.5, base_ms_per_step: -1.0,
-                smoothness: 3, precise: false,
+                shift_speedup_max_hold: 0.6,
+                shift_speedup_linear: false,
+                time_smoothing_weight: 0.5,
+                velocity_a: 1.0,
+                velocity_y: 1.0,
+                tick_interval_min: 0.001,
+                tick_interval_max: 0.160,
+                tick_interval_accel_end: 0.015,
+                swipe_max_interval: 0.375,
+                swipe_min_tick_speed: 16.0,
+                swipe_threshold: 2,
+                swipe_max_ticks: 11,
+                accel_x_min: 6.25,
+                accel_x_max: 66.667,
+                accel_y_min: 30.0,
+                accel_y_max: 120.0,
+                accel_curvature: 3.0,
+                fast_scroll_threshold: 3,
+                fast_scroll_initial: 1.33,
+                fast_scroll_exponential: 7.5,
+                base_ms_per_step: -1.0,
+                smoothness: 3,
+                precise: false,
             },
             buttons: ButtonsConfig::default(),
             drag: DragConfig::default(),
@@ -670,7 +794,10 @@ action = "disabled"
         assert!(!cfg.scroll.shift_horizontal);
         assert!(cfg.buttons.enabled);
         assert_eq!(cfg.buttons.remaps.len(), 2);
-        assert_eq!(cfg.buttons.remaps[0].source, crate::remap::MouseButton::Middle);
+        assert_eq!(
+            cfg.buttons.remaps[0].source,
+            crate::remap::MouseButton::Middle
+        );
         assert_eq!(cfg.buttons.remaps[0].vk, Some(32));
     }
 
@@ -679,10 +806,19 @@ action = "disabled"
         let p = std::env::temp_dir().join(format!("wmf_cfg_test_{}.toml", std::process::id()));
         let _ = std::fs::remove_file(&p);
         let mut last: Option<SystemTime> = None;
-        assert!(!config_changed(&p, &mut last), "missing file must not trigger reload");
+        assert!(
+            !config_changed(&p, &mut last),
+            "missing file must not trigger reload"
+        );
         std::fs::write(&p, "[general]\nstart_hidden = true\n").unwrap();
-        assert!(config_changed(&p, &mut last), "new file must trigger reload");
-        assert!(!config_changed(&p, &mut last), "unchanged file must not retrigger");
+        assert!(
+            config_changed(&p, &mut last),
+            "new file must trigger reload"
+        );
+        assert!(
+            !config_changed(&p, &mut last),
+            "unchanged file must not retrigger"
+        );
         let _ = std::fs::remove_file(&p);
     }
 
@@ -736,7 +872,10 @@ max_dpi = 3200
         // a TOML → Config round-trip without explicit user input.
         let toml = toml::to_string_pretty(&Config::default()).unwrap();
         let parsed: Config = toml::from_str(&toml).unwrap();
-        let pts = parsed.scroll.shift_speedup_curve.as_ref()
+        let pts = parsed
+            .scroll
+            .shift_speedup_curve
+            .as_ref()
             .expect("default curve must be Some");
         assert_eq!(pts.x0, 0.0);
         assert_eq!(pts.y0, 1.0);
@@ -797,10 +936,14 @@ shift_horizontal = false
 enabled = false
 "#;
         let cfg: Config = toml::from_str(doc).unwrap();
-        assert!(cfg.scroll.shift_speedup_curve.is_some(),
-            "missing curve must default to Some(default_shift_speedup)");
-        assert!(!cfg.scroll.shift_speedup_linear,
-            "missing linear flag must default to false");
+        assert!(
+            cfg.scroll.shift_speedup_curve.is_some(),
+            "missing curve must default to Some(default_shift_speedup)"
+        );
+        assert!(
+            !cfg.scroll.shift_speedup_linear,
+            "missing linear flag must default to false"
+        );
         assert!((cfg.scroll.shift_speedup_max_hold - 0.6).abs() < 1e-9);
     }
 
@@ -809,10 +952,14 @@ enabled = false
         // as_point_pairs must return the four (x, y) tuples in declared order
         // so that BezierAccelCurve::from_points receives a valid input.
         let pts = BezierControlPoints {
-            x0: 0.0, y0: 1.0,
-            x1: 0.25, y1: 1.8,
-            x2: 0.7, y2: 4.0,
-            x3: 1.0, y3: 6.0,
+            x0: 0.0,
+            y0: 1.0,
+            x1: 0.25,
+            y1: 1.8,
+            x2: 0.7,
+            y2: 4.0,
+            x3: 1.0,
+            y3: 6.0,
         };
         let pairs = pts.as_point_pairs();
         assert_eq!(pairs.len(), 4);
@@ -829,10 +976,16 @@ enabled = false
         let pts = BezierControlPoints::default_shift_speedup();
         assert_eq!(pts.x0, 0.0);
         assert_eq!(pts.y0, 1.0);
-        assert!(pts.x0 < pts.x1 && pts.x1 < pts.x2 && pts.x2 < pts.x3,
-            "x coords must be strictly increasing: {:?}", pts);
-        assert!(pts.y0 < pts.y1 && pts.y1 < pts.y2 && pts.y2 < pts.y3,
-            "y coords must be strictly increasing: {:?}", pts);
+        assert!(
+            pts.x0 < pts.x1 && pts.x1 < pts.x2 && pts.x2 < pts.x3,
+            "x coords must be strictly increasing: {:?}",
+            pts
+        );
+        assert!(
+            pts.y0 < pts.y1 && pts.y1 < pts.y2 && pts.y2 < pts.y3,
+            "y coords must be strictly increasing: {:?}",
+            pts
+        );
     }
 
     #[test]
@@ -852,22 +1005,26 @@ enabled = false
         // features a new user expects out of the box.
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let path = std::path::Path::new(&manifest).join("config.toml");
-        let content = std::fs::read_to_string(&path)
-            .expect("config.toml must exist at project root");
-        let cfg: Config = toml::from_str(&content)
-            .expect("config.toml must parse without errors");
+        let content =
+            std::fs::read_to_string(&path).expect("config.toml must exist at project root");
+        let cfg: Config = toml::from_str(&content).expect("config.toml must parse without errors");
 
         // Core features enabled
         assert!(cfg.scroll.enabled, "smooth scroll must be on");
         assert!(cfg.scroll.smooth, "smooth mode must be on");
         assert!(cfg.buttons.enabled, "button remapping must be on");
-        assert!(cfg.buttons.window_switcher, "middle-click window switcher must be on");
+        assert!(
+            cfg.buttons.window_switcher,
+            "middle-click window switcher must be on"
+        );
         assert!(cfg.drag.enabled, "drag gestures must be on");
         assert!(cfg.accel.enabled, "pointer acceleration must be on");
 
         // Advanced remaps present (Shift+scroll horizontal, Ctrl+scroll precision)
-        assert!(cfg.buttons.advanced.len() >= 2,
-            "at least 2 advanced remaps expected (Shift+scroll, Ctrl+scroll)");
+        assert!(
+            cfg.buttons.advanced.len() >= 2,
+            "at least 2 advanced remaps expected (Shift+scroll, Ctrl+scroll)"
+        );
     }
 
     #[test]
@@ -948,5 +1105,4 @@ longpress_ms = 600
         assert!((cfg.gain - default_touch_gain()).abs() < 1e-9);
         assert_eq!(cfg.tap_ms, default_touch_tap_ms());
     }
-
 }

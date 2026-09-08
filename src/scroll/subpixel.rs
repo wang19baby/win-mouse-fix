@@ -137,7 +137,7 @@ mod tests {
         assert_eq!(a.add(0.3), 0);
         assert_eq!(a.add(0.3), 0); // total 0.9, still < 1
         assert_eq!(a.add(0.2), 1); // total 1.1, emit 1
-        // Now add more small bits
+                                   // Now add more small bits
         assert_eq!(a.add(0.4), 0);
         assert_eq!(a.add(0.4), 0);
         assert_eq!(a.add(0.4), 1); // 0.2 + 1.2 = 1.4 -> emit 1, keep 0.4

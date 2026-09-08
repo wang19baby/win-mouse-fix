@@ -55,13 +55,18 @@ fn write_to_file(line: &str) {
         if let Ok(mut g) = g.lock() {
             if let Some(f) = g.as_mut() {
                 // Check if rotation needed
-                let need_rotate = f.metadata().map(|m| m.len() > MAX_FILE_SIZE).unwrap_or(false);
+                let need_rotate = f
+                    .metadata()
+                    .map(|m| m.len() > MAX_FILE_SIZE)
+                    .unwrap_or(false);
                 if need_rotate {
                     if let Some(path_lock) = LOG_PATH.get() {
                         if let Ok(path_guard) = path_lock.lock() {
                             if let Some(ref path) = *path_guard {
                                 let _ = rotate_log(path);
-                                if let Ok(new_f) = OpenOptions::new().create(true).append(true).open(path) {
+                                if let Ok(new_f) =
+                                    OpenOptions::new().create(true).append(true).open(path)
+                                {
                                     *f = new_f;
                                 }
                             }
@@ -128,9 +133,18 @@ mod tests {
 
         // .log.3 (oldest) should be gone, replaced by renamed .log.2
         assert!(base.with_extension("log.3").exists());
-        assert_eq!(std::fs::read_to_string(base.with_extension("log.3")).unwrap(), "v2\n");
-        assert_eq!(std::fs::read_to_string(base.with_extension("log.2")).unwrap(), "v1\n");
-        assert_eq!(std::fs::read_to_string(base.with_extension("log.1")).unwrap(), "base\n");
+        assert_eq!(
+            std::fs::read_to_string(base.with_extension("log.3")).unwrap(),
+            "v2\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.with_extension("log.2")).unwrap(),
+            "v1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.with_extension("log.1")).unwrap(),
+            "base\n"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

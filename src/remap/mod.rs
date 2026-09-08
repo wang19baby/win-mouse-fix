@@ -7,16 +7,15 @@
 //! - `RemapEngine`          — matches active modifiers against table, produces effects
 //! - `execute_effect`       — executes the matched effects
 
-use std::collections::HashMap;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP,
-    MOUSEINPUT,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{XBUTTON1, XBUTTON2};
 
@@ -110,14 +109,35 @@ impl ActiveModifiers {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", content = "data")]
 pub enum Effect {
-    SymbolicHotkey { keycode: u16, #[serde(default)] flags: u32 },
-    NavigationSwipe { direction: SwipeDirection },
-    MouseButtonClicks { button: MouseButton, #[serde(rename = "n_of_clicks")] n_of_clicks: u8 },
-    SystemDefinedEvent { #[serde(rename = "event_type")] event_type: u32, #[serde(default)] flags: u32 },
-    ModifiedScroll { modification: ModifiedScrollModification },
-    ModifiedDrag { drag_type: ModifiedDragType, #[serde(default)] variant: Option<ModifiedDragVariant> },
-    TaskView,      // Win+Tab — virtual desktop overview
-    ShowDesktop,   // Win+D — minimize all windows / restore
+    SymbolicHotkey {
+        keycode: u16,
+        #[serde(default)]
+        flags: u32,
+    },
+    NavigationSwipe {
+        direction: SwipeDirection,
+    },
+    MouseButtonClicks {
+        button: MouseButton,
+        #[serde(rename = "n_of_clicks")]
+        n_of_clicks: u8,
+    },
+    SystemDefinedEvent {
+        #[serde(rename = "event_type")]
+        event_type: u32,
+        #[serde(default)]
+        flags: u32,
+    },
+    ModifiedScroll {
+        modification: ModifiedScrollModification,
+    },
+    ModifiedDrag {
+        drag_type: ModifiedDragType,
+        #[serde(default)]
+        variant: Option<ModifiedDragVariant>,
+    },
+    TaskView,    // Win+Tab — virtual desktop overview
+    ShowDesktop, // Win+D — minimize all windows / restore
     Disabled,
     PassThrough,
 }
@@ -288,7 +308,10 @@ impl ClickCycleTracker {
     /// Returns true if `button` is currently held as a modifier.
     #[allow(dead_code)]
     pub fn is_modifier_button(&self, button: MouseButton) -> bool {
-        self.active.get(&button).map(|s| s.is_modifier()).unwrap_or(false)
+        self.active
+            .get(&button)
+            .map(|s| s.is_modifier())
+            .unwrap_or(false)
     }
 
     /// Returns a list of all currently-held modifier buttons.
@@ -338,7 +361,9 @@ impl ClickCycleTracker {
         }
 
         match engine {
-            Some(engine) => engine.resolve_effects(button, state.click_count, state.held_fired, active_mods),
+            Some(engine) => {
+                engine.resolve_effects(button, state.click_count, state.held_fired, active_mods)
+            }
             None => Vec::new(),
         }
     }
@@ -362,8 +387,12 @@ impl ClickCycleTracker {
 
         for button in expired {
             if let Some(state) = self.active.get(&button) {
-                let effects =
-                    engine.resolve_effects(button, state.click_count, state.held_fired, active_mods);
+                let effects = engine.resolve_effects(
+                    button,
+                    state.click_count,
+                    state.held_fired,
+                    active_mods,
+                );
                 for (effect, phase) in effects {
                     execute_effect_phase(&effect, phase);
                 }
@@ -403,9 +432,14 @@ impl ClickCycleTracker {
 
 pub fn execute_effect(effect: &Effect) {
     match effect {
-        Effect::SymbolicHotkey { keycode, flags } => unsafe { send_symbolic_hotkey(*keycode, *flags) },
+        Effect::SymbolicHotkey { keycode, flags } => unsafe {
+            send_symbolic_hotkey(*keycode, *flags)
+        },
         Effect::NavigationSwipe { direction } => unsafe { send_navigation_swipe(*direction) },
-        Effect::MouseButtonClicks { button, n_of_clicks } => {
+        Effect::MouseButtonClicks {
+            button,
+            n_of_clicks,
+        } => {
             for _ in 0..*n_of_clicks {
                 unsafe {
                     send_mouse_button(*button, true);
@@ -428,7 +462,9 @@ pub fn execute_effect(effect: &Effect) {
                 ModifiedDragType::FakeDrag => {}
             }
         }
-        Effect::SystemDefinedEvent { event_type, flags } => unsafe { send_system_event(*event_type, *flags) },
+        Effect::SystemDefinedEvent { event_type, flags } => unsafe {
+            send_system_event(*event_type, *flags)
+        },
         Effect::ModifiedScroll { .. } => {
             // ModifiedScroll is handled by the scroll engine directly, not here.
         }
@@ -465,13 +501,17 @@ fn send_effect_up(effect: &Effect) {
 }
 
 #[derive(Clone, Copy)]
-enum KeyState { Down, Up, Both }
+enum KeyState {
+    Down,
+    Up,
+    Both,
+}
 
 unsafe fn symbolic_hotkey_inputs(keycode: u16, flags: u32, state: KeyState) -> Vec<INPUT> {
     let ctrl = (flags & 0x100) != 0;
-    let alt  = (flags & 0x400) != 0;
+    let alt = (flags & 0x400) != 0;
     let shift = (flags & 0x200) != 0;
-    let win  = (flags & 0x800) != 0;
+    let win = (flags & 0x800) != 0;
     let key_flags = flags & 0x7FF;
 
     let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
@@ -480,30 +520,62 @@ unsafe fn symbolic_hotkey_inputs(keycode: u16, flags: u32, state: KeyState) -> V
 
     match state {
         KeyState::Down => {
-            if ctrl { down(&mut inputs, 0xA2); }
-            if alt  { down(&mut inputs, 0xA4); }
-            if shift { down(&mut inputs, 0xA0); }
-            if win  { down(&mut inputs, 0x5B); }
+            if ctrl {
+                down(&mut inputs, 0xA2);
+            }
+            if alt {
+                down(&mut inputs, 0xA4);
+            }
+            if shift {
+                down(&mut inputs, 0xA0);
+            }
+            if win {
+                down(&mut inputs, 0x5B);
+            }
             down(&mut inputs, keycode);
         }
         KeyState::Up => {
             up(&mut inputs, keycode);
-            if win  { up(&mut inputs, 0x5B); }
-            if shift { up(&mut inputs, 0xA0); }
-            if alt  { up(&mut inputs, 0xA4); }
-            if ctrl { up(&mut inputs, 0xA2); }
+            if win {
+                up(&mut inputs, 0x5B);
+            }
+            if shift {
+                up(&mut inputs, 0xA0);
+            }
+            if alt {
+                up(&mut inputs, 0xA4);
+            }
+            if ctrl {
+                up(&mut inputs, 0xA2);
+            }
         }
         KeyState::Both => {
-            if ctrl { down(&mut inputs, 0xA2); }
-            if alt  { down(&mut inputs, 0xA4); }
-            if shift { down(&mut inputs, 0xA0); }
-            if win  { down(&mut inputs, 0x5B); }
+            if ctrl {
+                down(&mut inputs, 0xA2);
+            }
+            if alt {
+                down(&mut inputs, 0xA4);
+            }
+            if shift {
+                down(&mut inputs, 0xA0);
+            }
+            if win {
+                down(&mut inputs, 0x5B);
+            }
             down(&mut inputs, keycode);
             up(&mut inputs, keycode);
-            if win  { up(&mut inputs, 0x5B); }
-            if shift { up(&mut inputs, 0xA0); }
-            if alt  { up(&mut inputs, 0xA4); }
-            if ctrl { up(&mut inputs, 0xA2); }
+            if win {
+                up(&mut inputs, 0x5B);
+            }
+            if shift {
+                up(&mut inputs, 0xA0);
+            }
+            if alt {
+                up(&mut inputs, 0xA4);
+            }
+            if ctrl {
+                up(&mut inputs, 0xA2);
+            }
         }
     }
     inputs
@@ -511,21 +583,36 @@ unsafe fn symbolic_hotkey_inputs(keycode: u16, flags: u32, state: KeyState) -> V
 
 unsafe fn send_symbolic_hotkey(keycode: u16, flags: u32) {
     let inputs = symbolic_hotkey_inputs(keycode, flags, KeyState::Both);
-    SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+    SendInput(
+        inputs.len() as u32,
+        inputs.as_ptr(),
+        std::mem::size_of::<INPUT>() as i32,
+    );
 }
 
 unsafe fn send_symbolic_hotkey_down(keycode: u16, flags: u32) {
     let inputs = symbolic_hotkey_inputs(keycode, flags, KeyState::Down);
-    SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+    SendInput(
+        inputs.len() as u32,
+        inputs.as_ptr(),
+        std::mem::size_of::<INPUT>() as i32,
+    );
 }
 
 unsafe fn send_symbolic_hotkey_up(keycode: u16, flags: u32) {
     let inputs = symbolic_hotkey_inputs(keycode, flags, KeyState::Up);
-    SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+    SendInput(
+        inputs.len() as u32,
+        inputs.as_ptr(),
+        std::mem::size_of::<INPUT>() as i32,
+    );
 }
 
 unsafe fn vk_input(vk: u16, flags: u32, down: bool) -> INPUT {
-    let mut i = INPUT { r#type: INPUT_KEYBOARD, Anonymous: std::mem::zeroed() };
+    let mut i = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: std::mem::zeroed(),
+    };
     i.Anonymous.ki = KEYBDINPUT {
         wVk: vk,
         wScan: 0,
@@ -542,10 +629,11 @@ unsafe fn send_navigation_swipe(direction: SwipeDirection) {
     // in most browsers, file explorers, and many other apps.
     let (vk, flags) = match direction {
         SwipeDirection::Forward => (0xA7, 0x800u32), // VK_BROWSER_FORWARD
-        SwipeDirection::Back => (0xA6, 0x800u32),   // VK_BROWSER_BACK
+        SwipeDirection::Back => (0xA6, 0x800u32),    // VK_BROWSER_BACK
     };
     send_symbolic_hotkey(vk as u16, flags);
 }
+#[allow(dead_code)]
 pub(crate) fn send_virtual_desktop_switch(direction: SwipeDirection) {
     // Switch virtual desktop: Win+Ctrl+Left/Right.
     // Mirrors mac's TouchSimulator postDockSwipeEventWithDelta for horizontal spaces swipe.
@@ -566,36 +654,87 @@ unsafe fn send_system_event(event_type: u32, _flags: u32) {
 /// Open Task View (Win+Tab) — virtual desktop overview / Timeline.
 unsafe fn send_task_view() {
     let mut inputs: Vec<INPUT> = Vec::with_capacity(4);
-    inputs.push(vk_input(0x5B, 0, true));  // VK_LWIN down
-    inputs.push(vk_input(0x09, 0, true));  // VK_TAB down
+    inputs.push(vk_input(0x5B, 0, true)); // VK_LWIN down
+    inputs.push(vk_input(0x09, 0, true)); // VK_TAB down
     inputs.push(vk_input(0x09, 0, false)); // VK_TAB up
     inputs.push(vk_input(0x5B, 0, false)); // VK_LWIN up
-    SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+    SendInput(
+        inputs.len() as u32,
+        inputs.as_ptr(),
+        std::mem::size_of::<INPUT>() as i32,
+    );
 }
 
 /// Show Desktop / restore all (Win+D) — toggle minimize all windows.
 unsafe fn send_show_desktop() {
     let mut inputs: Vec<INPUT> = Vec::with_capacity(4);
-    inputs.push(vk_input(0x5B, 0, true));  // VK_LWIN down
-    inputs.push(vk_input(0x44, 0, true));  // VK_D down
+    inputs.push(vk_input(0x5B, 0, true)); // VK_LWIN down
+    inputs.push(vk_input(0x44, 0, true)); // VK_D down
     inputs.push(vk_input(0x44, 0, false)); // VK_D up
     inputs.push(vk_input(0x5B, 0, false)); // VK_LWIN up
-    SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+    SendInput(
+        inputs.len() as u32,
+        inputs.as_ptr(),
+        std::mem::size_of::<INPUT>() as i32,
+    );
 }
 
 // ─── Mouse button synthesis ──────────────────────────────────────────────────
 
 unsafe fn send_mouse_button(btn: MouseButton, down: bool) {
     let (flags, data) = match btn {
-        MouseButton::Left => (if down { MOUSEEVENTF_LEFTDOWN } else { MOUSEEVENTF_LEFTUP }, 0),
-        MouseButton::Right => (if down { MOUSEEVENTF_RIGHTDOWN } else { MOUSEEVENTF_RIGHTUP }, 0),
-        MouseButton::Middle => (if down { MOUSEEVENTF_MIDDLEDOWN } else { MOUSEEVENTF_MIDDLEUP }, 0),
-        MouseButton::X1 => (if down { MOUSEEVENTF_XDOWN } else { MOUSEEVENTF_XUP }, XBUTTON1),
-        MouseButton::X2 => (if down { MOUSEEVENTF_XDOWN } else { MOUSEEVENTF_XUP }, XBUTTON2),
+        MouseButton::Left => (
+            if down {
+                MOUSEEVENTF_LEFTDOWN
+            } else {
+                MOUSEEVENTF_LEFTUP
+            },
+            0,
+        ),
+        MouseButton::Right => (
+            if down {
+                MOUSEEVENTF_RIGHTDOWN
+            } else {
+                MOUSEEVENTF_RIGHTUP
+            },
+            0,
+        ),
+        MouseButton::Middle => (
+            if down {
+                MOUSEEVENTF_MIDDLEDOWN
+            } else {
+                MOUSEEVENTF_MIDDLEUP
+            },
+            0,
+        ),
+        MouseButton::X1 => (
+            if down {
+                MOUSEEVENTF_XDOWN
+            } else {
+                MOUSEEVENTF_XUP
+            },
+            XBUTTON1,
+        ),
+        MouseButton::X2 => (
+            if down {
+                MOUSEEVENTF_XDOWN
+            } else {
+                MOUSEEVENTF_XUP
+            },
+            XBUTTON2,
+        ),
     };
-    let mut input = INPUT { r#type: INPUT_MOUSE, ..std::mem::zeroed() };
+    let mut input = INPUT {
+        r#type: INPUT_MOUSE,
+        ..std::mem::zeroed()
+    };
     input.Anonymous.mi = MOUSEINPUT {
-        dx: 0, dy: 0, mouseData: data as u32, dwFlags: flags, time: 0, dwExtraInfo: 0,
+        dx: 0,
+        dy: 0,
+        mouseData: data as u32,
+        dwFlags: flags,
+        time: 0,
+        dwExtraInfo: 0,
     };
     SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
 }
@@ -619,11 +758,16 @@ pub fn execute(action: ButtonAction, down: bool) {
 }
 
 unsafe fn send_key_simple(vk: u32, down: bool) {
-    let mut input = INPUT { r#type: INPUT_KEYBOARD, ..std::mem::zeroed() };
+    let mut input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        ..std::mem::zeroed()
+    };
     input.Anonymous.ki = KEYBDINPUT {
-        wVk: vk as u16, wScan: 0,
+        wVk: vk as u16,
+        wScan: 0,
         dwFlags: if down { 0 } else { KEYEVENTF_KEYUP },
-        time: 0, dwExtraInfo: 0,
+        time: 0,
+        dwExtraInfo: 0,
     };
     SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
 }
@@ -659,7 +803,8 @@ impl RemapTable {
         let mut table = Self::default();
         for entry in entries {
             let key = modifier_key(&entry.modifiers);
-            table.entries
+            table
+                .entries
                 .entry(key)
                 .or_default()
                 .push((entry.trigger.clone(), entry.effect.clone()));
@@ -709,7 +854,10 @@ fn modifier_keys_supersets(active: &ActiveModifiers) -> Vec<u64> {
     }));
     let mut kb = active.keyboard;
     while kb != 0 {
-        keys.push(modifier_key(&ModifierCondition { keyboard: kb, buttons: vec![] }));
+        keys.push(modifier_key(&ModifierCondition {
+            keyboard: kb,
+            buttons: vec![],
+        }));
         kb &= kb - 1;
     }
     keys.push(0);
@@ -725,15 +873,24 @@ mod tests {
     #[test]
     fn modifier_subset_empty() {
         let empty = ModifierCondition::default();
-        let shift = ModifierCondition { keyboard: 0x200, ..Default::default() };
+        let shift = ModifierCondition {
+            keyboard: 0x200,
+            ..Default::default()
+        };
         assert!(empty.is_subset_of(&shift));
         assert!(!shift.is_subset_of(&empty));
     }
 
     #[test]
     fn active_modifiers_satisfies() {
-        let required = ModifierCondition { keyboard: 0x200, ..Default::default() };
-        let active = ActiveModifiers { keyboard: 0x200 | 0x100, buttons: vec![] };
+        let required = ModifierCondition {
+            keyboard: 0x200,
+            ..Default::default()
+        };
+        let active = ActiveModifiers {
+            keyboard: 0x200 | 0x100,
+            buttons: vec![],
+        };
         assert!(active.satisfies(&required));
     }
 
@@ -747,13 +904,21 @@ mod tests {
     fn remap_table_lookup() {
         let entries = vec![RemapEntry {
             modifiers: ModifierCondition::default(),
-            trigger: Trigger::Button { button: MouseButton::Right, level: 1, duration: ClickDuration::Click },
+            trigger: Trigger::Button {
+                button: MouseButton::Right,
+                level: 1,
+                duration: ClickDuration::Click,
+            },
             effect: Effect::Disabled,
         }];
         let table = RemapTable::from_entries(&entries);
         let mods = ActiveModifiers::default();
         let results = table.lookup(
-            &Trigger::Button { button: MouseButton::Right, level: 1, duration: ClickDuration::Click },
+            &Trigger::Button {
+                button: MouseButton::Right,
+                level: 1,
+                duration: ClickDuration::Click,
+            },
             &mods,
         );
         assert_eq!(results.len(), 1);
@@ -769,16 +934,28 @@ mod tests {
     #[test]
     fn test_active_modifiers_ctrl_satisfies_ctrl() {
         // 0x100 = Ctrl bitmask (matches flags convention in symbolic_hotkey_inputs)
-        let active = ActiveModifiers { keyboard: 0x100, buttons: vec![] };
-        let required = ModifierCondition { keyboard: 0x100, buttons: vec![] };
+        let active = ActiveModifiers {
+            keyboard: 0x100,
+            buttons: vec![],
+        };
+        let required = ModifierCondition {
+            keyboard: 0x100,
+            buttons: vec![],
+        };
         assert!(active.satisfies(&required));
     }
 
     #[test]
     fn test_active_modifiers_ctrl_does_not_satisfy_shift() {
         // 0x100 = Ctrl, 0x200 = Shift
-        let active = ActiveModifiers { keyboard: 0x100, buttons: vec![] };
-        let required = ModifierCondition { keyboard: 0x200, buttons: vec![] };
+        let active = ActiveModifiers {
+            keyboard: 0x100,
+            buttons: vec![],
+        };
+        let required = ModifierCondition {
+            keyboard: 0x200,
+            buttons: vec![],
+        };
         assert!(!active.satisfies(&required));
     }
 }

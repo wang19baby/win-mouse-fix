@@ -9,7 +9,9 @@ use std::process::Command;
 
 fn main() {
     let is_windows = env::var("CARGO_CFG_WINDOWS").is_ok()
-        || env::var("TARGET").map(|t| t.contains("windows")).unwrap_or(false);
+        || env::var("TARGET")
+            .map(|t| t.contains("windows"))
+            .unwrap_or(false);
     if !is_windows {
         return;
     }
@@ -58,8 +60,8 @@ fn find_rc() -> Option<PathBuf> {
         }
     }
 
-    let pf_x86 = env::var("ProgramFiles(x86)")
-        .unwrap_or_else(|_| r"C:\Program Files (x86)".to_string());
+    let pf_x86 =
+        env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".to_string());
     let sdk_bin = PathBuf::from(pf_x86)
         .join("Windows Kits")
         .join("10")

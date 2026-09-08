@@ -5,41 +5,39 @@
 //! changes (foreground, create, destroy, title) and push incremental
 //! updates over WebSocket.
 
+use base64::Engine;
+use image::codecs::jpeg::JpegEncoder;
+use image::DynamicImage;
+use image::RgbImage;
+use parking_lot::Mutex;
 use std::io::Cursor;
 use std::sync::atomic::AtomicBool;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
-use base64::Engine;
-use image::DynamicImage;
-use image::RgbImage;
-use image::codecs::jpeg::JpegEncoder;
-use parking_lot::Mutex;
+use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject,
-    GetDC, ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, CAPTUREBLT, HALFTONE, SRCCOPY,
-    BITMAPINFOHEADER, DIB_RGB_COLORS,
+    GetDC, ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFOHEADER, CAPTUREBLT,
+    DIB_RGB_COLORS, HALFTONE, SRCCOPY,
+};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetLastActivePopup,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-    SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW, GA_ROOTOWNER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
-    GetWindowRect, IsZoomed, IsIconic,
-    GetWindowLongPtrW,
-    SendMessageW, WM_GETICON, ICON_SMALL2, ICON_SMALL, ICON_BIG,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SendMessageW,
+    SetForegroundWindow, ShowWindow, GA_ROOTOWNER, ICON_BIG, ICON_SMALL, ICON_SMALL2, SW_MAXIMIZE,
+    SW_MINIMIZE, SW_RESTORE, SW_SHOW, WM_GETICON, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
-use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
-};
-use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, BOOL, RECT};
 
+use windows_sys::core::GUID;
 use windows_sys::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
-use windows_sys::core::GUID;
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-    VK_MENU,
+    GetAsyncKeyState, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_MENU,
 };
 
 const OUR_MARKER: usize = crate::win::hooks::OUR_MARKER;
@@ -79,7 +77,7 @@ pub static REMOTE_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Hand-rolled LRU to skip the `lru` crate dependency (VecDeque for recency
 // order + HashMap for O(1) lookup).
 const THUMB_CACHE_CAPACITY: usize = 30;
-const THUMB_CACHE_FRESH_MS: u128 = 30_000;  // 30s; reused without recapture
+const THUMB_CACHE_FRESH_MS: u128 = 30_000; // 30s; reused without recapture
 
 struct ThumbCacheEntry {
     data: Vec<u8>,
@@ -87,8 +85,7 @@ struct ThumbCacheEntry {
     last_captured: Instant,
 }
 
-static THUMB_CACHE: LazyLock<Mutex<ThumbCache>> =
-    LazyLock::new(|| Mutex::new(ThumbCache::new()));
+static THUMB_CACHE: LazyLock<Mutex<ThumbCache>> = LazyLock::new(|| Mutex::new(ThumbCache::new()));
 /// Icon cache: process_name → base64 data URI string.
 /// Icons don't change at runtime, so we extract once per process.
 static ICON_CACHE: LazyLock<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
@@ -96,16 +93,21 @@ static ICON_CACHE: LazyLock<parking_lot::Mutex<std::collections::HashMap<String,
 
 struct ThumbCache {
     map: std::collections::HashMap<isize, ThumbCacheEntry>,
-    order: std::collections::VecDeque<isize>,  // front = most recent
+    order: std::collections::VecDeque<isize>, // front = most recent
 }
 
 impl ThumbCache {
     fn new() -> Self {
-        Self { map: std::collections::HashMap::new(), order: std::collections::VecDeque::new() }
+        Self {
+            map: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        }
     }
     fn get_mut(&mut self, hwnd: &isize) -> Option<&mut ThumbCacheEntry> {
         let exists = self.map.contains_key(hwnd);
-        if !exists { return None; }
+        if !exists {
+            return None;
+        }
         // Move to front (most recent)
         if let Some(pos) = self.order.iter().position(|x| x == hwnd) {
             self.order.remove(pos);
@@ -134,7 +136,7 @@ impl ThumbCache {
             }
         }
     }
- }
+}
 
 /// Look up a cached thumbnail. Returns Some(bytes) if a fresh entry exists
 /// (within THUMB_CACHE_FRESH_MS), None otherwise. Updates last_used on hit.
@@ -149,25 +151,33 @@ pub fn thumb_cache_get(hwnd: isize) -> Option<Vec<u8>> {
     None
 }
 
+#[allow(dead_code)]
 /// Insert/replace a thumbnail in the cache.
 pub fn thumb_cache_put(hwnd: isize, data: Vec<u8>) {
     let now = Instant::now();
-    THUMB_CACHE.lock().put(hwnd, ThumbCacheEntry {
-        data,
-        last_used: now,
-        last_captured: now,
-    });
+    THUMB_CACHE.lock().put(
+        hwnd,
+        ThumbCacheEntry {
+            data,
+            last_used: now,
+            last_captured: now,
+        },
+    );
 }
 
+#[allow(dead_code)]
 /// Returns (total_entries, fresh_entries, stale_entries) for the thumb cache.
 pub fn thumb_cache_stats() -> (usize, usize, usize) {
     let cache = THUMB_CACHE.lock();
     let total = cache.map.len();
-    let fresh = cache.map.iter()
+    let fresh = cache
+        .map
+        .iter()
         .filter(|(_, e)| e.last_captured.elapsed().as_millis() < THUMB_CACHE_FRESH_MS)
         .count();
     (total, fresh, total - fresh)
 }
+#[allow(dead_code)]
 /// Invalidate a thumbnail (called from WinEvent handlers when a window
 /// changes location / title / foreground — the previous capture no longer
 /// reflects the current state).
@@ -185,7 +195,10 @@ pub fn enumerate_windows() -> Vec<WindowMeta> {
     let mut result: Vec<WindowMeta> = Vec::new();
 
     unsafe {
-        EnumWindows(Some(enum_windows_callback), &mut result as *mut Vec<WindowMeta> as LPARAM);
+        EnumWindows(
+            Some(enum_windows_callback),
+            &mut result as *mut Vec<WindowMeta> as LPARAM,
+        );
     }
 
     // Mark current foreground and resolve desktop_id for each window
@@ -209,7 +222,7 @@ pub fn enumerate_desktops() -> Vec<DesktopInfo> {
             guid: get_desktop_guid_string(i).ok(),
         })
         .collect()
-    }
+}
 unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let list = &mut *(lparam as *mut Vec<WindowMeta>);
     match classify_alt_tab_window(hwnd) {
@@ -223,8 +236,14 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
                 } else {
                     let fresh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         extract_window_icon(hwnd as isize)
-                    })).ok().flatten().and_then(|png_bytes| {
-                        Some(format!("data:image/png;base64,{}", String::from_utf8_lossy(&png_bytes)))
+                    }))
+                    .ok()
+                    .flatten()
+                    .and_then(|png_bytes| {
+                        Some(format!(
+                            "data:image/png;base64,{}",
+                            String::from_utf8_lossy(&png_bytes)
+                        ))
                     });
                     if let Some(ref v) = fresh {
                         cache.insert(proc_name.clone(), v.clone());
@@ -251,7 +270,9 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
             if n % 50 == 0 {
                 let mut class = [0u16; 128];
                 windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW(
-                    hwnd, class.as_mut_ptr(), 128,
+                    hwnd,
+                    class.as_mut_ptr(),
+                    128,
                 );
                 let class = String::from_utf16_lossy(&class);
                 crate::log::write(&format!(
@@ -267,6 +288,7 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
 /// from `classify_alt_tab_window` so the diagnostic callback can log why
 /// a specific HWND was excluded.
 #[derive(Debug)]
+#[allow(dead_code)]
 enum FilterReject {
     NotVisible,
     Cloaked,
@@ -354,15 +376,31 @@ unsafe fn classify_alt_tab_window(hwnd: HWND) -> Result<(), FilterReject> {
         return Err(FilterReject::BlacklistedClass);
     }
     const BLACKLIST: &[&str] = &[
-        "Progman", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "DV2ControlHost",
-        "MsgrIMEWindowClass", "SysShadow",
-        "XamlWindow", "Windows.UI.Core.CoreWindow", "ApplicationManager_DesktopWindow",
-        "TaskManagerWindow", "MSCTFIME UI", "Default IME", "ToastNotification",
+        "Progman",
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "DV2ControlHost",
+        "MsgrIMEWindowClass",
+        "SysShadow",
+        "XamlWindow",
+        "Windows.UI.Core.CoreWindow",
+        "ApplicationManager_DesktopWindow",
+        "TaskManagerWindow",
+        "MSCTFIME UI",
+        "Default IME",
+        "ToastNotification",
         "ForegroundStaging",
-        "TaskSwitcherWnd", "MultitaskingViewFrame", "TaskViewFrame",
-        "TaskListThumbnailWnd", "TimelineWnd", "ModernTaskSwitcher",
-        "XamlExplorerHostIslandWindow", "TopLevelWindowForOverflowControl",
-        "TaskbarWindow", "Flip3D", "TaskbandWindow",
+        "TaskSwitcherWnd",
+        "MultitaskingViewFrame",
+        "TaskViewFrame",
+        "TaskListThumbnailWnd",
+        "TimelineWnd",
+        "ModernTaskSwitcher",
+        "XamlExplorerHostIslandWindow",
+        "TopLevelWindowForOverflowControl",
+        "TaskbarWindow",
+        "Flip3D",
+        "TaskbandWindow",
     ];
     if BLACKLIST.iter().any(|&b| b == class) {
         return Err(FilterReject::BlacklistedClass);
@@ -371,10 +409,10 @@ unsafe fn classify_alt_tab_window(hwnd: HWND) -> Result<(), FilterReject> {
 }
 
 /// Bool wrapper retained for callers that just want yes/no.
+#[allow(dead_code)]
 fn is_alt_tab_window(hwnd: HWND) -> bool {
     unsafe { classify_alt_tab_window(hwnd).is_ok() }
 }
-
 
 fn _is_top_level_window(hwnd: HWND) -> bool {
     unsafe { GetAncestor(hwnd, 0x3) == hwnd } // GA_ROOT == hwnd means top-level
@@ -399,11 +437,7 @@ fn get_window_process_name(hwnd: HWND) -> String {
         if pid == 0 {
             return String::new();
         }
-        let handle = OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION,
-            0,
-            pid,
-        );
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle == 0 {
             return format!("pid:{pid}");
         }
@@ -496,10 +530,13 @@ unsafe fn get_hicon_from_window(hwnd: isize) -> Option<isize> {
 }
 
 /// Render an HICON (or default app icon) into a 32x32 RGBA pixel buffer.
-unsafe fn render_hicon_to_rgba(_hwnd: isize, hicon_opt: Option<isize>, size: u32) -> Option<Vec<u8>> {
+unsafe fn render_hicon_to_rgba(
+    _hwnd: isize,
+    hicon_opt: Option<isize>,
+    size: u32,
+) -> Option<Vec<u8>> {
     use windows_sys::Win32::Graphics::Gdi::{
-        DeleteObject, GetDC, ReleaseDC,
-        GetDIBits, DIB_RGB_COLORS,
+        DeleteObject, GetDC, GetDIBits, ReleaseDC, DIB_RGB_COLORS,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
 
@@ -529,8 +566,12 @@ unsafe fn render_hicon_to_rgba(_hwnd: isize, hicon_opt: Option<isize>, size: u32
             bmi.biCompression = 0;
 
             let scan_lines = GetDIBits(
-                hdc, info.hbmColor, 0, size,
-                pixels.as_mut_ptr() as *mut _, &mut bmi as *mut _ as *mut _,
+                hdc,
+                info.hbmColor,
+                0,
+                size,
+                pixels.as_mut_ptr() as *mut _,
+                &mut bmi as *mut _ as *mut _,
                 DIB_RGB_COLORS,
             );
             if scan_lines != 0 {
@@ -541,8 +582,12 @@ unsafe fn render_hicon_to_rgba(_hwnd: isize, hicon_opt: Option<isize>, size: u32
     }
 
     // Clean up GDI objects
-    if info.hbmColor != 0 { let _ = DeleteObject(info.hbmColor); }
-    if info.hbmMask != 0 { let _ = DeleteObject(info.hbmMask); }
+    if info.hbmColor != 0 {
+        let _ = DeleteObject(info.hbmColor);
+    }
+    if info.hbmMask != 0 {
+        let _ = DeleteObject(info.hbmMask);
+    }
     let _ = DestroyIcon(hicon);
 
     if success {
@@ -563,12 +608,20 @@ pub fn capture_window_thumb(hwnd: isize, max_w: u32, max_h: u32) -> Option<Vec<u
     // Phase C.3: cache hit returns immediately without touching GDI. Cuts
     // ~30-80ms per repeated thumb (typical when scrolling the grid).
     if let Some(bytes) = thumb_cache_get(hwnd) {
-        crate::log::write(&format!("capture: hwnd={:#x} CACHE_HIT {}B", hwnd, bytes.len()));
+        crate::log::write(&format!(
+            "capture: hwnd={:#x} CACHE_HIT {}B",
+            hwnd,
+            bytes.len()
+        ));
         return Some(bytes);
     }
     let result = unsafe { capture_window_thumb_inner(hwnd, max_w, max_h) };
     if let Some(ref bytes) = result {
-        crate::log::write(&format!("capture: hwnd={:#x} CAPTURED {}B", hwnd, bytes.len()));
+        crate::log::write(&format!(
+            "capture: hwnd={:#x} CAPTURED {}B",
+            hwnd,
+            bytes.len()
+        ));
         thumb_cache_put(hwnd, bytes.clone());
     } else {
         crate::log::write(&format!("capture: hwnd={:#x} FAILED", hwnd));
@@ -576,8 +629,11 @@ pub fn capture_window_thumb(hwnd: isize, max_w: u32, max_h: u32) -> Option<Vec<u
     result
 }
 #[allow(unexpected_cfgs)]
-pub(crate) unsafe fn capture_window_thumb_inner(hwnd: isize, max_w: u32, max_h: u32) -> Option<Vec<u8>> {
-
+pub(crate) unsafe fn capture_window_thumb_inner(
+    hwnd: isize,
+    max_w: u32,
+    max_h: u32,
+) -> Option<Vec<u8>> {
     // Phase B.1: DWM extended frame bounds (strips the Win11 shadow margin).
     // Falls back to GetWindowRect if DwmGetWindowAttribute fails.
     let mut rc: RECT = std::mem::zeroed();
@@ -634,8 +690,14 @@ pub(crate) unsafe fn capture_window_thumb_inner(hwnd: isize, max_w: u32, max_h: 
         let hbmp_bb = CreateCompatibleBitmap(hdc_screen, src_w as i32, src_h as i32);
         let old_bb = SelectObject(hdc_bb, hbmp_bb);
         let _ = BitBlt(
-            hdc_bb, 0, 0, src_w as i32, src_h as i32,
-            hdc_screen, rc.left, rc.top,
+            hdc_bb,
+            0,
+            0,
+            src_w as i32,
+            src_h as i32,
+            hdc_screen,
+            rc.left,
+            rc.top,
             SRCCOPY | CAPTUREBLT,
         );
         crate::log::write(&format!(
@@ -657,8 +719,12 @@ pub(crate) unsafe fn capture_window_thumb_inner(hwnd: isize, max_w: u32, max_h: 
 
     let mut pixel_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
     let hbmp_dst = CreateDIBSection(
-        hdc_screen, &bmi as *const _ as *const _,
-        DIB_RGB_COLORS, &mut pixel_ptr as *mut *mut _, 0, 0,
+        hdc_screen,
+        &bmi as *const _ as *const _,
+        DIB_RGB_COLORS,
+        &mut pixel_ptr as *mut *mut _,
+        0,
+        0,
     );
     if hbmp_dst == 0 {
         SelectObject(hdc_mem, old_bmp);
@@ -670,8 +736,19 @@ pub(crate) unsafe fn capture_window_thumb_inner(hwnd: isize, max_w: u32, max_h: 
     let hdc_dst = CreateCompatibleDC(hdc_screen);
     let old_dst = SelectObject(hdc_dst, hbmp_dst);
     SetStretchBltMode(hdc_dst, HALFTONE as i32);
-    StretchBlt(hdc_dst, 0, 0, target_w as i32, target_h as i32,
-        hdc_mem, 0, 0, src_w as i32, src_h as i32, SRCCOPY);
+    StretchBlt(
+        hdc_dst,
+        0,
+        0,
+        target_w as i32,
+        target_h as i32,
+        hdc_mem,
+        0,
+        0,
+        src_w as i32,
+        src_h as i32,
+        SRCCOPY,
+    );
 
     SelectObject(hdc_mem, old_bmp);
     DeleteObject(hbmp_src);
@@ -711,8 +788,16 @@ pub(crate) unsafe fn capture_window_thumb_inner(hwnd: isize, max_w: u32, max_h: 
     let result = buf.into_inner();
     crate::log::write(&format!(
         "capture: hwnd={hwnd:#x} {}x{} -> {}x{}, {} bytes{}",
-        src_w, src_h, target_w, target_h, result.len(),
-        if used_bitblt_fallback { " [BitBlt fallback]" } else { "" }
+        src_w,
+        src_h,
+        target_w,
+        target_h,
+        result.len(),
+        if used_bitblt_fallback {
+            " [BitBlt fallback]"
+        } else {
+            ""
+        }
     ));
     Some(result)
 }
@@ -748,7 +833,9 @@ pub fn focus_window(hwnd: isize) -> bool {
 
         let result = SetForegroundWindow(hwnd);
         success = result != 0;
-        crate::log::write(&format!("focus_window: SetForegroundWindow returned {result}, success={success}"));
+        crate::log::write(&format!(
+            "focus_window: SetForegroundWindow returned {result}, success={success}"
+        ));
 
         if !alt_was_down {
             std::thread::sleep(Duration::from_millis(10));
@@ -768,27 +855,39 @@ pub fn focus_window(hwnd: isize) -> bool {
 }
 
 /// Close a window by posting WM_CLOSE.
+#[allow(dead_code)]
 pub fn close_window(hwnd: isize) -> bool {
     crate::log::write(&format!("close_window: hwnd={hwnd:#x}"));
-    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(hwnd as HWND, 0x0010, 0, 0) != 0 }
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(hwnd as HWND, 0x0010, 0, 0) != 0
+    }
 }
 
 /// Minimize a window.
+#[allow(dead_code)]
 pub fn minimize_window(hwnd: isize) {
     crate::log::write(&format!("minimize_window: hwnd={hwnd:#x}"));
-    unsafe { ShowWindow(hwnd as HWND, SW_MINIMIZE); }
+    unsafe {
+        ShowWindow(hwnd as HWND, SW_MINIMIZE);
+    }
 }
 
 /// Maximize a window.
+#[allow(dead_code)]
 pub fn maximize_window(hwnd: isize) {
     crate::log::write(&format!("maximize_window: hwnd={hwnd:#x}"));
-    unsafe { ShowWindow(hwnd as HWND, SW_MAXIMIZE); }
+    unsafe {
+        ShowWindow(hwnd as HWND, SW_MAXIMIZE);
+    }
 }
 
 /// Restore a minimized or maximized window.
+#[allow(dead_code)]
 pub fn restore_window(hwnd: isize) {
     crate::log::write(&format!("restore_window: hwnd={hwnd:#x}"));
-    unsafe { ShowWindow(hwnd as HWND, SW_RESTORE); }
+    unsafe {
+        ShowWindow(hwnd as HWND, SW_RESTORE);
+    }
 }
 
 /// Switch to a virtual desktop by index.
@@ -888,17 +987,13 @@ fn get_window_desktop_id(hwnd: isize) -> Option<String> {
         // 4: IsWindowOnDesktop (hwnd, desktopGuid) — deprecated?
         // 5: GetWindowDesktopId(hwnd, *guid) — this is what we need
         let vtbl = *(vdm as *const *const usize);
-        let get_window_desktop_id_fn: unsafe fn(
-            *mut std::ffi::c_void,
-            isize,
-            *mut GUID,
-        ) -> i32 = std::mem::transmute(*vtbl.add(5));
+        let get_window_desktop_id_fn: unsafe fn(*mut std::ffi::c_void, isize, *mut GUID) -> i32 =
+            std::mem::transmute(*vtbl.add(5));
 
         let mut guid: GUID = std::mem::zeroed();
         let hr2 = get_window_desktop_id_fn(vdm, hwnd, &mut guid);
 
-        let release: unsafe fn(*mut std::ffi::c_void) -> u32 =
-            std::mem::transmute(*vtbl.add(2));
+        let release: unsafe fn(*mut std::ffi::c_void) -> u32 = std::mem::transmute(*vtbl.add(2));
         release(vdm);
 
         if hr2 < 0 {
@@ -907,9 +1002,17 @@ fn get_window_desktop_id(hwnd: isize) -> Option<String> {
 
         Some(format!(
             "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-            guid.data1, guid.data2, guid.data3, guid.data4[0], guid.data4[1],
-            guid.data4[2], guid.data4[3], guid.data4[4], guid.data4[5],
-            guid.data4[6], guid.data4[7]
+            guid.data1,
+            guid.data2,
+            guid.data3,
+            guid.data4[0],
+            guid.data4[1],
+            guid.data4[2],
+            guid.data4[3],
+            guid.data4[4],
+            guid.data4[5],
+            guid.data4[6],
+            guid.data4[7]
         ))
     }
 }
@@ -948,8 +1051,7 @@ fn get_desktop_count() -> u32 {
         let _ = get_count(vdm, &mut count);
 
         // Release
-        let release: unsafe fn(*mut std::ffi::c_void) -> u32 =
-            std::mem::transmute(*vtbl.add(2));
+        let release: unsafe fn(*mut std::ffi::c_void) -> u32 = std::mem::transmute(*vtbl.add(2));
         release(vdm);
 
         count
@@ -998,10 +1100,8 @@ fn get_current_desktop_index() -> u32 {
         let current_guid = get_desktop_guid(current_desktop);
 
         // GetDesktops -> IObjectArray*
-        let get_desktops: unsafe fn(
-            *mut std::ffi::c_void,
-            *mut *mut std::ffi::c_void,
-        ) -> i32 = std::mem::transmute(*vtbl.add(4));
+        let get_desktops: unsafe fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> i32 =
+            std::mem::transmute(*vtbl.add(4));
         let mut desktops: *mut std::ffi::c_void = std::ptr::null_mut();
         let _ = get_desktops(vdm, &mut desktops);
 
@@ -1024,12 +1124,7 @@ fn get_current_desktop_index() -> u32 {
 
             for i in 0..arr_count {
                 let mut desktop: *mut std::ffi::c_void = std::ptr::null_mut();
-                if get_at(
-                    desktops,
-                    i,
-                    &IID_IVIRTUAL_DESKTOP as *const _,
-                    &mut desktop,
-                ) >= 0
+                if get_at(desktops, i, &IID_IVIRTUAL_DESKTOP as *const _, &mut desktop) >= 0
                     && !desktop.is_null()
                 {
                     let guid = get_desktop_guid(desktop);
@@ -1115,10 +1210,8 @@ fn get_desktop_guid_string(index: u32) -> Result<String, ()> {
         }
 
         let vtbl = *(vdm as *const *const usize);
-        let get_desktops: unsafe fn(
-            *mut std::ffi::c_void,
-            *mut *mut std::ffi::c_void,
-        ) -> i32 = std::mem::transmute(*vtbl.add(4));
+        let get_desktops: unsafe fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> i32 =
+            std::mem::transmute(*vtbl.add(4));
         let mut desktops: *mut std::ffi::c_void = std::ptr::null_mut();
         let _ = get_desktops(vdm, &mut desktops);
 
@@ -1144,9 +1237,17 @@ fn get_desktop_guid_string(index: u32) -> Result<String, ()> {
                 let guid = get_desktop_guid(desktop);
                 result = Ok(format!(
                     "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-                    guid.data1, guid.data2, guid.data3, guid.data4[0], guid.data4[1],
-                    guid.data4[2], guid.data4[3], guid.data4[4], guid.data4[5],
-                    guid.data4[6], guid.data4[7]
+                    guid.data1,
+                    guid.data2,
+                    guid.data3,
+                    guid.data4[0],
+                    guid.data4[1],
+                    guid.data4[2],
+                    guid.data4[3],
+                    guid.data4[4],
+                    guid.data4[5],
+                    guid.data4[6],
+                    guid.data4[7]
                 ));
 
                 let rel: unsafe fn(*mut std::ffi::c_void) -> u32 =
@@ -1173,12 +1274,14 @@ fn guid_eq(a: GUID, b: GUID) -> bool {
 
 fn read_registry_value(key_path: &str, value_name: &str) -> Result<String, ()> {
     use windows_sys::Win32::System::Registry::{
-        RegOpenKeyExW, RegQueryValueExW, RegCloseKey, HKEY_CURRENT_USER,
-        KEY_READ, REG_SZ,
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_SZ,
     };
     unsafe {
         let key_path_w: Vec<u16> = key_path.encode_utf16().chain(std::iter::once(0)).collect();
-        let value_name_w: Vec<u16> = value_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let value_name_w: Vec<u16> = value_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let mut hkey = 0isize;
         if RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -1214,12 +1317,9 @@ fn read_registry_value(key_path: &str, value_name: &str) -> Result<String, ()> {
 // These fire on window create/destroy/foreground-change and push lightweight
 // win_event messages to the phone, so the UI can update without a full poll.
 
-use windows_sys::Win32::UI::Accessibility::{
-    SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK,
-};
+use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_DESTROY, EVENT_OBJECT_CREATE,
-    EVENT_OBJECT_FOCUS,
+    EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND,
 };
 
 /// WinEvent hook handles — stored so we can uninstall on drop.
@@ -1255,7 +1355,10 @@ unsafe extern "system" fn win_event_callback(
     };
 
     // Title for created/focused events (may be useful; None is fine)
-    let title = if event == EVENT_OBJECT_CREATE || event == EVENT_OBJECT_FOCUS || event == EVENT_SYSTEM_FOREGROUND {
+    let title = if event == EVENT_OBJECT_CREATE
+        || event == EVENT_OBJECT_FOCUS
+        || event == EVENT_SYSTEM_FOREGROUND
+    {
         Some(crate::win::window_list::get_window_title(hwnd))
     } else {
         None
@@ -1282,11 +1385,14 @@ pub fn start_win_event_hooks() {
             EVENT_SYSTEM_FOREGROUND,
             0isize,
             Some(win_event_callback),
-            0,   // all processes
-            0,   // all threads
-            0,   // WINEVENT_OUTOFCONTEXT
+            0, // all processes
+            0, // all threads
+            0, // WINEVENT_OUTOFCONTEXT
         );
-        crate::log::write(&format!("[winlist] SetWinEventHook EVENT_SYSTEM_FOREGROUND returned={:#x}", hook1));
+        crate::log::write(&format!(
+            "[winlist] SetWinEventHook EVENT_SYSTEM_FOREGROUND returned={:#x}",
+            hook1
+        ));
 
         let hook2 = SetWinEventHook(
             EVENT_OBJECT_CREATE,
@@ -1297,7 +1403,10 @@ pub fn start_win_event_hooks() {
             0,
             0,
         );
-        crate::log::write(&format!("[winlist] SetWinEventHook EVENT_OBJECT_CREATE/DESTROY returned={:#x}", hook2));
+        crate::log::write(&format!(
+            "[winlist] SetWinEventHook EVENT_OBJECT_CREATE/DESTROY returned={:#x}",
+            hook2
+        ));
 
         WINEVENT_HOOKS = [hook1, hook2];
         crate::log::write(&format!(
@@ -1339,7 +1448,10 @@ mod tests {
     fn enumerate_desktops_returns_at_least_one() {
         let desktops = enumerate_desktops();
         assert!(!desktops.is_empty(), "should have at least one desktop");
-        assert!(desktops.iter().any(|d| d.is_current), "one desktop should be current");
+        assert!(
+            desktops.iter().any(|d| d.is_current),
+            "one desktop should be current"
+        );
     }
 
     #[test]
