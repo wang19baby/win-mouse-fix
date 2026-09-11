@@ -772,6 +772,12 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         if is_our_injected_event(ms.flags, ms.dwExtraInfo) {
             return CallNextHookEx(0, code, wparam, lparam);
         }
+        // Bypass unmarked LMB DOWN injected by external tools (e.g. WeChat screenshot).
+        // WeChat injects LMB DOWN at the anchor point without any flags or marker.
+        // This must pass through untouched so the native drag-select works.
+        if ev == WM_LBUTTONDOWN && ms.flags == 0 && ms.dwExtraInfo == 0 {
+            return CallNextHookEx(0, code, wparam, lparam);
+        }
 
         // ── Wheel events ──────────────────────────────────────────────────────────
         if ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL {
