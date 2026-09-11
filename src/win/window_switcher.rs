@@ -100,7 +100,7 @@ pub fn on_middle_down() -> bool {
             s.mode = Mode::Idle;
             s.alt_down_at = None;
             drop(s);
-            send_alt_up_async();
+            send_alt_up();
             true
         }
         Mode::Idle => {
@@ -157,7 +157,6 @@ pub fn poll_middle() {
     // Prime: first poll only seeds the previous-state bit, never fires EDGE.
     if !POLL_PRIMED.swap(true, Ordering::Relaxed) {
         s.prev_middle_polled = pressed;
-        crate::log::write(&format!("poll_middle: PRIMED (pressed={})", pressed));
         return;
     }
 
@@ -167,10 +166,6 @@ pub fn poll_middle() {
     if pressed && !prev {
         // EDGE DOWN - drive the polling state machine.
         let now = Instant::now();
-        crate::log::write(&format!(
-            "poll_middle: EDGE DOWN prev={} raw=0x{:04x}",
-            prev, raw as u16
-        ));
         // If the switcher is already open, this EDGE DOWN means "confirm
         // and close" — same semantics as the hook-path on_middle_down()
         // Mode::Active branch.
@@ -179,14 +174,12 @@ pub fn poll_middle() {
             s.alt_down_at = None;
             s.polling_pending = None;
             drop(s);
-            crate::log::write("poll_middle: EDGE DOWN active -> confirm close");
-            send_alt_up_async();
+            send_alt_up();
         } else {
             match s.polling_pending {
                 None => {
                     // First press: arm the double-click window.
                     s.polling_pending = Some(now);
-                    crate::log::write("poll_middle: armed polling_pending");
                 }
                 Some(t) if now.duration_since(t) <= DOUBLE_CLICK => {
                     // Double-click: open the switcher.
@@ -194,13 +187,11 @@ pub fn poll_middle() {
                     s.mode = Mode::Active;
                     s.alt_down_at = Some(now);
                     drop(s);
-                    crate::log::write("poll_middle: EDGE DOWN #2 -> open switcher");
                     send_alt_tab_enter_async();
                 }
                 Some(_) => {
                     // Stale pending: restart the window.
                     s.polling_pending = Some(now);
-                    crate::log::write("poll_middle: EDGE DOWN stale -> restart");
                 }
             }
         }
@@ -236,8 +227,7 @@ pub fn tick() {
         }
     };
     if should_replay {
-        // Off-thread: SendInput is sync but the test runner has no message loop,
-        // and even on the timer thread we want to keep tick() cheap.
+        // A single two-event SendInput batch is bounded work on the timer thread.
         dispatch_replay(replay_middle_click);
     }
 
@@ -258,8 +248,8 @@ pub fn tick() {
         s.mode = Mode::Idle;
         s.alt_down_at = None;
         drop(s);
-        send_esc_async();
-        send_alt_up_async();
+        send_escape();
+        send_alt_up();
     }
 }
 
@@ -278,39 +268,27 @@ pub fn step(forward: bool) -> bool {
     let alt_real = unsafe { (GetAsyncKeyState(VK_MENU as i32) as i16) < 0 };
     {
         let mut s = STATE.lock();
-        let mode = s.mode;
         if s.mode != Mode::Active || !alt_real {
             if s.mode == Mode::Active {
                 s.mode = Mode::Idle;
                 s.alt_down_at = None;
             }
-            crate::log::write(&format!(
-                "step: skip mode={:?} alt_real={} forward={}",
-                mode, alt_real, forward
-            ));
             return false;
         }
     }
-    crate::log::write(&format!(
-        "step: ACTIVE forward={} alt_real=true, send Tab",
-        forward
-    ));
     if forward {
-        send_tab_async();
+        send_tab();
     } else {
-        send_shift_tab_async();
+        send_shift_tab();
     }
     true
 }
 
 // ─── Low-level input synthesis ────────────────────────────────────────────────
 //
-// The `_sync` workers actually call SendInput. The `_async` helpers spawn a
-// dedicated thread so the caller (typically the WH_MOUSE_LL hook or the
-// ClickCycle timer) is never blocked by thread::sleep between key events.
-// This matters specifically for send_alt_tab_enter_sync, which sleeps twice
-// for 10ms each. Blocking the ClickCycle timer would cause poll_middle to
-// miss the second DOWN edge of a fast double-click.
+// Small SendInput sequences run inline to preserve wheel-step ordering and
+// avoid spawning a thread for every event. Only the initial Alt+Tab sequence
+// stays off-thread because it intentionally waits 20 ms for shell timing.
 
 fn send_key(vk: u16, down: bool) {
     unsafe {
@@ -329,18 +307,13 @@ fn send_key(vk: u16, down: bool) {
     }
 }
 
-/// In tests, `SendInput` cannot synthesise a real middle click (no foreground
-/// window, no message loop on the test thread). Skip the work entirely and
-/// rely on the assertion that `pending_middle` was cleared. In production,
-/// dispatch on a worker thread to keep `tick()` cheap.
+/// Tests do not synthesize a real middle click.
 #[cfg(test)]
-fn dispatch_replay(_f: fn()) {
-    // No-op in tests.
-}
+fn dispatch_replay(_f: fn()) {}
 
 #[cfg(not(test))]
 fn dispatch_replay(f: fn()) {
-    std::thread::spawn(f);
+    f();
 }
 
 fn send_alt_tab_enter_sync() {
@@ -353,44 +326,33 @@ fn send_alt_tab_enter_sync() {
 }
 
 fn send_alt_tab_enter_async() {
-    std::thread::spawn(send_alt_tab_enter_sync);
+    if let Err(e) = std::thread::Builder::new()
+        .name("window-switcher-enter".to_string())
+        .spawn(send_alt_tab_enter_sync)
+    {
+        crate::log::write(&format!("window switcher worker failed to start: {e}"));
+    }
 }
 
-fn send_tab_sync() {
+fn send_tab() {
     send_key(VK_TAB, true);
     send_key(VK_TAB, false);
 }
 
-fn send_tab_async() {
-    std::thread::spawn(send_tab_sync);
-}
-
-fn send_shift_tab_sync() {
+fn send_shift_tab() {
     send_key(VK_SHIFT, true);
     send_key(VK_TAB, true);
     send_key(VK_TAB, false);
     send_key(VK_SHIFT, false);
 }
 
-fn send_shift_tab_async() {
-    std::thread::spawn(send_shift_tab_sync);
-}
-
-fn send_alt_up_sync() {
+fn send_alt_up() {
     send_key(VK_MENU, false);
 }
 
-fn send_alt_up_async() {
-    std::thread::spawn(send_alt_up_sync);
-}
-
-fn send_esc_sync() {
+fn send_escape() {
     send_key(VK_ESCAPE, true);
     send_key(VK_ESCAPE, false);
-}
-
-fn send_esc_async() {
-    std::thread::spawn(send_esc_sync);
 }
 
 fn replay_middle_click() {

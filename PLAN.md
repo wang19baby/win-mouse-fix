@@ -2,15 +2,14 @@
 
 > 目标:复刻 macOS `mac-mouse-fix`(`D:/work_space/personal_workspace/mac-mouse-fix`),
 > 做一款 **Windows 下比 Apple 妙控板更好用的鼠标工具**。
-> 技术栈:Rust + `windows-sys`(Win32)。当前可编译、可启动、**74 测试通过**。
-> 详细背景见 `CLAUDE.md`;平滑滚动算法细节见对话记录。
+> 技术栈: Rust + `windows-sys`（Win32）。当前质量门禁结果见 `docs/architecture-stability-optimization-evidence.md`。
+> 详细背景与运行时代码实查见 `CLAUDE.md`、`ROADMAP.md`。
 
 ---
 
-## 状态校正（2026-08-27）
+## 状态校正（2026-09-11）
 
-> **文档曾严重滞后于代码。** 核查发现 Phase 1/2/4/5 的核心功能（平滑滚动、按键重映射、修改键、指针加速）已在代码中实现，并经 `cargo test`（74 项）验证、已接入 `hooks.rs`。原 `CLAUDE.md` 称"功能逻辑均为占位"已不准确,已同步修订。
-> 真实进度见各 Phase 标题状态标记:**主线(Phase 0–7)已全部实装**;**支线 Phase 8 起步(8.1 最小闭环已实装),8.2 增强/9/10 为绿地未实现**。
+> 早期计划把“模块代码存在”“运行时已接线”“真实设备已验收”混为完成。当前实查结论：平滑滚动、按键重映射、拖拽、修改键、profile 和手机 LAN 输入已接入；指针加速尚未接入移动钩子；电池托盘刷新与 DPI 自动切换定时器尚未启用；手机 Web App 仍缺离线与多设备真机验收。当前状态以 `ROADMAP.md` 为准。
 
 ---
 
@@ -106,7 +105,7 @@ invert = false       # 反转方向
 
 ---
 
-## Phase 5 — 指针加速 / 速度调校 ✅ 已实现（PointerAccel + 测试, 接入 hooks）(可后置,难度较高)
+## Phase 5 — 指针加速 / 速度调校 [部分：算法有测试，运行时未接入]
 
 **对应 mac 模块**:`Core/PointerSpeed/`(IOHID 加速表桥接)。
 
@@ -163,7 +162,7 @@ mac-mouse-fix 3 已砍掉、2 有。作为增强:按前台窗口 exe 名套用�
 
 ---
 
-## Phase 9 — 电量托盘图标(动态图标) ✅
+## Phase 9 — 电量托盘图标 [部分：渲染器存在，刷新定时器未启用]
 
 **目标**:托盘图标实时显示鼠标电量百分比;低电量变色提示。
 **依赖**:Phase 8(`cache.rs` 的 `BatteryInfo`)。
@@ -182,7 +181,7 @@ mac-mouse-fix 3 已砍掉、2 有。作为增强:按前台窗口 exe 名套用�
 
 ---
 
-## Phase 10 — DPI 档位配置 + 跨屏自动切换 ✅(2026-08-28 校正完成)
+## Phase 10 — DPI 档位配置 + 跨屏自动切换 [部分：逻辑存在，定时器与硬件写入待真机验收]
 
 ### 10.1 配置扩展(`config.rs` + `config.toml`)
 ```toml
@@ -206,7 +205,7 @@ base_dpi = 800         # 参考屏基准 DPI(相对缩放锚点)
 - 杂牌无 DPI 设备 → 降级提示或 OS 灵敏度补偿,不崩。
 
 
-## Phase 11 — 手机应急妙控板（Web PWA 对接托盘）⬜（计划整顿, 待 PoC）
+## Phase 11 — 手机应急妙控板（Web App 对接托盘）[部分已接入]
 
 **目标**:手机浏览器扫码 → 打开全屏妙控板网页 → 经局域网驱动 Windows 光标/滚动/手势,作为**真实鼠标损坏时的应急触控板**。手感复用现有 `SendInput` 注入管线(`src/scroll/injector.rs` / `src/win/hooks.rs`),与真实鼠标一致。
 **详细设计**:`docs/phone-trackpad-plan.md`(含协议 JSON、手势阈值表、攻击点闭环表)。
@@ -214,16 +213,16 @@ base_dpi = 800         # 参考屏基准 DPI(相对缩放锚点)
 ### 11.0 架构定稿(经攻击评审修订)
 - **传输**:WiFi LAN。托盘内嵌轻量 HTTP 服务:`/` 返回全屏妙控板网页(打包进 exe),`/ws` WebSocket 输入+状态。**砍 SSE**(WS 已双向;SSE 无 auth 头且冗余)。
 - **网页**:全屏 PWA(原生零安装);iOS 须"添加到主屏幕"才真全屏(A2HS)。
-- **连接**:托盘菜单"手机妙控板"→ 弹 Win32 窗口 GDI 自绘二维码(`http://<LAN_IP>:<port>/`);256-bit token 随 QR 轮换,WS 首帧认证,否则 3s 拒连。
-- **已验证可复用**(核对 `hooks.rs`/`injector.rs`):`SCROLL_TX: Mutex<Option<Sender<WheelInput>>>` 已是 mpsc channel(WS 线程复用同模式);`LLMHF_INJECTED` 守卫忽略自身注入(无回环);`send_mouse_move` 为 `pub` 可直接调。
-- **已否决**:原生安卓/iOS app(iOS 不能当 BT HID 外设)、蓝牙 HID(网页走 IP,无意义)、SSE。
-- **语音(后置,P11.5)**:网页文本框 → 系统输入法麦克风做语音→文本 → 逐字 `key` 发 PC;本期仅留 UI 与接口。
+- **连接**:托盘菜单“手机妙控板”打开二维码；64 字符十六进制（256-bit）bearer token 由 Windows CSPRNG 生成并版本化持久化，WS 首帧认证失败即拒绝输入。
+- **已验证可复用**:`LLMHF_INJECTED` + 私有 marker 防止自身注入回环；手机 move/scroll/tap/gesture 最终复用 Win32 注入动作。
+- **已否决**:原生安卓/iOS app、蓝牙 HID 和并行 SSE 通道。
+- **语音**:网页 Web Speech 文本通过 `key` 消息注入；浏览器兼容性与在线语音服务依赖仍需真机说明。
 
 ### 11.1 托盘本地服务(含 A1/A2/A5/B6/B7)
-- LAN IP 发现:`GetAdaptersAddresses` 枚举,取 Up 的以太网/WiFi、非 `127.*`/`169.254.*`/VPN/WSL/虚拟网卡的活动 IPv4;多候选取默认路由出口。
+- LAN IP 发现:当前通过 UDP 路由选择获取一个活动 IPv4；多网卡枚举、VPN/虚拟网卡排除仍是可靠性待办。
 - 绑定**具体 LAN IP**(非 `0.0.0.0`),避免暴露公网 WiFi。
 - 防火墙:首次启动 `netsh advfirewall firewall add rule ...` 放行入站 TCP `<port>`(连不上的头号原因)。
-- 服务器模型:手写监听线程 `accept` → **每连接 `spawn` 线程**读 WS 帧(RFC6455 手动握手);零新增 async 依赖,贴项目风格。后续加键盘/屏幕镜像再上 axum。
+- 服务器模型:手写非阻塞监听线程 `accept` → 最多 32 个阻塞式连接工作线程读 WS 帧；系统回调只写入 256 项有界广播队列，实际 socket 写入由独立广播线程串行完成。零新增 async 依赖；后续增加键盘/屏幕镜像再评估 axum。
 
 ### 11.2 WS 协议(P11.1)
 - 客户端→服务端:`auth{token}` / `move{dx,dy}` / `scroll{dx,dy}` / `tap{b}` / `gesture{g}` / `key{text}`(JSON 信封,PoC)。
@@ -232,7 +231,7 @@ base_dpi = 800         # 参考屏基准 DPI(相对缩放锚点)
 
 ### 11.3 注入对接(含 A4/B1)
 - `move` → `send_mouse_move`,增益走**独立 `[touch]` 配置段**(与鼠标 `accel::PointerAccel` 解耦,手机屏小增益高一个数量级)。
-- `scroll` → `SCROLL_TX.send(WheelInput)`,平滑曲线走**触摸专用参数**(现有双指数为离散 120 单位轮子 tick 调参,喂连续 delta 会双平滑发飘)。
+- `scroll` → 触摸专用增益后直接 `SendInput`，避免把连续触摸 delta 再送入离散滚轮平滑器造成双重平滑。
 - `tap` → `SendInput` 左/右键。
 - `gesture`(A4)→ 独立 `TouchGestureRecognizer`(不在 DragController 内):3 指上滑→`Win+Tab`,3 指左右→`Ctrl+Win+←/→`。DragController 由鼠标按键驱动,触摸无按键,不可复用。
 
@@ -267,7 +266,7 @@ A1 防火墙+IP / A2 砍 SSE / A3 删 vibrate / A4 独立手势识别器 / B1 �
 - 延迟(C1):WiFi(尤 2.4G)实测 15–40ms 抖动,仅应急可用,非日常主力。
 - UIPI/权限:沿用 PLAN 约束;托盘需足够权限/声明 manifest。
 - 防火墙/IP(A1):不写规则连不上;多网卡取错 IP 扫码打不开。
-- 威胁模型(B7):仅信任家庭 LAN;绝不公网/端口转发;token 随 QR 轮换。
+- 威胁模型(B7):仅信任家庭 LAN，绝不公网/端口转发；token 由 Windows CSPRNG 生成并版本化持久化，但当前传输仍是明文 HTTP/WebSocket。
 - iOS 全屏(C4):须引导加到主屏。
 
 ---
@@ -283,12 +282,10 @@ A1 防火墙+IP / A2 砍 SSE / A3 删 vibrate / A4 独立手势识别器 / B1 �
 
 ---
 
-## 建议执行顺序（状态校正于 2026-08-27）
+## 建议执行顺序（状态校正于 2026-09-11）
 
-**OS 拦截主线(愿景核心,与设备无关)** —— 进度:`Phase 0`✅ → `Phase 1`✅ → `Phase 2`✅ → `Phase 4`✅ → `Phase 5`✅ → `Phase 6`✅(热重载) → `Phase 3`🟡(拖拽手势) → `Phase 7`✅(配置档) → **主线收尾完成**;设备支线:`Phase 8`(8.1 最小闭环 ✅,8.2 缓存 ✅/Probe降级 已含,registry宏·后端trait 未做) → `Phase 9` 电量托盘 ✅ → `Phase 10` DPI 跨屏 ✅(手动同步)。
-`Phase 3` 拖拽手势 🟡 → `Phase 6` config.toml 热重载 ✅ → `Phase 7` per-app 配置档 ✅(主线收尾完成)。
-
-**设备层支线(Logitech 可读/可设,独立于主线)** —— `Phase 8` 起步(8.1 枚举+电量最小闭环 ✅,8.2 中 cache ✅ 其余⬜) → `Phase 9` 电量托盘图标 ✅ → `Phase 10` DPI 跨屏自动切换 ✅(2026-08-28 经 OpenLogi 源码校正 SetSensorDpi=fn 0x03,big-endian)。
-下一步建议(主线收尾):**主线(Phase 0–7)已全部实装**;设备支线 `Phase 8` 的 8.1 最小闭环(枚举+电量)已实装。
-下一步建议(支线):Phase 10 已结项——经 OpenLogi `openlogi-hidpp` crate(`adjustable_dpi.rs`)确认 HID++ feature 0x2201 AdjustableDpi 的 SetSensorDpi function code=**0x03**,DPI 字节序为**big-endian**(hi,lo)。`dpi-probe` 二进制已就绪,可在真机有 G502 时运行验证。
-下一步建议(新支线):**Phase 11 手机应急妙控板**(计划整顿完成,详见 `docs/phone-trackpad-plan.md`)——新增托盘 HTTP/WS 服务 + 全屏妙控板网页,与现有 `SendInput` 管线对接;待拍板进 PoC。
+1. [高] 用真实鼠标验收平滑滚动、左键拖拽、按键录制和中键窗口切换，建立延迟/CPU 基线。
+2. [高] 用 iOS Safari 与 Android Chrome 验收手机触控、断线重连、防火墙和 Web Speech。
+3. [高] 在支持的 Logitech 设备上验证电量、HID++ DPI function code 与跨屏写入，再启用托盘/DPI 定时器。
+4. [中] 设计不会产生 SendInput 回环或双倍位移的指针加速接线方案，再把 P5 从算法阶段提升为运行时功能。
+5. [中] 完成多网卡选择、Service Worker 和手机端连接质量反馈。

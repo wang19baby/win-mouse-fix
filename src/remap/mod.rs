@@ -9,7 +9,7 @@
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -179,7 +179,7 @@ pub enum ModifiedDragVariant {
 
 // ─── RemapEntry ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemapEntry {
     #[serde(default)]
     pub modifiers: ModifierCondition,
@@ -188,7 +188,7 @@ pub struct RemapEntry {
 }
 
 /// Legacy remap entry (source button → action). Used for simple button remapping.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LegacyRemapEntry {
     pub source: MouseButton,
     #[serde(default)]
@@ -441,12 +441,13 @@ pub fn execute_effect(effect: &Effect) {
             button,
             n_of_clicks,
         } => {
+            // SendInput already appends these events serially to the system input
+            // queue. Sleeping here would block WH_MOUSE_LL for 100 ms per click
+            // and can make Windows remove the low-level hook.
             for _ in 0..*n_of_clicks {
                 unsafe {
                     send_mouse_button(*button, true);
-                    std::thread::sleep(Duration::from_millis(50));
                     send_mouse_button(*button, false);
-                    std::thread::sleep(Duration::from_millis(50));
                 }
             }
         }

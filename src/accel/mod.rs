@@ -24,16 +24,13 @@ pub fn accel_factor(speed: f64, cfg: &AccelConfig) -> f64 {
 
 /// Tracks cursor position across move events and produces accelerated deltas.
 #[allow(dead_code)]
+#[derive(Default)]
 pub struct PointerAccel {
     #[allow(dead_code)]
     last: Option<(i32, i32)>,
 }
 
 impl PointerAccel {
-    pub fn new() -> Self {
-        Self { last: None }
-    }
-
     /// Given the current absolute cursor position, return the relative delta to
     /// inject (already accelerated), or `None` for the first sample (no history).
     #[allow(dead_code)]
@@ -98,7 +95,7 @@ mod tests {
     #[test]
     fn controller_scales_deltas() {
         let c = cfg();
-        let mut a = PointerAccel::new();
+        let mut a = PointerAccel::default();
         assert_eq!(a.on_move(0, 0, &c), None); // first sample: no history
                                                // Slow move (~10px) -> ~1.0x -> unchanged.
         assert_eq!(a.on_move(10, 0, &c), Some((10, 0)));
@@ -111,10 +108,10 @@ mod tests {
     #[test]
     fn controller_resets_history() {
         let c = cfg();
-        let mut a = PointerAccel::new();
+        let mut a = PointerAccel::default();
         a.on_move(0, 0, &c);
         a.on_move(10, 0, &c);
-        a = PointerAccel::new(); // fresh: history cleared
+        a = PointerAccel::default(); // fresh: history cleared
         assert_eq!(a.on_move(500, 0, &c), None);
     }
 }

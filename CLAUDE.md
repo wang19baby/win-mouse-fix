@@ -34,48 +34,50 @@
 
 ## 当前实现（win-mouse-fix，Rust + Win32）
 
-脚手架已搭好，**核心功能已在代码中实现并经单元测试验证**（`cargo test` 99 项通过），非占位：
+项目已超出脚手架阶段。运行时代码、关键缺口和测试结果以 `ROADMAP.md` 及
+`docs/architecture-stability-optimization-evidence.md` 的最近一次实查为准：
 
-- `src/main.rs` —— 入口：加载配置 → 建托盘 → 装钩子 → 跑消息循环 → 卸载钩子
-- `src/config.rs` + `config.toml` —— TOML 配置（general / scroll / buttons / drag / accel），含平滑/重映射/加速全套参数
+- `src/main.rs` —— 入口：加载配置 → 建托盘 → 装钩子 → 可选启动 LAN 服务 → 消息循环 → 有序停止
+- `src/config.rs` + `config.toml` —— TOML 配置、每应用 profile、原子保存与热重载
 - `src/log.rs` —— 文件 + stderr 日志
-- `src/win/tray.rs` —— 系统托盘（消息-only 窗口，右键菜单：关于 / 退出 / 平滑滚动 / 按键重映射 / 录制映射）
-- `src/win/hooks.rs` —— `WH_MOUSE_LL` + `WH_KEYBOARD_LL` 低级钩子；wheel 接入平滑注入管线，button 接入重映射引擎，move 接入指针加速
-- `src/win/message_loop.rs` —— 标准 Win32 消息泵
-  - `src/scroll/` —— 平滑滚动引擎：`smoother`(双指数) / `wheel_tracker` / `injector`(SendInput 线程) / `engine` / `curve` / `subpixel`，99 测试通过
-- `src/remap/` —— 按键重映射：`RemapEntry` / `RemapTable` / `ClickCycleTracker` / `RemapEngine` / `execute_effect`
-- `src/accel/` —— 指针加速：`accel_factor` + `PointerAccel`（纯函数 + 测试），经 `injector::send_mouse_move` 接入
-- `src/gesture/` —— 窗口拖拽手势：`DragController`（部分接入）
-- `src/modifiers.rs` —— 修改键状态（`ActiveModifiers` 等），已接入 `process_wheel`
+- `src/win/tray.rs` —— 系统托盘：全局功能开关、录制映射、手机妙控板、帮助、关于、退出
+- `src/win/hooks.rs` —— `WH_MOUSE_LL` + `WH_KEYBOARD_LL`；wheel 接平滑管线，button 接重映射与拖拽
+- `src/win/message_loop.rs` —— Win32 消息泵及跨线程 WinEvent hook 请求
+- `src/scroll/` —— 平滑滚动、惯性曲线、亚像素和专用 `SendInput` 注入线程
+- `src/remap/` —— `RemapEntry` / `ClickCycleTracker` / `RemapEngine` / effect 执行
+- `src/accel/` —— 指针加速数学与状态控制器；当前尚未接入 `WM_MOUSEMOVE`
+- `src/gesture/` —— `DragController` 的 move/scroll/navigate 输出，已接入鼠标钩子
+- `src/remote.rs` + `assets/` —— 可选 LAN HTTP/WebSocket 手机触控板；32 连接上限、有界广播队列、CSPRNG bearer，传输仍为明文且仅适合可信局域网
+- `src/device/` —— Logitech 电量/DPI 查询；托盘刷新与跨屏写入定时器仍待真机验收后启用
 
-> 注：已实现功能**默认配置多为禁用**（`config.toml` 中 `scroll.enabled` 等），需开启后做真实输入烟测确认验收。设备层（电量读取/托盘显示、DPI 读取）已实现，见 PLAN.md Phase 8–10；自动跨屏切换待实现。
+> 发布配置默认启用核心滚动/按键路径；窗口拖拽、指针加速和 LAN 服务采用安全的显式启用。真实输入手感与 HID++ 写入仍必须在目标硬件上验收。
 
 ### Windows 对应关系
 
 | mac（事件拦截） | win（等价机制） |
 |---|---|
 | `CGEventTap`（Helper） | `WH_MOUSE_LL` / `WH_KEYBOARD_LL` 低级钩子（已在 `hooks.rs`） |
-| 辅助功能权限 | 需以管理员/辅助功能方式运行；UIPI 注意 |
+| 权限边界 | 普通桌面程序可在当前用户会话运行；若要作用于提权程序，需同级提权并注意 UIPI |
 | 主 App UI | 暂定：托盘 + 未来配置 UI |
 | 文件配置 + FileMonitor | `config.toml` + 热重载 |
 | `GlobalEventTapThread` | `message_loop.rs` 消息泵线程 |
 
-## 功能落地状态（更新于 2026-08-27）
+## 功能落地状态（运行时代码实查于 2026-09-11）
 
-按 mac 源码模块逐步落地到 Rust，当前进度（详见 PLAN.md 各 Phase 标记）：
+按 mac 源码模块逐步落地到 Rust；“代码存在”与“运行时已接入/真机已验收”分开标记：
 
-| # | 功能 | 对应 mac 模块 | 状态 | 对应 Phase |
+| # | 功能 | 对应 mac 模块 | 实查状态 | 对应 Phase |
 |---|---|---|---|---|
-| 1 | 平滑滚动 | `Smoothing/` | ✅ 已实现（smoother/injector/engine/curve/subpixel + 99 测试） | P1 |
-| 2 | 按键重映射 | `Remap/`+`Buttons/` | ✅ 已实现（RemapEngine + ClickCycleTracker，接入 hooks） | P2 |
-| 3 | 点击拖拽手势 | `Drag/` | ✅ 已实现（DragController: move/scroll(喂注入器)/navigate(前后导航) 三模式；修改键联动: scroll 模式 Shift→横向 / Ctrl→精确） | P3 |
-| 4 | 指针加速 | `PointerSpeed/` | ✅ 已实现（PointerAccel + 测试，接入 hooks） | P5 |
-| 5 | 修改键组合 | `Modifiers/` | ✅ 已实现（ModifiedScrollModification 接入 process_wheel） | P4 |
-| 6 | 配置 UI + 热重载 | 托盘菜单 + GUI | ✅ 部分（托盘菜单已有；config.toml 热重载已实装；轻量 GUI 可选未做） | P6 |
-| 7 | 设备层（电量/DPI） | （竞品融合，无 mac 对应） | 🟡 部分（电量读取+托盘显示、DPI 读取已实现；自动跨屏切换已实现(去抖轮询)；HID++ SetSensorDpi function 码(0x01 占位)待真机校正） | P8–P10 |
+| 1 | 平滑滚动 | `Smoothing/` | [完成] 已接入钩子与专用注入线程 | P1 |
+| 2 | 按键重映射 | `Remap/`+`Buttons/` | [完成] RemapEngine/ClickCycle/AddMode 已接入 | P2 |
+| 3 | 点击拖拽手势 | `Drag/` | [完成] move/scroll/navigate 已接入；待真实鼠标手感验收 | P3 |
+| 4 | 指针加速 | `PointerSpeed/` | [部分] 数学与状态控制器有测试，尚未接入移动事件 | P5 |
+| 5 | 修改键组合 | `Modifiers/` | [完成] ModifiedScrollModification 已接入 | P4 |
+| 6 | 配置 UI + 热重载 | 托盘菜单 + GUI | [部分] 托盘和热重载可用；独立 GUI 未暴露 | P6 |
+| 7 | 设备层（电量/DPI） | （竞品融合） | [部分] 查询/切换代码存在；显示与自动写入定时器未启用，需真机验收 | P8–P10 |
+| 8 | 手机触控板 | `Touch/` 等价输出 | [部分] LAN HTTP/WS、认证和注入已接入；离线 PWA 与多设备真机验收未完成 | P13 |
 
-> 说明：Phase 编号与本文 1–6 顺序略有重排（PLAN 中 P4=修改键、P5=指针加速），语义一一对应。
-> 设备层（电量托盘 / DPI 跨屏，Phase 8–10）为新增需求，源自竞品融合：电量读取与托盘显示、DPI 读取已实现；自动跨屏切换与 DPI 写入（真实 function 码）待实现。
+> Phase 编号与本表顺序不完全一致。设备能力、指针加速和手机端兼容性不得仅凭单元测试宣称完成；以真实硬件/浏览器验收为最终门槛。
 
 > 注：Win32 低级钩子无法拦截所有 mac 能拦截的事件（如某些专有协议鼠标），
 > 且改写能力有限（不能像 `CGEventTap` 那样自由合成触控板手势），

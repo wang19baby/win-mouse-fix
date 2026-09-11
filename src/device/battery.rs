@@ -1,8 +1,8 @@
 //! Read battery level via Logitech G Hub WebSocket API.
 //!
-//! The BOLT/LIGHTSPEED receiver does NOT support standard HID++ 2.0, so we
-//! connect to G Hub's local WebSocket (ws://localhost:9010) to read battery.
-//! G Hub must be running; we auto-start it silently if needed.
+//! Battery telemetry connects to G Hub's local WebSocket (ws://localhost:9010).
+//! G Hub must already be running; polling never launches the heavyweight
+//! companion app behind the user's back.
 use crate::device::cache::BatteryInfo;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{connect, Message};
@@ -97,41 +97,37 @@ fn read_battery_ws() -> Option<(u8, bool)> {
 /// Enumerate Logitech devices and return the first readable battery level.
 /// Used by the tray poll to refresh the global cache.
 pub fn read_first_battery() -> Option<BatteryInfo> {
-    crate::log::write("battery: reading via G Hub WebSocket");
-
     if !ensure_lghub_running() {
         return None;
     }
-
-    match read_battery_ws() {
-        Some((level, charging)) => {
-            crate::log::write(&format!(
-                "battery: OK → {}%{}",
-                level,
-                if charging { " charging" } else { "" }
-            ));
-            Some(BatteryInfo::from_level(level, charging))
-        }
-        None => {
-            crate::log::write("battery: G Hub WebSocket read failed");
-            None
-        }
-    }
+    read_battery_ws().map(|(level, charging)| BatteryInfo::from_level(level, charging))
 }
 
-/// Start a background thread that polls battery every `interval_secs` seconds
-/// and updates `crate::device::cache::BATTERY`. The thread runs until the
-/// process exits. Call once at startup.
+/// Start a process-lifetime worker that refreshes the battery cache immediately,
+/// then every `interval_secs`. Call once at startup.
 pub fn start_bg_poll(interval_secs: u64) {
-    std::thread::spawn(move || {
-        // Initial wait before first poll.
-        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
-        loop {
+    let interval = std::time::Duration::from_secs(interval_secs.max(1));
+    if let Err(e) = std::thread::Builder::new()
+        .name("battery-poll".to_string())
+        .spawn(move || loop {
             let info = read_first_battery();
-            *crate::device::cache::BATTERY.write() = info;
-            std::thread::sleep(std::time::Duration::from_secs(interval_secs));
-        }
-    });
+            let previous = *crate::device::cache::BATTERY.read();
+            if previous != info {
+                match info {
+                    Some(value) => crate::log::write(&format!(
+                        "battery: {}%{}",
+                        value.percent,
+                        if value.charging { " charging" } else { "" }
+                    )),
+                    None => crate::log::write("battery: device became unavailable"),
+                }
+                *crate::device::cache::BATTERY.write() = info;
+            }
+            std::thread::sleep(interval);
+        })
+    {
+        crate::log::write(&format!("battery poll thread failed to start: {e}"));
+    }
 }
 
 /// Read device list from G Hub WebSocket.

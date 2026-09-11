@@ -24,13 +24,16 @@ modifiers = { keyboard = 0x100 }
 trigger = { type = "scroll" }
 effect = { type = "modified_scroll", data = { modification = "precision" } }
 
+# Moves the window under the pointer while the trigger is dragged. Opt in after
+# choosing a trigger that does not conflict with normal selection.
 [drag]
-enabled = true
+enabled = false
 button = "left"
 mode = "move"
 
+# Acceleration remains off until the move-hook integration is complete.
 [accel]
-enabled = true
+enabled = false
 sensitivity = 1000.0
 min_factor = 1.0
 max_factor = 2.0
@@ -40,8 +43,9 @@ gain = 6.7
 scroll_gain = 5.5
 tap_ms = 220
 
+# LAN listener and firewall access are explicit opt-in.
 [remote]
-enabled = true
+enabled = false
 port = 18765
 large_screen_split = true
 split_ratio = 0.4

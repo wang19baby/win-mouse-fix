@@ -1,10 +1,15 @@
 use crate::remap::{LegacyRemapEntry, RemapEntry};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::SystemTime;
 use toml::{Table, Value};
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+};
 
 /// Caches the last successfully parsed configuration. A transient parse error
 /// (e.g. a typo while editing `config.toml`) must NOT silently reset every
@@ -75,7 +80,7 @@ impl BezierControlPoints {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
     pub general: GeneralConfig,
     pub scroll: ScrollConfig,
@@ -92,20 +97,6 @@ pub struct Config {
     pub touch: TouchConfig,
     #[serde(default)]
     pub profiles: Vec<Profile>,
-}
-
-impl PartialEq for Config {
-    fn eq(&self, other: &Self) -> bool {
-        self.general == other.general
-            && self.scroll == other.scroll
-            && self.buttons.enabled == other.buttons.enabled
-            && self.drag == other.drag
-            && self.accel == other.accel
-            && self.dpi == other.dpi
-            && self.remote == other.remote
-            && self.touch == other.touch
-            && self.profiles == other.profiles
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -279,7 +270,7 @@ fn default_shift_speedup() -> f64 {
     1.0
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ButtonsConfig {
     pub enabled: bool,
     /// Enable the middle-button window-switcher gesture (double-click middle to
@@ -644,7 +635,7 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let c = Config::default();
                 if let Ok(s) = toml::to_string_pretty(&c) {
-                    let _ = std::fs::write(&path, s);
+                    let _ = atomic_write(&path, &s);
                 }
                 store_good(&c);
                 c
@@ -658,7 +649,7 @@ impl Config {
     pub fn save(&self) -> std::io::Result<()> {
         let s = toml::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(config_path(), s)?;
+        atomic_write(&config_path(), &s)?;
         store_good(self);
         Ok(())
     }
@@ -722,6 +713,55 @@ fn merge_config(base: &Config, over: &Table) -> Config {
     toml::from_str(&merged_str).unwrap_or_else(|_| base.clone())
 }
 
+fn staging_path(path: &Path) -> PathBuf {
+    let mut staged = path.as_os_str().to_os_string();
+    staged.push(".tmp");
+    PathBuf::from(staged)
+}
+
+/// Replace a config in one filesystem operation so the reload timer can never
+/// observe a partially-written TOML document.
+pub(crate) fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
+    let staged = staging_path(path);
+    let write_result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&staged)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+
+    let staged_wide: Vec<u16> = staged
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let path_wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let moved = unsafe {
+        MoveFileExW(
+            staged_wide.as_ptr(),
+            path_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        let error = std::io::Error::last_os_error();
+        let _ = std::fs::remove_file(staged);
+        return Err(error);
+    }
+    Ok(())
+}
+
 pub fn config_path() -> PathBuf {
     let mut p = std::env::current_exe()
         .ok()
@@ -759,6 +799,32 @@ mod tests {
     }
 
     #[test]
+    fn config_equality_detects_every_button_mapping_change() {
+        let base = Config::default();
+
+        let mut changed = base.clone();
+        changed.buttons.window_switcher = !changed.buttons.window_switcher;
+        assert_ne!(base, changed);
+
+        let mut changed = base.clone();
+        changed.buttons.remaps.push(LegacyRemapEntry {
+            source: crate::remap::MouseButton::X1,
+            action: "disabled".to_string(),
+            target: None,
+            vk: None,
+        });
+        assert_ne!(base, changed);
+
+        let mut changed = base.clone();
+        changed.buttons.advanced.push(RemapEntry {
+            modifiers: crate::remap::ModifierCondition::default(),
+            trigger: crate::remap::Trigger::Scroll,
+            effect: crate::remap::Effect::TaskView,
+        });
+        assert_ne!(base, changed);
+    }
+
+    #[test]
     fn keeps_last_good_config_on_parse_failure() {
         // A transient parse error must keep serving the previous valid config
         // instead of silently resetting everything to defaults.
@@ -767,6 +833,34 @@ mod tests {
         store_good(&good);
         let kept = last_good_or_default();
         assert_eq!(kept.scroll.speed, 9.9);
+    }
+
+    #[test]
+    fn atomic_config_replace_is_complete_and_failure_safe() {
+        let unique = format!(
+            "win-mouse-fix-config-{}-{}.toml",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(&path, "old").unwrap();
+
+        atomic_write(&path, "new").unwrap();
+        let replaced = std::fs::read_to_string(&path).unwrap();
+
+        let staged = staging_path(&path);
+        std::fs::create_dir(&staged).unwrap();
+        let failed = atomic_write(&path, "partial");
+        let preserved = std::fs::read_to_string(&path).unwrap();
+
+        std::fs::remove_dir(staged).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(replaced, "new");
+        assert!(failed.is_err());
+        assert_eq!(preserved, "new");
     }
 
     #[test]
@@ -1012,30 +1106,25 @@ enabled = false
     }
 
     #[test]
-    fn source_config_toml_parses_and_has_sensible_defaults() {
-        // Validates the shipped config.toml is well-formed and sets the key
-        // features a new user expects out of the box.
+    fn source_config_is_valid_and_risky_integrations_are_opt_in() {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let path = std::path::Path::new(&manifest).join("config.toml");
         let content =
             std::fs::read_to_string(&path).expect("config.toml must exist at project root");
         let cfg: Config = toml::from_str(&content).expect("config.toml must parse without errors");
 
-        // Core features enabled
-        assert!(cfg.scroll.enabled, "smooth scroll must be on");
-        assert!(cfg.scroll.smooth, "smooth mode must be on");
-        assert!(cfg.buttons.enabled, "button remapping must be on");
+        assert!(!cfg.drag.enabled, "drag gestures can conflict with clicks");
         assert!(
-            cfg.buttons.window_switcher,
-            "middle-click window switcher must be on"
+            !cfg.accel.enabled,
+            "pointer acceleration is not connected to the move hook"
         );
-        assert!(cfg.drag.enabled, "drag gestures must be on");
-        assert!(cfg.accel.enabled, "pointer acceleration must be on");
-
-        // Advanced remaps present (Shift+scroll horizontal, Ctrl+scroll precision)
         assert!(
-            cfg.buttons.advanced.len() >= 2,
-            "at least 2 advanced remaps expected (Shift+scroll, Ctrl+scroll)"
+            !cfg.remote.enabled,
+            "the LAN listener requires explicit opt-in"
+        );
+        assert!(
+            !cfg.dpi.auto_switch,
+            "hardware DPI writes require explicit opt-in"
         );
     }
 

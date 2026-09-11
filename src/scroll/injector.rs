@@ -1,5 +1,4 @@
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
@@ -89,6 +88,7 @@ impl Coast2D {
         self.t_norm = 0.0;
         self.anim_start = None;
         self.scroll_dist = 0.0;
+        self.last_tick = None;
     }
 }
 
@@ -134,32 +134,51 @@ impl ScrollInjector {
             .max(1.0)
     }
 
-    /// Main loop: receive raw wheel events, drive trackers, emit smoothed deltas.
+    /// Main loop: block while idle, wake immediately for physical input, and
+    /// tick at the configured cadence only while a coast is pending or active.
     fn run(mut self) {
         loop {
-            let t0 = Instant::now();
-            while let Ok(ev) = self.rx.try_recv() {
-                crate::log::write(&format!(
-                    "[wheel] rx_event delta={} horiz={}",
-                    ev.delta, ev.horizontal
-                ));
-                let (dy, dx) = if ev.horizontal {
-                    (0, ev.delta)
-                } else {
-                    (ev.delta, 0)
-                };
-                self.handle_physical_tick(dy, dx, t0);
+            let first = if self.coast.animating || self.coast.last_tick.is_some() {
+                match self.rx.recv_timeout(Duration::from_millis(TICK_MS)) {
+                    Ok(ev) => Some(ev),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            } else {
+                match self.rx.recv() {
+                    Ok(ev) => Some(ev),
+                    Err(_) => return,
+                }
+            };
+
+            if let Some(ev) = first {
+                self.handle_event(ev, Instant::now());
+                loop {
+                    match self.rx.try_recv() {
+                        Ok(ev) => self.handle_event(ev, Instant::now()),
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                    }
+                }
             }
-            let now = Instant::now();
-            let (dy, dx) = self.advance_coast(now);
+
+            let (dy, dx) = self.advance_coast(Instant::now());
             if dy != 0 {
                 unsafe { send_wheel(dy, false) };
             }
             if dx != 0 {
                 unsafe { send_wheel(dx, true) };
             }
-            thread::sleep(Duration::from_millis(TICK_MS));
         }
+    }
+
+    fn handle_event(&mut self, ev: WheelInput, now: Instant) {
+        let (dy, dx) = if ev.horizontal {
+            (0, ev.delta)
+        } else {
+            (ev.delta, 0)
+        };
+        self.handle_physical_tick(dy, dx, now);
     }
 
     fn handle_physical_tick(&mut self, dy: i32, dx: i32, now: Instant) {
@@ -227,9 +246,15 @@ impl ScrollInjector {
         }
         if let Some(last) = self.coast.last_tick {
             let elapsed_ms = now.duration_since(last).as_secs_f64() * 1000.0;
-            let enough_for_coast = self.coast.scroll_dist >= 240.0 && self.coast.swipe_count >= 2.0;
-            if elapsed_ms >= COAST_DELAY_MS && enough_for_coast {
-                self.start_coast(now);
+            if elapsed_ms >= COAST_DELAY_MS {
+                let enough_for_coast =
+                    self.coast.scroll_dist >= 240.0 && self.coast.swipe_count >= 2.0;
+                if enough_for_coast {
+                    self.start_coast(now);
+                } else {
+                    self.coast.last_tick = None;
+                    self.coast.scroll_dist = 0.0;
+                }
             }
         }
         self.vertical.axis_mut().subpixel_flush_and_reset();
@@ -255,10 +280,6 @@ impl ScrollInjector {
             stop,
             0.2,
         );
-        crate::log::write(&format!(
-            "[wheel] START_COAST total_dist={:.0} direction=({:.2}, {:.2})",
-            total_dist, self.coast.direction.0, self.coast.direction.1
-        ));
         self.coast.animating = true;
         self.coast.anim_start = Some(now);
         self.coast.accum = 0.0;
@@ -383,7 +404,13 @@ pub fn start(cfg: &Config) -> Option<std::sync::mpsc::SyncSender<WheelInput>> {
         shift_scalar_speedup: s.shift_speedup,
         coast: Coast2D::new(s.step),
     };
-    std::thread::spawn(move || injector.run());
+    if let Err(e) = std::thread::Builder::new()
+        .name("scroll-injector".to_string())
+        .spawn(move || injector.run())
+    {
+        crate::log::write(&format!("scroll injector thread failed to start: {e}"));
+        return None;
+    }
     Some(tx)
 }
 
@@ -430,6 +457,73 @@ pub fn send_mouse_move(dx: i32, dy: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn injector_with_receiver(rx: Receiver<WheelInput>) -> ScrollInjector {
+        let cfg = Config::default();
+        let s = &cfg.scroll;
+        ScrollInjector {
+            rx,
+            vertical: WheelTracker::new(
+                s.drag_exponent,
+                s.drag_coefficient,
+                s.stop_speed,
+                s.speed,
+                s.step,
+                s.time_smoothing_weight,
+                s.velocity_a,
+                s.velocity_y,
+                s.swipe_threshold,
+                s.swipe_max_interval,
+                s.swipe_min_tick_speed,
+                s.smoothness,
+                s.precise,
+                s.tick_interval_accel_end,
+                s.tick_interval_max,
+                s.base_ms_per_step,
+                s.accel_x_min,
+                s.accel_x_max,
+                s.accel_y_min,
+                s.accel_y_max,
+                s.accel_curvature,
+                s.fast_scroll_threshold,
+                s.fast_scroll_initial,
+                s.fast_scroll_exponential,
+            ),
+            horizontal: WheelTracker::new(
+                s.drag_exponent,
+                s.drag_coefficient,
+                s.stop_speed,
+                s.speed,
+                s.step,
+                s.time_smoothing_weight,
+                s.velocity_a,
+                s.velocity_y,
+                s.swipe_threshold,
+                s.swipe_max_interval,
+                s.swipe_min_tick_speed,
+                s.smoothness,
+                s.precise,
+                s.tick_interval_accel_end,
+                s.tick_interval_max,
+                s.base_ms_per_step,
+                s.accel_x_min,
+                s.accel_x_max,
+                s.accel_y_min,
+                s.accel_y_max,
+                s.accel_curvature,
+                s.fast_scroll_threshold,
+                s.fast_scroll_initial,
+                s.fast_scroll_exponential,
+            ),
+            shift_curve: s
+                .shift_speedup_curve
+                .as_ref()
+                .map(|pts| BezierAccelCurve::from_points(&pts.as_point_pairs())),
+            shift_speedup_max_hold: s.shift_speedup_max_hold,
+            shift_speedup_linear: s.shift_speedup_linear,
+            shift_scalar_speedup: s.shift_speedup,
+            coast: Coast2D::new(s.step),
+        }
+    }
 
     #[test]
     fn direction_ema_pure_diagonal_stays_diagonal() {
@@ -512,11 +606,31 @@ mod tests {
         c.animating = true;
         c.t_norm = 0.5;
         c.accum = 100.0;
+        c.last_tick = Some(Instant::now());
         c.cancel();
         assert!(!c.animating);
         assert!(c.curve.is_none());
         assert_eq!(c.accum, 0.0);
         assert_eq!(c.t_norm, 0.0);
         assert_eq!(c.scroll_dist, 0.0);
+        assert!(c.last_tick.is_none());
+    }
+
+    #[test]
+    fn worker_exits_when_last_sender_is_dropped() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let injector = injector_with_receiver(rx);
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            injector.run();
+            let _ = done_tx.send(());
+        });
+
+        drop(tx);
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_ok(),
+            "scroll worker must stop when its input channel disconnects"
+        );
     }
 }

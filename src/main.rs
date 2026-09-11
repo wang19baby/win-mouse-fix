@@ -21,6 +21,7 @@ use windows_sys::Win32::UI::HiDpi::{
     SetProcessDpiAwareness, SetProcessDpiAwarenessContext,
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, PROCESS_PER_MONITOR_DPI_AWARE,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
 /// Runtime configuration: read by the hook layer, hot-swapped by `apply_config`.
 /// `LazyLock` defers the (non-const) `Config::default()` until first access.
@@ -74,29 +75,64 @@ fn main() {
 
     let cfg = Config::load_or_default();
 
-    log::init(cfg.general.log_path.as_deref());
+    log::init(
+        cfg.general
+            .log_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty()),
+    );
     log::write("Win Mouse Fix starting...");
 
     if let Err(e) = win::tray::create() {
         log::write(&format!("tray init failed: {e}"));
+        let message = win::tray::to_wide(&format!(
+            "Win Mouse Fix 无法创建系统托盘窗口,程序将退出。\n\n{e}"
+        ));
+        let title = win::tray::to_wide("Win Mouse Fix 启动失败");
+        unsafe {
+            MessageBoxW(0, message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+        }
+        return;
     }
 
     // Bring up hooks + injector (or remap table) per the loaded config, and
     // reinstall on every later toggle from the tray menu.
+    if let Err(e) = win::hooks::apply_config(cfg.clone()) {
+        log::write(&format!("hook initialization failed: {e}"));
+        let message = win::tray::to_wide(&format!(
+            "Win Mouse Fix 无法安装全局输入钩子,程序将退出。\n\n{e}"
+        ));
+        let title = win::tray::to_wide("Win Mouse Fix 启动失败");
+        unsafe {
+            MessageBoxW(0, message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+        }
+        return;
+    }
+
     // Phase 11: start the phone-trackpad LAN server only when explicitly enabled
     // (it opens a LAN listener + firewall rule; off by default).
     if cfg.remote.enabled {
-        remote::start_server();
+        if let Err(e) = remote::start_server() {
+            log::write(&format!("remote: startup failed: {e}"));
+            let message = win::tray::to_wide(&format!(
+                "手机妙控板服务启动失败,本地鼠标功能仍可使用。\n\n{e}"
+            ));
+            let title = win::tray::to_wide("Win Mouse Fix");
+            unsafe {
+                MessageBoxW(0, message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+            }
+        }
     }
 
-    win::hooks::apply_config(cfg.clone());
-
-    // Start background battery poll thread (updates cache every 20s, zero main-thread cost).
+    // Populate the battery cache off-thread immediately, then refresh every 20s.
     device::battery::start_bg_poll(20);
 
     // Blocks until WM_QUIT (tray "Exit" or window destroy).
     win::message_loop::run();
 
+    if remote::info().is_some() {
+        remote::stop_server();
+    }
     win::hooks::uninstall();
     win::hooks::stop_scroll();
     log::write("Win Mouse Fix exited.");

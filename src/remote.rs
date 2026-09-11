@@ -5,24 +5,27 @@
 //! phone feels identical to a real mouse. Single handshake-only WS server,
 //! no SSE (status rides the same socket). LAN-only; bound to a specific NIC IP.
 
-use std::sync::Arc;
-
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::windows::process::CommandExt;
-use std::sync::LazyLock;
-use std::time::Duration;
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    mpsc::{Receiver, SyncSender},
+    Arc, LazyLock,
+};
+use std::time::{Duration, Instant};
+
+use parking_lot::{Mutex, RwLock};
+use qrcode::{Color, QrCode};
+use windows_sys::Win32::Security::Cryptography::{
+    BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-use parking_lot::RwLock;
-use qrcode::{Color, QrCode};
 #[derive(Clone)]
 pub struct RemoteInfo {
     pub url: String,
     pub pad_url: String,
-    #[allow(dead_code)]
-    pub token: String,
 }
 
 static REMOTE: LazyLock<RwLock<Option<RemoteInfo>>> = LazyLock::new(|| RwLock::new(None));
@@ -33,131 +36,416 @@ pub fn info() -> Option<RemoteInfo> {
 }
 
 /// Authenticated, currently-connected WS streams. The tray broadcasts status
-/// updates (PC battery, etc.) by walking this list. Removed on socket close.
-static ACTIVE: LazyLock<parking_lot::Mutex<Vec<Arc<parking_lot::Mutex<TcpStream>>>>> =
-    LazyLock::new(|| parking_lot::Mutex::new(Vec::new()));
-/// Listening socket of the trackpad server. Held so stop_server() can drop it
-/// and break the listen thread out of `listener.incoming()`.
-static LISTENER: LazyLock<parking_lot::Mutex<Option<std::net::TcpListener>>> =
-    LazyLock::new(|| parking_lot::Mutex::new(None));
-/// Start the trackpad server on a background thread.
-pub fn start_server() {
-    // Fire-and-forget: do all the slow work (IP discovery, port pick, bind,
-    // firewall rule, listener storage) on a background thread so the tray
-    // WM_COMMAND handler returns immediately. Previously this function did a
-    // 2-second recv_timeout on the caller (tray thread), which starved the
-    // WM_TIMER queue — click_tick + window_switcher::tick() stopped firing
-    // for up to 2s after toggling the menu, which the user perceived as
-    // mouse/click hangs.
-    std::thread::spawn(start_server_impl);
+/// updates (PC battery, etc.) by walking this list. A per-connection guard
+/// removes each stream as soon as its reader exits.
+static ACTIVE: LazyLock<Mutex<Vec<Arc<Mutex<TcpStream>>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+/// Cancellation token for the current listener generation. A fresh token per
+/// start prevents a rapid stop/start from reviving the previous accept loop.
+static SERVER_STOP: LazyLock<Mutex<Option<Arc<AtomicBool>>>> = LazyLock::new(|| Mutex::new(None));
+/// Serializes start/stop transitions and keeps published state coherent.
+static SERVER_TRANSITION: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+const MAX_OPEN_CONNECTIONS: usize = 32;
+static OPEN_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+static OPEN_STREAMS: LazyLock<Mutex<Vec<Arc<TcpStream>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+const MAX_PENDING_BROADCASTS: usize = 256;
+enum Outbound {
+    Status,
+    Message(String),
+}
+static BROADCAST_TX: LazyLock<Mutex<Option<SyncSender<Outbound>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+fn enqueue_outbound_on(sender: Option<&SyncSender<Outbound>>, message: Outbound) -> bool {
+    sender.is_some_and(|tx| tx.try_send(message).is_ok())
 }
 
-fn start_server_impl() {
-    let ip = match local_ip() {
-        Some(ip) => ip,
-        None => {
-            crate::log::write("remote: no usable LAN IP found — trackpad disabled");
+fn enqueue_outbound(message: Outbound) {
+    let _ = enqueue_outbound_on(BROADCAST_TX.lock().as_ref(), message);
+}
+
+fn run_broadcaster(rx: Receiver<Outbound>, stop: Arc<AtomicBool>) {
+    while let Ok(message) = rx.recv() {
+        if stop.load(Ordering::Acquire) {
             return;
         }
-    };
-    let port = match pick_port(ip) {
-        Some(p) => p,
-        None => {
-            crate::log::write("remote: no free port (18765-18775) — trackpad disabled");
-            return;
+        let payload = match message {
+            Outbound::Status => build_status_json(),
+            Outbound::Message(payload) => payload,
+        };
+        broadcast_now(&payload);
+    }
+}
+
+fn broadcast_now(payload: &str) {
+    let clients = ACTIVE.lock().clone();
+    let mut failed = Vec::new();
+    for client in clients {
+        let result = {
+            let mut stream = client.lock();
+            write_frame(&mut stream, 0x1, payload.as_bytes())
+        };
+        if result.is_err() {
+            failed.push(client);
         }
+    }
+    if !failed.is_empty() {
+        ACTIVE.lock().retain(|candidate| {
+            !failed
+                .iter()
+                .any(|failed_stream| Arc::ptr_eq(candidate, failed_stream))
+        });
+    }
+}
+
+fn reserve_bounded_slot(counter: &AtomicUsize, limit: usize) -> bool {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            (current < limit).then_some(current + 1)
+        })
+        .is_ok()
+}
+
+struct ConnectionSlot {
+    stream: Arc<TcpStream>,
+}
+
+impl ConnectionSlot {
+    fn acquire(stream: &TcpStream) -> std::io::Result<Option<Self>> {
+        if !reserve_bounded_slot(&OPEN_CONNECTIONS, MAX_OPEN_CONNECTIONS) {
+            return Ok(None);
+        }
+        let clone = match stream.try_clone() {
+            Ok(clone) => clone,
+            Err(e) => {
+                OPEN_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+                return Err(e);
+            }
+        };
+        let stream = Arc::new(clone);
+        OPEN_STREAMS.lock().push(Arc::clone(&stream));
+        Ok(Some(Self { stream }))
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        OPEN_STREAMS
+            .lock()
+            .retain(|candidate| !Arc::ptr_eq(candidate, &self.stream));
+        OPEN_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+const MAX_CONCURRENT_THUMBNAILS: usize = 2;
+const MAX_THUMBNAIL_WIDTH: u64 = 1920;
+const MAX_THUMBNAIL_HEIGHT: u64 = 1080;
+
+fn bounded_thumbnail_dimension(requested: Option<u64>, default: u64, maximum: u64) -> u32 {
+    requested.unwrap_or(default).clamp(1, maximum) as u32
+}
+static THUMBNAIL_JOBS: AtomicUsize = AtomicUsize::new(0);
+
+struct ThumbnailSlot;
+
+impl ThumbnailSlot {
+    fn acquire() -> Option<Self> {
+        reserve_bounded_slot(&THUMBNAIL_JOBS, MAX_CONCURRENT_THUMBNAILS).then(|| Self)
+    }
+}
+
+impl Drop for ThumbnailSlot {
+    fn drop(&mut self) {
+        THUMBNAIL_JOBS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn shutdown_connections() {
+    for stream in std::mem::take(&mut *OPEN_STREAMS.lock()) {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    for stream in std::mem::take(&mut *ACTIVE.lock()) {
+        let _ = stream.lock().shutdown(Shutdown::Both);
+    }
+}
+
+struct ActiveConnectionGuard {
+    stream: Arc<Mutex<TcpStream>>,
+}
+
+impl ActiveConnectionGuard {
+    fn register(stream: &TcpStream) -> std::io::Result<Self> {
+        let clone = stream.try_clone()?;
+        clone.set_write_timeout(Some(Duration::from_millis(250)))?;
+        let stream = Arc::new(Mutex::new(clone));
+        {
+            let mut active = ACTIVE.lock();
+            active.push(Arc::clone(&stream));
+            crate::win::window_list::REMOTE_ACTIVE.store(true, Ordering::Release);
+        }
+        crate::win::message_loop::request_hook_install();
+        Ok(Self { stream })
+    }
+
+    fn write_frame(&self, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
+        let mut stream = self.stream.lock();
+        write_frame(&mut stream, opcode, payload)
+    }
+}
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        let no_clients = {
+            let mut active = ACTIVE.lock();
+            active.retain(|candidate| !Arc::ptr_eq(candidate, &self.stream));
+            active.is_empty()
+        };
+        if no_clients {
+            crate::win::window_list::REMOTE_ACTIVE.store(false, Ordering::Release);
+            crate::win::message_loop::request_hook_uninstall();
+        }
+    }
+}
+/// Bind and start the trackpad server. Binding is completed before return so a
+/// tray click can open the QR page immediately without racing a setup thread.
+pub fn start_server() -> Result<RemoteInfo, String> {
+    start_server_inner(true, None)
+}
+
+fn start_server_inner(
+    configure_firewall: bool,
+    token_override: Option<String>,
+) -> Result<RemoteInfo, String> {
+    let _transition = SERVER_TRANSITION.lock();
+    if let Some(existing) = info() {
+        return Ok(existing);
+    }
+
+    let ip = local_ip().ok_or_else(|| "no usable LAN IP found".to_string())?;
+    let preferred_port = crate::CONFIG.read().remote.port;
+    let (listener, port) = bind_listener(ip, preferred_port)
+        .map_err(|e| format!("cannot bind LAN listener near port {preferred_port}: {e}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("cannot configure LAN listener: {e}"))?;
+    let token = match token_override {
+        Some(token) => token,
+        None => load_or_create_token()?,
     };
-    let token = load_or_create_token();
-    // Append a build nonce so the URL is unique per restart. PC browsers
-    // (Chrome/Edge) that previously cached a broken version will fetch a
-    // fresh response instead of replaying the stale cache, because the
-    // URL key differs.
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let url = format!("http://{ip}:{port}/?t={token}&v={nonce}");
     let pad_url = format!("http://{ip}:{port}/pad.html?t={token}&v={nonce}");
-    *REMOTE.write() = Some(RemoteInfo {
+    let remote_info = RemoteInfo {
         url: url.clone(),
-        pad_url: pad_url.clone(),
-        token: token.clone(),
-    });
-    crate::log::write(&format!("remote: trackpad ready -> {url}"));
-    let (listen_tx, _listen_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || listen(ip, port, token, listen_tx));
+        pad_url,
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let (broadcast_tx, broadcast_rx) = std::sync::mpsc::sync_channel(MAX_PENDING_BROADCASTS);
+    let broadcast_stop = Arc::clone(&stop);
+    if let Err(e) = std::thread::Builder::new()
+        .name("remote-broadcast".to_string())
+        .spawn(move || run_broadcaster(broadcast_rx, broadcast_stop))
+    {
+        return Err(format!("cannot start LAN broadcast thread: {e}"));
+    }
+    *BROADCAST_TX.lock() = Some(broadcast_tx);
+    *SERVER_STOP.lock() = Some(Arc::clone(&stop));
+    *REMOTE.write() = Some(remote_info.clone());
+
+    let worker_stop = Arc::clone(&stop);
+    if let Err(e) = std::thread::Builder::new()
+        .name("remote-listener".to_string())
+        .spawn(move || run_listener(listener, token, worker_stop, configure_firewall))
+    {
+        stop.store(true, Ordering::Release);
+        *BROADCAST_TX.lock() = None;
+        *SERVER_STOP.lock() = None;
+        *REMOTE.write() = None;
+        return Err(format!("cannot start LAN listener thread: {e}"));
+    }
+
+    crate::log::write(&format!("remote: trackpad ready on {ip}:{port}"));
+    Ok(remote_info)
 }
 
-/// Shut down the trackpad server. Drops the listener so the accept loop exits
-/// and clears REMOTE so the tray menu shows the unchecked state.
+/// Stop the current listener generation and every accepted connection.
 pub fn stop_server() {
-    // Drop the listening socket — the accept loop exits immediately.
-    *LISTENER.lock() = None;
+    let _transition = SERVER_TRANSITION.lock();
+    if let Some(stop) = SERVER_STOP.lock().take() {
+        stop.store(true, Ordering::Release);
+    }
+    *BROADCAST_TX.lock() = None;
+    shutdown_connections();
     *REMOTE.write() = None;
-    // Stop the WinEvent hooks so they no longer fire when remote is off.
-    // Signal the main thread to stop the WinEvent hooks.
-    crate::win::window_list::REMOTE_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::win::window_list::REMOTE_ACTIVE.store(false, Ordering::Release);
     crate::win::message_loop::request_hook_uninstall();
     crate::log::write("remote: trackpad server stopped");
 }
 
-fn listen(
-    ip: IpAddr,
-    port: u16,
-    token: String,
-    _listen_tx: std::sync::mpsc::Sender<std::net::TcpListener>,
-) {
-    let addr = SocketAddr::new(ip, port);
-    let listener = match std::net::TcpListener::bind(addr) {
-        Ok(l) => l,
-        Err(e) => {
-            crate::log::write(&format!("remote: bind {addr} failed: {e}"));
-            return;
-        }
-    };
-    // Tests bypass the global LISTENER + firewall rule so parallel unit
-    // tests don't race on the shared static or pay 175ms per test for netsh.
-    if std::cfg!(test) {
-        for stream in listener.incoming() {
-            match stream {
-                Ok(s) => {
-                    let tok = token.clone();
-                    std::thread::spawn(move || handle_conn(s, tok));
-                }
-                Err(_) => continue,
+fn bind_listener(ip: IpAddr, preferred_port: u16) -> std::io::Result<(TcpListener, u16)> {
+    let mut last_error = None;
+    for offset in 0..=10u16 {
+        let Some(port) = preferred_port.checked_add(offset) else {
+            break;
+        };
+        match TcpListener::bind(SocketAddr::new(ip, port)) {
+            Ok(listener) => {
+                let actual_port = listener.local_addr()?.port();
+                return Ok((listener, actual_port));
             }
+            Err(e) => last_error = Some(e),
         }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no candidate ports")
+    }))
+}
+
+fn run_listener(
+    listener: TcpListener,
+    token: String,
+    stop: Arc<AtomicBool>,
+    configure_firewall: bool,
+) {
+    if stop.load(Ordering::Acquire) {
+        finish_listener(&stop);
         return;
     }
-    // Store the listener BEFORE the firewall call so stop_server() can drop
-    // it (and break the accept loop) even while netsh is still running.
-    *LISTENER.lock() = Some(listener);
-    crate::log::write(&format!("remote: listening on {addr}"));
-    add_firewall_rule(port); // best-effort (needs admin); non-fatal
-    let owned = match LISTENER.lock().take() {
-        Some(l) => l,
-        None => {
-            crate::log::write("remote: stopped during firewall rule, exiting listen thread");
-            return;
-        }
-    };
-    for stream in owned.incoming() {
-        match stream {
-            Ok(s) => {
-                let tok = token.clone();
-                std::thread::spawn(move || handle_conn(s, tok));
+
+    let addr = listener.local_addr().ok();
+    if let Some(addr) = addr {
+        if configure_firewall && !stop.load(Ordering::Acquire) {
+            let port = addr.port();
+            if let Err(e) = std::thread::Builder::new()
+                .name("remote-firewall".to_string())
+                .spawn(move || add_firewall_rule(port))
+            {
+                crate::log::write(&format!("remote: firewall worker failed to start: {e}"));
             }
-            Err(_) => continue,
+        }
+    }
+
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // The listener is nonblocking so stop is observed promptly. On
+                // Windows, accepted sockets can inherit that mode; restore
+                // blocking I/O so per-client read/write timeouts work as intended.
+                if let Err(e) = stream.set_nonblocking(false) {
+                    crate::log::write(&format!(
+                        "remote: cannot configure accepted connection: {e}"
+                    ));
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
+                let slot = match ConnectionSlot::acquire(&stream) {
+                    Ok(Some(slot)) => slot,
+                    Ok(None) | Err(_) => {
+                        let _ = stream.shutdown(Shutdown::Both);
+                        continue;
+                    }
+                };
+                if stop.load(Ordering::Acquire) {
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
+                let connection_token = token.clone();
+                let connection_stop = Arc::clone(&stop);
+                if let Err(e) = std::thread::Builder::new()
+                    .name("remote-connection".to_string())
+                    .spawn(move || {
+                        let _slot = slot;
+                        handle_conn(stream, connection_token, connection_stop);
+                    })
+                {
+                    crate::log::write(&format!("remote: connection worker failed to start: {e}"));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                crate::log::write(&format!("remote: listener failed: {e}"));
+                break;
+            }
+        }
+    }
+    finish_listener(&stop);
+}
+
+fn finish_listener(stop: &Arc<AtomicBool>) {
+    let mut current = SERVER_STOP.lock();
+    if current
+        .as_ref()
+        .is_some_and(|active| Arc::ptr_eq(active, stop))
+    {
+        *current = None;
+        drop(current);
+        stop.store(true, Ordering::Release);
+        *BROADCAST_TX.lock() = None;
+        *REMOTE.write() = None;
+        shutdown_connections();
+        crate::win::window_list::REMOTE_ACTIVE.store(false, Ordering::Release);
+        crate::win::message_loop::request_hook_uninstall();
+    }
+}
+
+#[cfg(test)]
+fn listen(ip: IpAddr, port: u16, token: String, _listen_tx: std::sync::mpsc::Sender<TcpListener>) {
+    let listener = match TcpListener::bind(SocketAddr::new(ip, port)) {
+        Ok(listener) => listener,
+        Err(_) => return,
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let connection_token = token.clone();
+                let connection_stop = Arc::clone(&stop);
+                std::thread::spawn(move || handle_conn(stream, connection_token, connection_stop));
+            }
+            Err(_) => return,
         }
     }
 }
 
-fn handle_conn(mut stream: TcpStream, token: String) {
+fn same_host_ip(peer: IpAddr, local: IpAddr) -> bool {
+    peer.is_loopback() || peer == local
+}
+
+fn same_host_request(stream: &TcpStream) -> bool {
+    match (stream.peer_addr(), stream.local_addr()) {
+        (Ok(peer), Ok(local)) => same_host_ip(peer.ip(), local.ip()),
+        _ => false,
+    }
+}
+
+fn reject_private_page(stream: &mut TcpStream) {
+    let _ = stream.write_all(
+        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden",
+    );
+}
+
+fn handle_conn(mut stream: TcpStream, token: String, stop: Arc<AtomicBool>) {
     let ip = stream
         .peer_addr()
         .map(|a| a.ip().to_string())
         .unwrap_or_default();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(1))) {
+        crate::log::write(&format!("remote: cannot set connection read timeout: {e}"));
+        return;
+    }
+    if stop.load(Ordering::Acquire) {
+        return;
+    }
+    let header_deadline = Instant::now() + Duration::from_secs(10);
 
     // Read HTTP headers up to the blank line.
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -182,7 +470,6 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                 buf.extend_from_slice(&tmp[..n]);
                 if let Some(pos) = find_sub(&buf, b"\r\n\r\n") {
                     let header = String::from_utf8_lossy(&buf[..pos]);
-                    dbg_log(&format!("remote: RAW HEADERS from {ip}: {header}"));
                     if let Some(fl) = header.split("\r\n").next() {
                         first_line = fl.to_string();
                     }
@@ -207,11 +494,20 @@ fn handle_conn(mut stream: TcpStream, token: String) {
                     _is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
                     is_winlist =
                         req_path == "/winlist.html" || req_path.starts_with("/winlist.html?");
-                    is_pad =
-                        req_path == "/pad.html" || req_path.starts_with("/pad.html?");
+                    is_pad = req_path == "/pad.html" || req_path.starts_with("/pad.html?");
                     break;
                 }
                 if buf.len() > 16384 {
+                    return;
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                if stop.load(Ordering::Acquire) || Instant::now() >= header_deadline {
                     return;
                 }
             }
@@ -219,28 +515,34 @@ fn handle_conn(mut stream: TcpStream, token: String) {
         }
     }
 
-    dbg_log(&format!(
-        "remote: conn from {ip} is_ws={is_ws} is_qr={is_qr} first_line='{first_line}'"
-    ));
-    if is_ws {
-        dbg_log(&format!(
-            "remote: ws conn from {ip} key_len={} first_line='{first_line}'",
-            ws_key.len()
-        ));
+    if stop.load(Ordering::Acquire) {
+        return;
+    }
 
+    dbg_log(&format!(
+        "remote: connection from {ip}, websocket={is_ws}, qr={is_qr}"
+    ));
+
+    if is_ws {
         if ws_key.is_empty() || ws_handshake(&mut stream, &ws_key, &ws_ext).is_err() {
             dbg_log(&format!("remote: ws handshake FAIL from {ip}"));
             return;
         }
 
         dbg_log(&format!("remote: ws handshake OK from {ip}"));
-        ws_loop(stream, &token);
+        ws_loop(stream, &token, stop);
     } else if is_qr {
-        serve_qr_page(&mut stream);
+        // The QR page embeds the bearer token and is an administrative surface.
+        // Only the desktop hosting this listener may retrieve it.
+        if same_host_request(&stream) {
+            serve_qr_page(&mut stream);
+        } else {
+            reject_private_page(&mut stream);
+        }
     } else if is_diag {
         serve_diag(&mut stream);
     } else if is_report {
-        dbg_log(&format!("remote: CLIENT REPORT from {ip}: {first_line}"));
+        dbg_log(&format!("remote: client report received from {ip}"));
         let _ = stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
     } else if is_manifest {
@@ -253,21 +555,14 @@ fn handle_conn(mut stream: TcpStream, token: String) {
         serve_page(&mut stream);
     }
 }
-/// Dedicated, config-independent debug log for the WS path (bypasses the
-/// buffered/optional app log so phone connection lifecycle is always captured).
+/// Optional lifecycle diagnostics use the configured application log in debug
+/// builds. Raw headers, bearer tokens, and input payloads are never recorded.
+#[inline]
 fn dbg_log(msg: &str) {
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("D:/work_space/personal_workspace/win-mouse-fix/ws_debug.log")
-    {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = std::io::Write::write_all(&mut f, format!("[{ts}] {msg}\n").as_bytes());
-        let _ = std::io::Write::flush(&mut f);
-    }
+    #[cfg(debug_assertions)]
+    crate::log::file_only(msg);
+    #[cfg(not(debug_assertions))]
+    let _ = msg;
 }
 fn ws_handshake(stream: &mut TcpStream, key: &str, ext: &str) -> std::io::Result<()> {
     // Do NOT echo `permessage-deflate`. We never compress/decompress frames, so
@@ -277,9 +572,7 @@ fn ws_handshake(stream: &mut TcpStream, key: &str, ext: &str) -> std::io::Result
     // extension (per RFC 6455: a server MUST NOT include an extension it can't
     // honor) keeps both sides on uncompressed JSON, which our frame code handles.
     if ext.to_ascii_lowercase().contains("permessage-deflate") {
-        dbg_log(&format!(
-            "remote: ws_handshake declining permessage-deflate (not implemented) from ext='{ext}'"
-        ));
+        dbg_log("remote: declining unsupported permessage-deflate extension");
     }
     let accept = ws_accept(key);
     let resp = format!(
@@ -289,86 +582,78 @@ fn ws_handshake(stream: &mut TcpStream, key: &str, ext: &str) -> std::io::Result
          Sec-WebSocket-Accept: {accept}\r\n\
          \r\n"
     );
-    let hexstr: String = resp.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-    dbg_log(&format!(
-        "remote: ws_handshake key='{key}' accept='{accept}' ext='{ext}' resp_hex={hexstr}"
-    ));
     stream.write_all(resp.as_bytes())
 }
 
-fn ws_loop(mut stream: TcpStream, token: &str) {
+fn ws_loop(mut stream: TcpStream, token: &str, stop: Arc<AtomicBool>) {
     let ip = stream
         .peer_addr()
         .map(|a| a.ip().to_string())
         .unwrap_or_default();
-    // Long-lived control channel: do NOT drop on idle. The 10s read timeout set
-    // in handle_conn would close a connected-but-quiet trackpad after 10s.
-    // Instead probe liveness with a WebSocket ping and only reap peers that stop
-    // answering (e.g. phone out of range). Browsers auto-pong, so idle stays up.
-
+    // Poll the generation token once per second so stop/restart is prompt even
+    // on Windows, where shutting down a duplicated socket does not reliably
+    // interrupt another thread's synchronous recv. Liveness pings remain at
+    // the original 30-second cadence.
     dbg_log(&format!("remote: ws loop start {ip}"));
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(1))) {
+        crate::log::write(&format!("remote: cannot set WebSocket read timeout: {e}"));
+        return;
+    }
     let mut authed = false;
-    let mut failed_probes = 0; // reap peers that never answer a ping
-    loop {
+    let mut failed_probes = 0;
+    let mut last_probe = Instant::now();
+    let mut active_connection: Option<ActiveConnectionGuard> = None;
+    while !stop.load(Ordering::Acquire) {
         match read_frame(&mut stream) {
             Ok(Some((opcode, payload))) => {
+                if stop.load(Ordering::Acquire) {
+                    return;
+                }
                 failed_probes = 0;
                 match opcode {
                     0x1 => {
                         // text frame
                         let was = authed;
-                        if dispatch(&payload, token, &mut authed, &mut stream).is_err() {
+                        let result = if let Some(connection) = active_connection.as_ref() {
+                            let mut writer = connection.stream.lock();
+                            dispatch(&payload, token, &mut authed, &mut writer, &stop)
+                        } else {
+                            dispatch(&payload, token, &mut authed, &mut stream, &stop)
+                        };
+                        if result.is_err() {
                             dbg_log(&format!("remote: ws {ip} dispatch err -> drop"));
                             return;
                         }
                         if !was && authed {
-                            // Just authenticated: register this stream so the
-                            // tray can broadcast status updates to it. try_clone
-                            // on a freshly-accepted socket is infallible.
-                            let clone = stream
-                                .try_clone()
-                                .expect("clone of just-accepted TcpStream");
-                            ACTIVE.lock().push(Arc::new(parking_lot::Mutex::new(clone)));
-
-                            // Activate window list push updates and start WinEvent hooks
-                            // (idempotent — calling twice is safe).
-                            // Activate window list push updates and request WinEvent hooks
-                            // to be installed on the main thread (where the message pump runs).
-                            // The main thread's message loop will process this request and call
-                            // start_win_event_hooks() on the correct thread.
-                            crate::win::window_list::REMOTE_ACTIVE
-                                .store(true, std::sync::atomic::Ordering::Relaxed);
-                            crate::win::message_loop::request_hook_install();
-
-                            // Push the full window list immediately so the
-                            // winlist page doesn't have to wait for a round-trip.
-                            let windows = crate::win::window_list::enumerate_windows();
-                            let desktops = crate::win::window_list::enumerate_desktops();
-                            let count = windows.len();
-                            let json = serde_json::json!({
-                                "t": "window_list",
-                                "windows": windows,
-                                "desktops": desktops,
-                                "count": count,
-                            });
-                            let _ = crate::remote::write_frame(
-                                &mut stream,
-                                0x1,
-                                json.to_string().as_bytes(),
-                            );
-                            dbg_log(&format!("remote: ws {ip} authed -> window_list pushed ({count} windows), REMOTE_ACTIVE=true"));
+                            match ActiveConnectionGuard::register(&stream) {
+                                Ok(connection) => {
+                                    active_connection = Some(connection);
+                                    dbg_log(&format!("remote: ws {ip} authenticated"));
+                                }
+                                Err(e) => {
+                                    crate::log::write(&format!(
+                                        "remote: cannot register authenticated client {ip}: {e}"
+                                    ));
+                                    return;
+                                }
+                            }
                         }
                     }
                     0x8 => {
                         // close
                         dbg_log(&format!("remote: ws {ip} close frame from peer"));
-                        let _ = write_frame(&mut stream, 0x8, &[]);
+                        let _ =
+                            write_client_frame(&mut stream, active_connection.as_ref(), 0x8, &[]);
                         return;
                     }
                     0x9 => {
                         // ping -> pong
-                        let _ = write_frame(&mut stream, 0xA, &payload);
+                        let _ = write_client_frame(
+                            &mut stream,
+                            active_connection.as_ref(),
+                            0xA,
+                            &payload,
+                        );
                     }
                     _ => {} // pong / other: ignore
                 }
@@ -378,10 +663,17 @@ fn ws_loop(mut stream: TcpStream, token: &str) {
                 return;
             }
             Err(_) => {
+                if stop.load(Ordering::Acquire) {
+                    return;
+                }
+                if last_probe.elapsed() < Duration::from_secs(30) {
+                    continue;
+                }
+                last_probe = Instant::now();
                 // Read error (idle timeout surfaces here from read_frame).
                 // Probe with a WebSocket ping; if we can't write it the peer is
                 // dead, otherwise keep the channel alive — browsers auto-pong.
-                if write_frame(&mut stream, 0x9, &[]).is_err() {
+                if write_client_frame(&mut stream, active_connection.as_ref(), 0x9, &[]).is_err() {
                     dbg_log(&format!(
                         "remote: ws {ip} read-err + probe write fail -> drop"
                     ));
@@ -402,14 +694,33 @@ fn ws_loop(mut stream: TcpStream, token: &str) {
     }
 }
 
+fn write_client_frame(
+    read_stream: &mut TcpStream,
+    active: Option<&ActiveConnectionGuard>,
+    opcode: u8,
+    payload: &[u8],
+) -> std::io::Result<()> {
+    match active {
+        Some(connection) => connection.write_frame(opcode, payload),
+        None => write_frame(read_stream, opcode, payload),
+    }
+}
+
 /// Read exactly `buf` bytes. Returns:
 /// - `Ok(true)` on success,
 /// - `Ok(false)` on a clean EOF / non-timeout read error (treat as peer gone),
-/// - `Err` on a read *timeout* (idle — caller should probe with a ping).
+/// - `Err` on a timeout or transient would-block result.
 fn recv_exact(stream: &mut TcpStream, buf: &mut [u8]) -> std::io::Result<bool> {
     match stream.read_exact(buf) {
         Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(e),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            Err(e)
+        }
         Err(_) => Ok(false),
     }
 }
@@ -539,34 +850,36 @@ fn build_status_json() -> String {
     });
     json.to_string()
 }
-/// Push the latest status JSON to every currently-authenticated WS client.
-/// Best-effort: a client whose socket is no longer writable is silently
-/// dropped from ACTIVE so the list does not grow unboundedly.
+/// Queue the latest status for authenticated WebSocket clients. The caller
+/// never performs network I/O; a bounded generation-owned worker serializes
+/// best-effort broadcasts.
 pub fn broadcast_status() {
-    if ACTIVE.lock().is_empty() {
-        return;
-    }
-    let payload = build_status_json();
-    ACTIVE.lock().retain(|stream| {
-        let mut s = stream.lock();
-        match write_frame(&mut s, 0x1, payload.as_bytes()) {
-            Ok(()) => true,
-            Err(_) => false,
-        }
-    });
+    enqueue_outbound(Outbound::Status);
 }
 
 pub fn broadcast_message(msg: &str) {
-    if ACTIVE.lock().is_empty() {
-        return;
-    }
-    ACTIVE.lock().retain(|stream| {
-        let mut s = stream.lock();
-        match write_frame(&mut s, 0x1, msg.as_bytes()) {
-            Ok(()) => true,
-            Err(_) => false,
-        }
+    enqueue_outbound(Outbound::Message(msg.to_owned()));
+}
+fn broadcast_thumbnail(stop: &Arc<AtomicBool>, hwnd: isize, thumb: Option<Vec<u8>>) {
+    use base64::Engine;
+    let data_uri = thumb.map(|bytes| {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        format!("data:image/jpeg;base64,{encoded}")
     });
+    let json = serde_json::json!({
+        "t": "thumb_update",
+        "hwnd": hwnd,
+        "thumb": data_uri,
+    });
+
+    let _transition = SERVER_TRANSITION.lock();
+    let is_current = SERVER_STOP
+        .lock()
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, stop));
+    if !stop.load(Ordering::Acquire) && is_current {
+        enqueue_outbound(Outbound::Message(json.to_string()));
+    }
 }
 
 /// Push a `win_event` message to all authenticated WS clients.
@@ -588,12 +901,8 @@ fn dispatch(
     token: &str,
     authed: &mut bool,
     stream: &mut TcpStream,
+    stop: &Arc<AtomicBool>,
 ) -> std::io::Result<()> {
-    dbg_log(&format!(
-        "dispatch: raw payload len={} text={:.200}",
-        payload.len(),
-        String::from_utf8_lossy(payload)
-    ));
     let v: serde_json::Value = match serde_json::from_slice(payload) {
         Ok(v) => v,
         Err(_) => return Ok(()), // ignore malformed
@@ -718,25 +1027,34 @@ fn dispatch(
             }
         }
         "thumb_request" => {
-            // Lazy thumbnail capture: capture and push to all clients.
-            // Runs on a background thread to avoid blocking the WS dispatch loop.
             let hwnd = v.get("hwnd").and_then(|x| x.as_i64()).unwrap_or(0) as isize;
-            let max_w = v.get("w").and_then(|x| x.as_u64()).unwrap_or(320) as u32;
-            let max_h = v.get("h").and_then(|x| x.as_u64()).unwrap_or(200) as u32;
-            std::thread::spawn(move || {
-                use base64::Engine;
-                let thumb = crate::win::window_list::capture_window_thumb(hwnd, max_w, max_h);
-                let data_uri = thumb.map(|bytes| {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    format!("data:image/jpeg;base64,{}", b64)
-                });
-                let json = serde_json::json!({
-                    "t": "thumb_update",
-                    "hwnd": hwnd,
-                    "thumb": data_uri,
-                });
-                crate::remote::broadcast_message(&json.to_string());
-            });
+            let max_w = bounded_thumbnail_dimension(
+                v.get("w").and_then(|x| x.as_u64()),
+                320,
+                MAX_THUMBNAIL_WIDTH,
+            );
+            let max_h = bounded_thumbnail_dimension(
+                v.get("h").and_then(|x| x.as_u64()),
+                200,
+                MAX_THUMBNAIL_HEIGHT,
+            );
+            let thumbnail_stop = Arc::clone(stop);
+            if let Some(slot) = ThumbnailSlot::acquire() {
+                if let Err(e) = std::thread::Builder::new()
+                    .name("remote-thumbnail".to_string())
+                    .spawn(move || {
+                        let _slot = slot;
+                        let thumb =
+                            crate::win::window_list::capture_window_thumb(hwnd, max_w, max_h);
+                        broadcast_thumbnail(&thumbnail_stop, hwnd, thumb);
+                    })
+                {
+                    crate::log::write(&format!("remote: thumbnail worker failed to start: {e}"));
+                    broadcast_thumbnail(stop, hwnd, None);
+                }
+            } else {
+                broadcast_thumbnail(stop, hwnd, None);
+            }
         }
         _ => {}
     }
@@ -921,10 +1239,6 @@ fn local_ip() -> Option<IpAddr> {
     None
 }
 
-fn pick_port(ip: IpAddr) -> Option<u16> {
-    (18765..=18775).find(|&p| std::net::TcpListener::bind(SocketAddr::new(ip, p)).is_ok())
-}
-
 // ─── helpers ───────────────────────────────────────────────────────────────
 
 fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -961,46 +1275,63 @@ fn add_firewall_rule(port: u16) {
 }
 
 /// Load a persisted pairing token, creating and saving one on first run.
-/// Stored next to the executable as `token.txt` so QR codes survive restarts
-/// (a fresh random token each launch would orphan every already-scanned phone).
-fn load_or_create_token() -> String {
+/// Versioned storage rotates the pre-0.1.1 time-seeded token format once,
+/// while the bearer token exposed on the network remains 64 lowercase hex
+/// characters.
+fn load_or_create_token() -> Result<String, String> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let path = dir.join("token.txt");
             if let Ok(s) = std::fs::read_to_string(&path) {
-                let s = s.trim().to_string();
-                if s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return s;
+                if let Some(token) = parse_persisted_token(&s) {
+                    return Ok(token);
                 }
             }
-            let tok = random_token();
-            let _ = std::fs::write(&path, &tok);
-            return tok;
+            let token = random_token()?;
+            if let Err(e) = std::fs::write(&path, format!("v2:{token}")) {
+                crate::log::write(&format!(
+                    "remote: pairing token could not be persisted at {}: {e}",
+                    path.display()
+                ));
+            }
+            return Ok(token);
         }
     }
     random_token()
 }
 
-/// 256-bit token as 64 hex chars (xorshift, seeded from time/pid/counter).
-fn random_token() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEED: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let mut s = nanos
-        ^ std::process::id() as u64
-        ^ SEED.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
-    let mut out = String::with_capacity(64);
-    for _ in 0..32 {
-        s ^= s << 13;
-        s ^= s >> 7;
-        s ^= s << 17;
-        let b = (s & 0xFF) as u8;
-        out.push_str(&format!("{b:02x}"));
+fn parse_persisted_token(value: &str) -> Option<String> {
+    let token = value.trim().strip_prefix("v2:")?;
+    (token.len() == 64 && token.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| token.to_ascii_lowercase())
+}
+
+/// Generate a 256-bit bearer token with the Windows system-preferred CSPRNG.
+/// Failure is fatal to server startup: predictable input authorization is not
+/// an acceptable fallback.
+fn random_token() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        return Err(format!(
+            "Windows secure random generator failed with NTSTATUS {status:#x}"
+        ));
     }
-    out
+
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        token.push(HEX[(byte >> 4) as usize] as char);
+        token.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(token)
 }
 
 // ─── WebSocket accept: SHA1 + base64 ────────────────────────────────────────
@@ -1113,12 +1444,12 @@ const MANIFEST_JSON: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/manifest.json"));
 const WINLIST_HTML: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/winlist.html"));
-const PAD_HTML: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/pad.html"));
+const PAD_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/pad.html"));
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    static LIFECYCLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn sha1_known_vector() {
@@ -1142,25 +1473,209 @@ mod tests {
         assert_eq!(got, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 
-    /// Regression: start_server() must return immediately so the tray
-    /// WM_COMMAND handler doesn't block the WM_TIMER queue (which would
-    /// freeze click_tick + window_switcher::tick() for ~2s, making the
-    /// mouse and click-cycle feel unresponsive).
+    /// Regression: start_server() must bind and publish state promptly so the
+    /// tray can open the QR page without blocking or racing initialization.
     #[test]
-    fn start_server_returns_immediately() {
+    fn start_server_returns_ready_state_immediately() {
         use std::time::Instant;
+        let _guard = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let t0 = Instant::now();
-        start_server();
+        let started = start_server_inner(false, Some("00".repeat(32)));
         let elapsed = t0.elapsed();
-        // Fire-and-forget should return in well under 10ms.
         assert!(
             elapsed.as_millis() < 50,
-            "start_server blocked for {elapsed:?} -- must be fire-and-forget"
+            "start_server blocked for {elapsed:?}"
         );
-        // Clean up the background thread's port so we don't leak it.
-        // Give the impl a moment to bind, then stop.
-        std::thread::sleep(Duration::from_millis(200));
+        let started = started.expect("test host must expose a usable LAN address");
+        let published = info().expect("successful start must publish connection info");
+        assert_eq!(published.url, started.url);
+        assert!(BROADCAST_TX.lock().is_some());
         stop_server();
+        assert!(BROADCAST_TX.lock().is_none());
+    }
+
+    #[test]
+    fn stop_server_closes_unauthenticated_connections() {
+        let _guard = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let started = start_server_inner(false, Some("00".repeat(32)))
+            .expect("test host must expose a usable LAN address");
+        let authority = started
+            .url
+            .strip_prefix("http://")
+            .and_then(|url| url.split('/').next())
+            .unwrap();
+        let mut client = TcpStream::connect(authority).unwrap();
+        client.write_all(b"GET / HTTP/1.1\r\n").unwrap();
+
+        let accepted_deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while OPEN_CONNECTIONS.load(Ordering::Relaxed) == 0
+            && std::time::Instant::now() < accepted_deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(OPEN_CONNECTIONS.load(Ordering::Relaxed), 1);
+
+        stop_server();
+        let closed_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while OPEN_CONNECTIONS.load(Ordering::Relaxed) != 0
+            && std::time::Instant::now() < closed_deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(OPEN_CONNECTIONS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn server_caps_and_closes_an_unauthenticated_connection_flood() {
+        let _guard = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let started = start_server_inner(false, Some("00".repeat(32)))
+            .expect("test host must expose a usable LAN address");
+        let address: SocketAddr = started
+            .url
+            .strip_prefix("http://")
+            .and_then(|url| url.split('/').next())
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let mut clients = Vec::new();
+        for index in 0..(MAX_OPEN_CONNECTIONS + 8) {
+            let mut client = TcpStream::connect_timeout(&address, Duration::from_millis(250))
+                .expect("loopback-equivalent LAN connection must succeed");
+            client
+                .write_all(
+                    b"GET /ws HTTP/1.1\r\nHost: test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+                )
+                .unwrap();
+            clients.push(client);
+
+            if index < MAX_OPEN_CONNECTIONS {
+                let accepted_deadline = std::time::Instant::now() + Duration::from_millis(250);
+                while OPEN_CONNECTIONS.load(Ordering::Relaxed) <= index
+                    && std::time::Instant::now() < accepted_deadline
+                {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                assert_eq!(OPEN_CONNECTIONS.load(Ordering::Relaxed), index + 1);
+            }
+        }
+        assert_eq!(
+            OPEN_CONNECTIONS.load(Ordering::Relaxed),
+            MAX_OPEN_CONNECTIONS
+        );
+
+        stop_server();
+        let closed_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while OPEN_CONNECTIONS.load(Ordering::Relaxed) != 0
+            && std::time::Instant::now() < closed_deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(OPEN_CONNECTIONS.load(Ordering::Relaxed), 0);
+        drop(clients);
+    }
+
+    #[test]
+    fn listener_stop_releases_bound_port() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            run_listener(listener, "test-token".to_string(), worker_stop, false);
+            let _ = done_tx.send(());
+        });
+
+        stop.store(true, Ordering::Release);
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(250)).is_ok(),
+            "listener must observe cancellation promptly"
+        );
+        TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+            .expect("listener port must be reusable after stop");
+    }
+
+    #[test]
+    fn secure_token_has_expected_wire_format() {
+        let token = random_token().expect("Windows system RNG must be available");
+        assert_eq!(token.len(), 64);
+        assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(token, token.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn persisted_token_requires_secure_format_version() {
+        let token = "AB".repeat(32);
+        assert_eq!(
+            parse_persisted_token(&format!("v2:{token}")),
+            Some(token.to_ascii_lowercase())
+        );
+        assert_eq!(parse_persisted_token(&token), None);
+        assert_eq!(parse_persisted_token("v2:not-a-token"), None);
+    }
+
+    #[test]
+    fn unauthenticated_connection_reservations_are_bounded() {
+        let counter = AtomicUsize::new(0);
+        for _ in 0..MAX_OPEN_CONNECTIONS {
+            assert!(reserve_bounded_slot(&counter, MAX_OPEN_CONNECTIONS));
+        }
+        assert!(!reserve_bounded_slot(&counter, MAX_OPEN_CONNECTIONS));
+        counter.fetch_sub(1, Ordering::Relaxed);
+        assert!(reserve_bounded_slot(&counter, MAX_OPEN_CONNECTIONS));
+    }
+
+    #[test]
+    fn thumbnail_jobs_have_a_strict_concurrency_cap() {
+        assert_eq!(THUMBNAIL_JOBS.load(Ordering::Relaxed), 0);
+        let first = ThumbnailSlot::acquire().unwrap();
+        let second = ThumbnailSlot::acquire().unwrap();
+        assert!(ThumbnailSlot::acquire().is_none());
+        drop(first);
+        let replacement = ThumbnailSlot::acquire().unwrap();
+        drop(second);
+        drop(replacement);
+        assert_eq!(THUMBNAIL_JOBS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn thumbnail_dimensions_are_clamped_before_capture() {
+        assert_eq!(bounded_thumbnail_dimension(None, 320, 1920), 320);
+        assert_eq!(bounded_thumbnail_dimension(Some(0), 320, 1920), 1);
+        assert_eq!(bounded_thumbnail_dimension(Some(u64::MAX), 320, 1920), 1920);
+    }
+
+    #[test]
+    fn outbound_broadcast_queue_is_bounded_and_fail_open() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        assert!(enqueue_outbound_on(Some(&tx), Outbound::Status));
+        assert!(!enqueue_outbound_on(
+            Some(&tx),
+            Outbound::Message("overflow".to_string())
+        ));
+        assert!(matches!(rx.recv().unwrap(), Outbound::Status));
+        drop(rx);
+        assert!(!enqueue_outbound_on(Some(&tx), Outbound::Status));
+        assert!(!enqueue_outbound_on(None, Outbound::Status));
+    }
+
+    #[test]
+    fn bearer_qr_is_only_available_to_the_host_machine() {
+        let local: IpAddr = "192.168.1.10".parse().unwrap();
+        assert!(same_host_ip("127.0.0.1".parse().unwrap(), local));
+        assert!(same_host_ip(local, local));
+        assert!(!same_host_ip(
+            "192.168.1.11".parse().unwrap(),
+            "192.168.1.10".parse().unwrap()
+        ));
     }
 
     /// Regression: the served trackpad HTML must be syntactically valid JS,

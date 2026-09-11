@@ -50,7 +50,6 @@ const ID_REMOTE: usize = 1008;
 const ID_SETTINGS: usize = 1009;
 #[allow(dead_code)]
 const ID_PROFILES: usize = 1010;
-#[allow(dead_code)]
 const ID_HELP: usize = 1011;
 static FW_DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -433,14 +432,37 @@ unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam:
     }
 }
 
-/// Poll config.toml mtime; on change reload + re-apply hooks without restart.
+/// Poll config.toml mtime and reconcile both input hooks and the optional LAN
+/// listener without requiring a process restart.
 unsafe fn check_reload_config() {
     let path = crate::config::config_path();
     let mut last = CONFIG_MTIME.lock();
-    if crate::config::config_changed(&path, &mut last) {
-        drop(last);
-        crate::log::write("config.toml changed — reloading");
-        crate::win::hooks::reload_active_config();
+    if !crate::config::config_changed(&path, &mut last) {
+        return;
+    }
+    drop(last);
+
+    crate::log::write("config.toml changed — reloading");
+    let previous_remote = crate::CONFIG.read().remote.clone();
+    if let Err(e) = crate::win::hooks::reload_active_config() {
+        crate::log::write(&format!("config reload failed to install hooks: {e}"));
+    }
+    let desired_remote = crate::CONFIG.read().remote.clone();
+
+    let port_changed = previous_remote.port != desired_remote.port;
+    if !desired_remote.enabled {
+        if crate::remote::info().is_some() {
+            crate::remote::stop_server();
+        }
+    } else {
+        if port_changed && crate::remote::info().is_some() {
+            crate::remote::stop_server();
+        }
+        if crate::remote::info().is_none() {
+            if let Err(e) = crate::remote::start_server() {
+                crate::log::write(&format!("remote: hot-reload startup failed: {e}"));
+            }
+        }
     }
 }
 
@@ -465,8 +487,24 @@ unsafe fn show_menu(hwnd: isize) {
             MF_UNCHECKED
         };
 
-    AppendMenuW(menu, smooth_flags, ID_SMOOTH, to_wide("平滑滚动").as_ptr());
-    AppendMenuW(menu, remap_flags, ID_REMAP, to_wide("按键重映射").as_ptr());
+    AppendMenuW(
+        menu,
+        smooth_flags,
+        ID_SMOOTH,
+        to_wide("全局平滑滚动").as_ptr(),
+    );
+    AppendMenuW(
+        menu,
+        remap_flags,
+        ID_REMAP,
+        to_wide("全局按键重映射").as_ptr(),
+    );
+    let addmode_label = if crate::add_mode::is_active() {
+        "取消录制映射"
+    } else {
+        "录制映射..."
+    };
+    AppendMenuW(menu, MF_STRING, ID_ADDMODE, to_wide(addmode_label).as_ptr());
     // Trackpad toggle: ✓ if server is running, blank if not.
     let remote_flags = MF_STRING
         | if crate::remote::info().is_some() {
@@ -480,6 +518,7 @@ unsafe fn show_menu(hwnd: isize) {
         ID_REMOTE,
         to_wide("手机妙控板").as_ptr(),
     );
+    AppendMenuW(menu, MF_STRING, ID_HELP, to_wide("帮助").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_ABOUT, to_wide("关于").as_ptr());
     AppendMenuW(menu, MF_STRING, ID_EXIT, to_wide("退出").as_ptr());
 
@@ -500,8 +539,24 @@ unsafe fn show_menu(hwnd: isize) {
     DestroyMenu(menu);
 
     match cmd as usize {
-        ID_SMOOTH => crate::win::hooks::toggle_feature(crate::win::hooks::Feature::SmoothScroll),
-        ID_REMAP => crate::win::hooks::toggle_feature(crate::win::hooks::Feature::ButtonRemap),
+        ID_SMOOTH | ID_REMAP => {
+            let feature = if cmd as usize == ID_SMOOTH {
+                crate::win::hooks::Feature::SmoothScroll
+            } else {
+                crate::win::hooks::Feature::ButtonRemap
+            };
+            if let Err(e) = crate::win::hooks::toggle_feature(feature) {
+                crate::log::write(&format!("feature toggle failed: {e}"));
+                MessageBoxW(
+                    hwnd,
+                    to_wide(&format!("设置无法保存或启用:\n{e}")).as_ptr(),
+                    to_wide("Win Mouse Fix").as_ptr(),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
+        }
+        ID_ADDMODE => start_addmode(hwnd),
+        ID_HELP => show_help(),
         ID_EXIT => {
             let result = MessageBoxW(
                 hwnd,
@@ -524,12 +579,48 @@ unsafe fn show_menu(hwnd: isize) {
         }
         ID_REMOTE => {
             if crate::remote::info().is_some() {
-                // Server is running → stop it.
                 crate::remote::stop_server();
+                if let Err(e) = persist_remote_enabled(false) {
+                    crate::log::write(&format!("remote: could not persist disabled state: {e}"));
+                    MessageBoxW(
+                        hwnd,
+                        to_wide(&format!(
+                            "手机妙控板已停止,但无法保存设置:\n{e}\n\n下次启动时可能会再次启用。"
+                        ))
+                        .as_ptr(),
+                        to_wide("手机妙控板").as_ptr(),
+                        MB_OK | MB_ICONINFORMATION,
+                    );
+                }
             } else {
-                // Server not running → start it + show QR.
-                crate::remote::start_server();
-                show_remote_qr(hwnd);
+                match crate::remote::start_server() {
+                    Ok(_) => {
+                        if let Err(e) = persist_remote_enabled(true) {
+                            crate::log::write(&format!(
+                                "remote: could not persist enabled state: {e}"
+                            ));
+                            MessageBoxW(
+                                hwnd,
+                                to_wide(&format!(
+                                    "手机妙控板已启动,但无法保存设置:\n{e}\n\n本次运行仍可正常使用。"
+                                ))
+                                .as_ptr(),
+                                to_wide("手机妙控板").as_ptr(),
+                                MB_OK | MB_ICONINFORMATION,
+                            );
+                        }
+                        show_remote_qr(hwnd);
+                    }
+                    Err(e) => {
+                        crate::log::write(&format!("remote: startup failed: {e}"));
+                        MessageBoxW(
+                            hwnd,
+                            to_wide(&format!("手机妙控板服务启动失败:\n{e}")).as_ptr(),
+                            to_wide("手机妙控板").as_ptr(),
+                            MB_OK | MB_ICONINFORMATION,
+                        );
+                    }
+                }
             }
         }
         _ => {}
@@ -538,9 +629,28 @@ unsafe fn show_menu(hwnd: isize) {
 
 /// Start AddMode: enable capture and start a timer to poll for captured triggers.
 unsafe fn start_addmode(hwnd: isize) {
+    if crate::add_mode::is_active() {
+        KillTimer(hwnd, ID_TIMER_ADDMODE);
+        let _ = crate::add_mode::disable();
+        crate::log::write("AddMode cancelled");
+        MessageBoxW(
+            hwnd,
+            to_wide("映射录制已取消。").as_ptr(),
+            to_wide("Win Mouse Fix").as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+        return;
+    }
+    MessageBoxW(
+        hwnd,
+        to_wide("关闭此提示后,请按下要录制的鼠标按键或滚动滚轮。\n输入会正常传递给当前程序。")
+            .as_ptr(),
+        to_wide("录制映射").as_ptr(),
+        MB_OK | MB_ICONINFORMATION,
+    );
     if crate::add_mode::enable() {
         SetTimer(hwnd, ID_TIMER_ADDMODE, 50, None);
-        crate::log::write("AddMode started — click, scroll or drag to capture a trigger");
+        crate::log::write("AddMode started — press a mouse button or scroll to capture a trigger");
     }
 }
 
@@ -587,11 +697,15 @@ unsafe fn show_addmode_message(hwnd: isize, payload: &crate::add_mode::AddModePa
             // Write to config.toml.
             match crate::add_mode::save_to_config(&entry) {
                 Ok(()) => {
+                    let activation_error = crate::win::hooks::reload_active_config().err();
+                    let status = match &activation_error {
+                        Some(e) => format!("映射已保存,但无法立即启用:\n{e}"),
+                        None => "映射已立即生效。".to_string(),
+                    };
                     let msg = format!(
                         "映射已保存到 config.toml\n\n\
-                         触发器: {}\n点击次数: {}\n修饰键: 0x{:x}\n\n\
-                         重启程序后生效。",
-                        trigger_desc, payload.click_count, payload.active_mods.keyboard,
+                         触发器: {}\n点击次数: {}\n修饰键: 0x{:x}\n\n{}",
+                        trigger_desc, payload.click_count, payload.active_mods.keyboard, status,
                     );
                     MessageBoxW(
                         hwnd,
@@ -601,11 +715,12 @@ unsafe fn show_addmode_message(hwnd: isize, payload: &crate::add_mode::AddModePa
                     );
                 }
                 Err(e) => {
-                    let msg = format!("保存失败: {e}\n\n已记录到日志，请手动添加到 config.toml。");
+                    crate::log::write(&format!("AddMode save failed: {e}"));
+                    let msg = format!("保存失败: {e}\n\n请检查日志，然后手动添加到 config.toml。");
                     MessageBoxW(
                         hwnd,
                         to_wide(&msg).as_ptr(),
-                        to_wide("录制完成 — Win Mouse Fix").as_ptr(),
+                        to_wide("录制失败 — Win Mouse Fix").as_ptr(),
                         MB_OK | MB_ICONINFORMATION,
                     );
                 }
@@ -619,38 +734,33 @@ unsafe fn show_addmode_message(hwnd: isize, payload: &crate::add_mode::AddModePa
     let _ = crate::add_mode::disable();
 }
 
-/// Interactive About box.
-#[allow(dead_code)]
+/// Show concise instructions for actions that are reachable from the tray.
 fn show_help() {
     let help_text = "\
 Win Mouse Fix 使用说明
 
 基本操作：
-• 滚轮：平滑滚动（可关闭）
-• 中键双击：切换虚拟桌面
-• 按键重映射：在「设置」中配置
+• 滚轮：平滑滚动（托盘可关闭）
+• 中键双击：打开窗口切换器
+• 按键重映射：托盘可启用或关闭
+• 录制映射：按提示输入鼠标触发器并选择动作；再次选择菜单可取消
 
 手机妙控板：
 1. 确保手机和电脑在同一局域网
-2. 扫描托盘二维码连接
-3. 手指在手机屏幕上滑动 = 移动光标
-4. 单指点击 = 左键，双指点击 = 右键
-5. 双指滑动 = 滚动
-6. 三指上滑 = 任务视图
-7. 点击 🎤 按钮可语音输入文字到 PC
-
-快捷手势：
-• 三指上滑：任务视图 (Win+Tab)
-• 四指下滑：显示桌面 (Win+D)
-• 三/四指左右滑：切换应用/虚拟桌面
+2. 点击托盘“手机妙控板”打开二维码
+3. 单指滑动移动光标，单指点击为左键
+4. 双指点击为右键，双指滑动为滚动
+5. 三指上滑打开任务视图
+6. 点击麦克风按钮可将语音文本输入电脑
 
 配置文件：
-• 右键托盘 → 设置 → 编辑 config.toml
-• 支持按应用自动切换配置
+• config.toml 位于程序 exe 同目录
+• 保存文件后约 1 秒自动热重载
+• 支持 [[profiles]] 按前台程序切换配置
 
-问题反馈：
-• 日志文件：config.toml 同目录下的 win-mouse-fix.log
-• 崩溃日志：exe 同目录下的 crash.log";
+故障排查：
+• 日志路径由 config.toml 的 general.log_path 设置
+• 崩溃日志位于 exe 同目录的 crash.log";
     unsafe {
         MessageBoxW(
             0,
@@ -1025,9 +1135,18 @@ unsafe extern "system" fn addmode_dialog_proc(
     }
 }
 
-/// Phase 11 — on first use, ask the user to open the firewall port for LAN access.
-/// Windows blocks unsolicited inbound by default; adding the allow rule needs a
-/// one-time admin grant (UAC). We prompt for consent, then elevate `netsh`.
+/// Persist the runtime toggle so tray state survives the next launch.
+fn persist_remote_enabled(enabled: bool) -> Result<(), String> {
+    let mut config = crate::config::Config::load_or_default();
+    config.remote.enabled = enabled;
+    config
+        .save()
+        .map_err(|e| format!("无法写入 config.toml: {e}"))?;
+    crate::CONFIG.write().remote.enabled = enabled;
+    Ok(())
+}
+
+/// Extract the listener port from a published connection URL.
 fn parse_port(url: &str) -> u16 {
     if let Some(auth) = url.split("://").nth(1) {
         if let Some(colon) = auth.find(':') {

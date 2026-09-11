@@ -13,7 +13,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     XBUTTON1, XBUTTON2,
 };
 
-use crate::accel::PointerAccel;
 use crate::config::Config;
 use crate::gesture::{drag_scroll_refine, DragController};
 use crate::remap::{
@@ -38,6 +37,10 @@ const LLMHF_INJECTED: u32 = 0x01;
 /// (some Windows versions don't reliably set `LLMHF_INJECTED` for SendInput).
 pub const OUR_MARKER: usize = 0xFA57_0000;
 
+#[inline]
+fn is_our_injected_event(flags: u32, extra_info: usize) -> bool {
+    (flags & LLMHF_INJECTED) != 0 || extra_info == OUR_MARKER
+}
 /// Timer ID for ClickCycle level-expiration ticks.
 pub(crate) const CLICK_TIMER_ID: usize = 3006;
 
@@ -90,14 +93,9 @@ fn drag_output(mode: &str) -> DragOutput {
     }
 }
 
-/// Pointer-acceleration controller; `None` disables acceleration.
-static ACCEL: RwLock<Option<PointerAccel>> = RwLock::new(None);
-
 /// Atomic flags for hot-path config reads — avoids taking CONFIG.read() lock on every mouse event.
 static SCROLL_ENABLED: AtomicBool = AtomicBool::new(false);
-static SMOOTH_ENABLED: AtomicBool = AtomicBool::new(false);
 static BUTTONS_ENABLED: AtomicBool = AtomicBool::new(false);
-static ACCEL_ENABLED: AtomicBool = AtomicBool::new(false);
 static DRAG_ENABLED: AtomicBool = AtomicBool::new(false);
 static WINDOW_SWITCHER_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Cached drag mode for the mousemove hot path — avoids CONFIG.read() on every move.
@@ -125,9 +123,29 @@ static DRAG_EFFECT: RwLock<Option<DragState>> = RwLock::new(None);
 /// Currently active profile key (foreground exe basename), or `None` for base.
 /// Lets the foreground-poll timer skip a reload when the app hasn't changed.
 static CURRENT_PROFILE_KEY: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+fn hook_settings_equal(left: &Config, right: &Config) -> bool {
+    left.scroll == right.scroll && left.buttons == right.buttons && left.drag == right.drag
+}
+
+fn reconcile_active_config(next: Config) -> Result<(), String> {
+    let needs_hook_restart = {
+        let current = CONFIG.read();
+        if *current == next {
+            return Ok(());
+        }
+        !hook_settings_equal(&current, &next)
+    };
+    if needs_hook_restart {
+        apply_config(next)
+    } else {
+        *CONFIG.write() = next;
+        Ok(())
+    }
+}
+
 /// swap in the new config, then bring hooks back up. Safe to call repeatedly
 /// (at startup, and on each tray-menu toggle).
-pub fn apply_config(cfg: Config) {
+pub fn apply_config(cfg: Config) -> Result<(), String> {
     uninstall();
     stop_scroll();
     *REMAP_TABLE.write() = None;
@@ -179,16 +197,9 @@ pub fn apply_config(cfg: Config) {
     } else {
         *DRAG.write() = None;
     }
-    if cfg.accel.enabled {
-        *ACCEL.write() = Some(PointerAccel::new());
-    } else {
-        *ACCEL.write() = None;
-    }
     // Update atomic hot-path flags.
     SCROLL_ENABLED.store(cfg.scroll.enabled, Ordering::Relaxed);
-    SMOOTH_ENABLED.store(cfg.scroll.smooth, Ordering::Relaxed);
     BUTTONS_ENABLED.store(cfg.buttons.enabled, Ordering::Relaxed);
-    ACCEL_ENABLED.store(cfg.accel.enabled, Ordering::Relaxed);
     DRAG_ENABLED.store(cfg.drag.enabled, Ordering::Relaxed);
     WINDOW_SWITCHER_ENABLED.store(cfg.buttons.window_switcher, Ordering::Relaxed);
     // Cache drag mode as u8 for the lock-free mousemove hot path.
@@ -202,33 +213,56 @@ pub fn apply_config(cfg: Config) {
     DRAG_MODE.store(mode_u8, Ordering::Relaxed);
     drop(cfg);
 
-    let _ = install();
+    if let Err(e) = install() {
+        stop_scroll();
+        return Err(e);
+    }
 
     // Start the ClickCycle timer if button remapping is enabled.
     start_click_timer();
+    Ok(())
 }
 
 /// Reload the base config from disk and re-apply it merged with the profile
 /// that matches the current foreground window. Idempotent and re-entrant —
 /// safe to call from the message-loop timer (same thread as `install`).
-pub fn reload_active_config() {
+pub fn reload_active_config() -> Result<(), String> {
     let base = Config::load_or_default();
     let active = base.resolve_for_exe(crate::win::window::foreground_exe().as_deref());
-    apply_config(active);
+    reconcile_active_config(active)
 }
 
 /// Called by the tray's profile-poll timer. If the foreground window's exe
 /// changed since the last call, reload + re-apply the matching profile.
 pub fn poll_foreground_profile() {
+    // The common case has no per-app profiles. Avoid a process lookup, disk
+    // parse, hook teardown, and injector restart every 500 ms in that case.
+    if !CONFIG
+        .read()
+        .profiles
+        .iter()
+        .any(|p| p.match_type == "exe" && p.match_exe.is_some())
+    {
+        return;
+    }
+
     let exe = crate::win::window::foreground_exe();
     let mut cur = CURRENT_PROFILE_KEY.lock();
-    if *cur != exe {
-        *cur = exe.clone();
-        drop(cur);
+    if *cur == exe {
+        return;
+    }
+    *cur = exe.clone();
+    drop(cur);
+
+    let base = Config::load_or_default();
+    let active = base.resolve_for_exe(exe.as_deref());
+    if *CONFIG.read() != active {
         crate::log::write(&format!(
-            "foreground window changed → {exe:?}; reloading profile"
+            "foreground window changed → {exe:?}; applying profile"
         ));
-        reload_active_config();
+        if let Err(e) = reconcile_active_config(active) {
+            crate::log::write(&format!("profile switch failed to install hooks: {e}"));
+        }
     }
 }
 
@@ -500,26 +534,30 @@ pub fn send_remote_zoom(delta: i32) {
     }
 }
 
-/// Current on/off state of a feature (for the tray checkmarks).
+/// Persisted base on/off state shown by tray checkmarks. Per-app profiles may
+/// still override the effective state while their application is foreground.
 pub fn feature_enabled(f: Feature) -> bool {
+    let base = Config::load_or_default();
     match f {
-        Feature::SmoothScroll => CONFIG.read().scroll.enabled,
-        Feature::ButtonRemap => CONFIG.read().buttons.enabled,
+        Feature::SmoothScroll => base.scroll.enabled,
+        Feature::ButtonRemap => base.buttons.enabled,
     }
 }
 
 /// Toggle a feature, persist to `config.toml`, and hot-reload.
-pub fn toggle_feature(f: Feature) {
-    // Base the toggle on the currently-loaded config rather than re-reading from
-    // disk, so a transient read error can never overwrite the user's file with a
-    // fallback default (which would silently drop settings like `window_switcher`).
-    let mut cfg = CONFIG.read().clone();
+pub fn toggle_feature(f: Feature) -> Result<(), String> {
+    // Persist the base document, never the active profile overlay. Otherwise a
+    // tray click while a profile is active would flatten its overrides into the
+    // global config and silently change other applications.
+    let mut base = Config::load_or_default();
     match f {
-        Feature::SmoothScroll => cfg.scroll.enabled = !cfg.scroll.enabled,
-        Feature::ButtonRemap => cfg.buttons.enabled = !cfg.buttons.enabled,
+        Feature::SmoothScroll => base.scroll.enabled = !base.scroll.enabled,
+        Feature::ButtonRemap => base.buttons.enabled = !base.buttons.enabled,
     }
-    let _ = cfg.save();
-    apply_config(cfg);
+    base.save()
+        .map_err(|e| format!("无法保存 config.toml: {e}"))?;
+    let active = base.resolve_for_exe(crate::win::window::foreground_exe().as_deref());
+    apply_config(active)
 }
 
 /// Map a low-level mouse hook event to a (button, is_down) pair, if it is a
@@ -577,6 +615,7 @@ pub fn install() -> Result<(), String> {
         let kh = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), hmod, 0);
         if kh == 0 {
             UnhookWindowsHookEx(mh);
+            MOUSE_HOOK = 0;
             return Err("failed to install low-level keyboard hook".into());
         }
         KEY_HOOK = kh;
@@ -622,6 +661,14 @@ fn precision_cursor_delta(delta: i32, horizontal: bool) -> (i32, i32) {
     } else {
         (0, px)
     }
+}
+
+#[inline]
+fn enqueue_smooth_wheel(
+    sender: Option<&std::sync::mpsc::SyncSender<WheelInput>>,
+    input: WheelInput,
+) -> bool {
+    sender.is_some_and(|tx| tx.try_send(input).is_ok())
 }
 
 /// Process a raw wheel event: apply invert, modifiers, and either inject
@@ -702,52 +749,47 @@ unsafe fn process_wheel(delta: i32, horizontal: bool, cfg: &Config) -> Option<Wh
         return Some(WheelInput { delta, horizontal }); // swallowed: cursor moved, no scroll
     }
 
-    // 4. If smooth mode is enabled, inject into the injector pipeline.
-    //    The hook swallows the original event; the injector replays it smoothly.
-    //    If smooth mode is off, return None so the original event passes through.
+    // 4. If smooth mode is enabled, enqueue without blocking the hook. Only
+    // swallow the physical event after the worker accepted it; if the worker
+    // failed, disconnected, or is overloaded, raw scrolling remains usable.
     if cfg.scroll.smooth {
-        if let Some(tx) = SCROLL_TX.lock().as_ref() {
-            let _ = tx.try_send(WheelInput { delta, horizontal });
+        let input = WheelInput { delta, horizontal };
+        if enqueue_smooth_wheel(SCROLL_TX.lock().as_ref(), input) {
+            return Some(input);
         }
-        Some(WheelInput { delta, horizontal })
-    } else {
-        None
     }
+    None
 }
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) -> isize {
     if code >= 0 {
         let ev = wparam as u32;
         let ms = &*(lparam as *const MSLLHOOKSTRUCT);
-        // Ignore events we synthesized (check LLMHF_INJECTED + our dwExtraInfo marker).
-        let is_our_injection = (ms.flags & LLMHF_INJECTED) != 0 || ms.dwExtraInfo == 0xFA57_0000;
-        // Foreign injection detection: some tools (e.g. WeChat screenshot) inject mouse
-        // events via SendInput without setting LLMHF_INJECTED. They arrive as a quick
-        // down+up pair at the same coordinates. We detect this by checking for an
-        // injected-looking LMB with no LLMHF_INJECTED flag — these should pass through
-        // CallNextHookEx without entering the remap path, so the target app receives
-        // the raw event and can handle it (e.g. WeChat needs to see the injection).
-        let is_foreign_injected_lmb =
-            ms.flags == 0 && ms.dwExtraInfo == 0 && (ev == 0x201 || ev == 0x202 || ev == 0x203);
-        if is_our_injection || is_foreign_injected_lmb {
+        // Only bypass events Windows marks as injected or events carrying our
+        // marker. Unmarked events are indistinguishable from physical input;
+        // classifying them by button type would disable legitimate remaps and
+        // drag gestures for that button.
+        if is_our_injected_event(ms.flags, ms.dwExtraInfo) {
             return CallNextHookEx(0, code, wparam, lparam);
         }
 
-        // ── Fast-path flags (no lock) ────────────────────────────────────────────
-        let scroll_on = SCROLL_ENABLED.load(Ordering::Relaxed);
-        let _smooth_on = SMOOTH_ENABLED.load(Ordering::Relaxed);
-        let buttons_on = BUTTONS_ENABLED.load(Ordering::Relaxed);
-        let _accel_on = ACCEL_ENABLED.load(Ordering::Relaxed);
-        let drag_on = DRAG_ENABLED.load(Ordering::Relaxed);
-        let ws_on = WINDOW_SWITCHER_ENABLED.load(Ordering::Relaxed);
-
         // ── Wheel events ──────────────────────────────────────────────────────────
         if ev == WM_MOUSEWHEEL || ev == WM_MOUSEHWHEEL {
+            if crate::add_mode::is_active() {
+                let active_mods = ActiveModifiers {
+                    keyboard: crate::modifiers::state() as u32,
+                    buttons: get_tracker().read().held_modifier_buttons(),
+                };
+                let _ = crate::add_mode::on_scroll_event(&active_mods);
+                return CallNextHookEx(0, code, wparam, lparam);
+            }
             // Window-switcher gesture: wheel navigates the Alt+Tab list while held.
             // step() may detect that the OS dismissed the switcher (e.g. user
             // clicked away to a different window) — in that case it resets
             // mode and we fall through to the normal scroll path so the
-            if crate::win::window_switcher::is_active() {
+            if WINDOW_SWITCHER_ENABLED.load(Ordering::Relaxed)
+                && crate::win::window_switcher::is_active()
+            {
                 let raw_delta = (ms.mouseData >> 16) as i16 as i32;
                 let hwheel = ev == WM_MOUSEHWHEEL;
                 // Direction mapping:
@@ -757,15 +799,11 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                 //                   Alt+Tab (UI is laid out horizontally); user expects
                 //                   wheel down to move selection to the right.
                 let forward = if hwheel { raw_delta > 0 } else { raw_delta < 0 };
-                crate::log::write(&format!(
-                    "wheel: ev={} hwheel={} raw_delta={} -> step({})",
-                    ev, hwheel, raw_delta, forward
-                ));
                 if crate::win::window_switcher::step(forward) {
                     return 1; // swallowed: drove the switcher
                 }
             }
-            if scroll_on {
+            if SCROLL_ENABLED.load(Ordering::Relaxed) {
                 let raw_delta = (ms.mouseData >> 16) as i16 as i32;
                 let cfg = CONFIG.read();
                 let horizontal = ev == WM_MOUSEHWHEEL;
@@ -779,7 +817,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         // ── Mousemove ────────────────────────────────────────────────────────────
         if ev == WM_MOUSEMOVE {
             // Window-drag gesture: behaviour depends on DRAG_MODE atomic.
-            if drag_on {
+            if DRAG_ENABLED.load(Ordering::Relaxed) {
                 match DRAG_MODE.load(Ordering::Relaxed) {
                     0u8 => {
                         // DragOutput::Move
@@ -883,14 +921,29 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             if MENU_ACTIVE.load(Ordering::Relaxed) {
                 return CallNextHookEx(0, code, wparam, lparam);
             }
+            // Recording works even when remapping and scrolling are disabled.
+            // Keep the physical event untouched and bypass all configured effects
+            // until the tray finishes the capture dialog.
+            if crate::add_mode::is_active() {
+                if down {
+                    let active_mods = ActiveModifiers {
+                        keyboard: crate::modifiers::state() as u32,
+                        buttons: get_tracker().read().held_modifier_buttons(),
+                    };
+                    let _ = crate::add_mode::on_button_event(btn, 1, false, &active_mods);
+                }
+                return CallNextHookEx(0, code, wparam, lparam);
+            }
             // Never intercept right-click: the system tray needs it for the context
             // menu. Right-click remapping is not a common use case.
             if btn == MouseButton::Right {
                 return CallNextHookEx(0, code, wparam, lparam);
             }
+            let window_switcher_on = WINDOW_SWITCHER_ENABLED.load(Ordering::Relaxed);
+            let buttons_on = BUTTONS_ENABLED.load(Ordering::Relaxed);
             // Middle-button window-switcher gesture takes priority over normal remap.
             // A single middle click is preserved via delayed replay (see window_switcher).
-            if ws_on && btn == MouseButton::Middle {
+            if window_switcher_on && btn == MouseButton::Middle {
                 if down {
                     if crate::win::window_switcher::on_middle_down() {
                         return 1;
@@ -907,11 +960,6 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                     keyboard: kb_state as u32,
                     buttons: held_btns,
                 };
-
-                // AddMode: capture the trigger and pass through unmodified.
-                if crate::add_mode::on_button_event(btn, 1, down, &active_mods) {
-                    return 1;
-                }
 
                 if down {
                     let mut tracker = get_tracker().write();
@@ -954,19 +1002,14 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                 } else {
                     // Button up: end click cycle and fire effects.
                     // FakeDrag: send button-up for the trigger button and swallow.
-                    let is_fake_drag = {
-                        let drag = DRAG_EFFECT.read();
-                        if let Some(ref ds) = *drag {
-                            ds.drag_type == ModifiedDragType::FakeDrag && ds.trigger_button == btn
-                        } else {
-                            false
-                        }
-                    };
-                    if is_fake_drag {
-                        let trigger = DRAG_EFFECT.read().as_ref().unwrap().trigger_button;
+                    let fake_drag_trigger = DRAG_EFFECT.read().as_ref().and_then(|drag| {
+                        (drag.drag_type == ModifiedDragType::FakeDrag && drag.trigger_button == btn)
+                            .then_some(drag.trigger_button)
+                    });
+                    if let Some(trigger) = fake_drag_trigger {
                         send_fake_drag_button_up(trigger);
                         *DRAG_EFFECT.write() = None;
-                        return 1; // swallow the button-up
+                        return 1; // swallowed: completed the synthetic drag
                     }
                     *DRAG_EFFECT.write() = None;
                     let mut tracker = get_tracker().write();
@@ -1212,5 +1255,41 @@ mod tests {
     #[test]
     fn precision_cursor_delta_half_notch_rounds() {
         assert_eq!(precision_cursor_delta(60, false), (0, 4));
+    }
+
+    #[test]
+    fn injection_filter_keeps_unmarked_physical_events() {
+        assert!(!is_our_injected_event(0, 0));
+        assert!(is_our_injected_event(LLMHF_INJECTED, 0));
+        assert!(is_our_injected_event(0, OUR_MARKER));
+    }
+
+    #[test]
+    fn hook_restart_filter_ignores_remote_only_changes() {
+        let base = Config::default();
+        let mut remote_change = base.clone();
+        remote_change.remote.enabled = !remote_change.remote.enabled;
+        remote_change.touch.gain += 1.0;
+        assert!(hook_settings_equal(&base, &remote_change));
+
+        let mut scroll_change = base.clone();
+        scroll_change.scroll.speed += 0.5;
+        assert!(!hook_settings_equal(&base, &scroll_change));
+    }
+
+    #[test]
+    fn smooth_scroll_only_swallows_an_accepted_event() {
+        let input = WheelInput {
+            delta: 120,
+            horizontal: false,
+        };
+        assert!(!enqueue_smooth_wheel(None, input));
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        assert!(enqueue_smooth_wheel(Some(&tx), input));
+        assert!(!enqueue_smooth_wheel(Some(&tx), input));
+        assert_eq!(rx.recv().unwrap().delta, 120);
+        drop(rx);
+        assert!(!enqueue_smooth_wheel(Some(&tx), input));
     }
 }

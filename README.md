@@ -2,9 +2,9 @@
 
 **Make your $10 mouse better than an Apple Trackpad.**
 
-A Windows mouse enhancement tool written in Rust + native Win32 APIs — no Electron, no .NET, no bloat. Adds smooth inertial scrolling, button remapping, pointer acceleration, and more.
+A Windows mouse enhancement tool written in Rust + native Win32 APIs — no Electron or .NET. The working runtime centers on smooth inertial scrolling, button remapping, drag gestures, per-app profiles, and an opt-in LAN phone trackpad.
 
-Inspired by [Mac Mouse Fix](https://github.com/benoitj/Trackpad++), which defines the gold standard for this kind of tool on macOS.
+Inspired by [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix), which defines the reference experience for this project on macOS.
 
 ---
 
@@ -19,8 +19,8 @@ Remap any mouse button to keys, combos, or built-in actions (Task View, Show Des
 ### Click-Drag Gestures
 Hold a button and drag to trigger window move, scroll, or navigation gestures. Modifier keys (Shift/Ctrl) dynamically adjust behavior mid-gesture.
 
-### Pointer Acceleration
-Subtle, predictable acceleration curve. Configurable sensitivity range.
+### Pointer Acceleration (engine preview)
+The acceleration curve and state controller are implemented and unit-tested. Runtime hook integration is not enabled yet, so `accel.enabled` currently has no effect.
 
 ### Modifier-key Scroll Combos
 - **Shift + scroll** → horizontal scroll
@@ -29,13 +29,12 @@ Subtle, predictable acceleration curve. Configurable sensitivity range.
 ### Per-App Profiles
 Profiles auto-apply based on the foreground window's executable name. Each profile is a partial config that deep-merges over the base.
 
-### Device Integration (Logitech)
-- Battery level in tray icon (updates every 5s)
-- Hardware DPI query via HID++
-- Automatic DPI adjustment across monitors of different densities
+### Device Integration (experimental, Logitech)
+- Battery and hardware-DPI query primitives are implemented via HID++
+- Tray battery refresh and cross-monitor hardware-DPI switching remain disabled pending physical-device validation
 
-### Phone Trackpad (PWA)
-Turn your phone into a wireless trackpad over LAN. Scan a QR code, connect, and your phone becomes a full multitouch input device:
+### Phone Trackpad (preview)
+Turn your phone into a wireless trackpad over LAN. The server is opt-in and token-authenticated:
 
 | Gesture | Action |
 |---|---|
@@ -45,17 +44,17 @@ Turn your phone into a wireless trackpad over LAN. Scan a QR code, connect, and 
 | 2-finger drag | Scroll |
 | 3-finger swipe up | Task View |
 | 3-finger swipe left/right | Switch desktop |
-| 🎤 button | Voice-to-text input |
+| Voice button | Voice-to-text input |
 
-Built as a zero-install PWA. Works on iOS Safari (add to Home Screen for best experience).
+The web interface includes an installable manifest. Offline Service Worker support and broad iOS/Android device validation are still pending.
 
 ---
 
 ## Requirements
 
 - **Windows 10/11** (64-bit)
-- **Administrator privileges** — required for global input hooks
-- For device features: **Logitech mouse** connected via Unifying/Bolt receiver or Bluetooth
+- Standard desktop session for normal hooks; run elevated only when input must reach elevated applications
+- For experimental device features: a supported Logitech mouse and receiver
 
 ---
 
@@ -76,7 +75,7 @@ git clone https://github.com/wang19baby/win-mouse-fix.git
 cd win-mouse-fix
 cargo build --release
 
-# 3. Run (requires admin)
+# 3. Run normally; elevate only to affect elevated applications
 ./target/release/win-mouse-fix.exe
 ```
 
@@ -105,12 +104,12 @@ invert = false
 enabled = true
 
 [drag]
-enabled = true
+enabled = false
 button = "left"
 mode = "move"   # "move" | "scroll" | "navigate"
 
 [accel]
-enabled = true
+enabled = false  # engine exists; runtime hook integration is pending
 sensitivity = 1000.0
 
 [touch]
@@ -139,10 +138,10 @@ config = { scroll = { smooth = false } }
 
 ## Phone Trackpad Setup
 
-1. Enable `[remote]` in `config.toml` (set `enabled = true`)
-2. Restart the app
-3. Right-click the tray icon → **Phone Trackpad** → scan the QR code with your phone camera
-4. Your phone opens a full-screen trackpad — no app install needed
+1. Right-click the tray icon and select **手机妙控板**
+2. Accept the one-time firewall prompt if the phone cannot reach the PC
+3. Scan the displayed QR code with the phone camera
+4. The tray toggle is persisted; `remote.enabled = true` in `config.toml` is an equivalent opt-in and hot-reloads without an app restart
 
 > **iOS Safari:** tap the Share button → **Add to Home Screen** for true full-screen mode.
 
@@ -151,47 +150,49 @@ config = { scroll = { smooth = false } }
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  WH_MOUSE_LL / WH_KEYBOARD_LL  (hooks.rs)                  │
-│  Low-level input interception — must return fast             │
-└──────────────┬──────────────────────────────────────────────┘
-               │
-               ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  Scroll pipeline    Button pipeline    Accel pipeline        │
-│  wheel_tracker ──►  RemapEngine ──►  PointerAccel ──►      │
-│  smoother ───────►  ClickCycle ──►                          │
-│  inject thread ◄───  execute_effect ──►                     │
-└──────────────┬──────────────────┬─────────────────────────┘
-               │                  │
-               ▼                  ▼
-┌─────────────────────────────┬──────────────────────────────┐
-│  SendInput injection thread │  Device layer (Logitech HID++)│
-│  (wheel / button / move)   │  battery / dpi               │
-└─────────────────────────────┴──────────────────────────────┘
+│ WH_MOUSE_LL / WH_KEYBOARD_LL  (main-thread message loop)    │
+└───────────────┬───────────────────┬──────────────────────────┘
+                │ wheel             │ button / drag
+                ▼                   ▼
+┌──────────────────────────┐  ┌───────────────────────────────┐
+│ bounded sync channel     │  │ RemapEngine / DragController  │
+│ → scroll-injector thread │  │ → bounded Win32 actions       │
+└───────────────┬──────────┘  └──────────────┬────────────────┘
+                └──────────────┬──────────────┘
+                               ▼
+                    SendInput / window actions
+
+LAN HTTP/WebSocket listener → capped connection workers → the same injection primitives
+window/status callbacks → bounded broadcast queue → serialized per-client WebSocket writes
+config/profile timers → atomic config replacement and idempotent hook reconfiguration
+device polling worker → battery cache (experimental)
 ```
 
-- Hook callbacks run on a system thread and must return in < 1ms
-- All heavy computation (smoothing, remapping, acceleration) happens on worker threads
-- The device layer (HID++) is independent and only active for Logitech hardware
+- Low-level hook callbacks avoid file/network I/O and blocking channel sends
+- Scroll smoothing and LAN/device I/O run off the hook thread
+- Remap and gesture decisions remain in the callback and must stay bounded
+- The pointer-acceleration engine is not yet connected to the move callback
 
 ---
 
 ## Privacy
 
-**Win Mouse Fix never connects to the internet.** All processing is local:
+The desktop process has no telemetry, analytics, or remote crash-reporting service:
 
-- No telemetry, no analytics, no crash reporting services
-- Your keystrokes and mouse data are never collected or transmitted
-- The phone trackpad server binds to your LAN IP only and requires a token to connect
+- Mouse and keyboard events are processed locally
+- The optional phone trackpad binds to a LAN address and requires a 256-bit bearer token
+- Pairing tokens and raw input payloads are not written to application logs
+- The preview server uses plain HTTP/WebSocket, not TLS; enable it only on a trusted private LAN because a network observer can read its traffic
+- Browser speech recognition is controlled by the phone browser and may use that browser vendor's online speech service
 
-The app does request administrator privileges to install global input hooks. This is unavoidable for the functionality it provides.
+Run the desktop process elevated only if it must intercept or inject input into elevated applications.
 
 ---
 
 ## Related Projects
 
-- [Mac Mouse Fix](https://github.com/benoitj/Trackpad++) — the inspiration for this project
+- [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix) — the inspiration for this project
 - [OpenLogi](https://github.com/C-D-H-Dev/OpenLogi) — Logitech HID++ reference implementation in Rust
 
 ---

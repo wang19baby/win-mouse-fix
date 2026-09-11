@@ -707,8 +707,7 @@ unsafe fn save_config_from_controls(hwnd: isize) -> Result<(), String> {
     cfg.save().map_err(|e| e.to_string())?;
     drop(cfg);
     let cfg = crate::CONFIG.read().clone();
-    crate::win::hooks::apply_config(cfg);
-    Ok(())
+    crate::win::hooks::apply_config(cfg)
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
