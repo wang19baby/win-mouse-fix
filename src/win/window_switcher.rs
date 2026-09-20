@@ -87,6 +87,19 @@ pub fn is_active() -> bool {
     STATE.lock().mode == Mode::Active
 }
 
+/// Open the Alt+Tab window list overlay via Alt+Tab.
+/// Called when the user presses Win+Tab. The overlay stays open while Alt is held,
+/// and `step(forward)` / `step(false)` navigate once active.
+pub fn open_overlay() {
+    let mut s = STATE.lock();
+    if s.mode == Mode::Active {
+        return;
+    }
+    s.mode = Mode::Active;
+    s.alt_down_at = Some(Instant::now());
+    drop(s);
+    send_alt_tab_enter_async();
+}
 // ─── Hook path ────────────────────────────────────────────────────────────────
 
 /// Called on every middle-button DOWN seen by the WH_MOUSE_LL hook.

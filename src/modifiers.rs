@@ -8,11 +8,12 @@
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::LazyLock;
 use std::time::Instant;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_MENU, VK_SHIFT};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT};
 
 pub const SHIFT: u8 = 1 << 0;
 pub const CTRL: u8 = 1 << 1;
 pub const ALT: u8 = 1 << 2;
+pub const WIN: u8 = 1 << 3;
 static STATE: AtomicU8 = AtomicU8::new(0);
 /// Nanoseconds since the lazy epoch captured when Shift was last pressed.
 /// Zero means "Shift has never been pressed in this process" (or the program
@@ -30,15 +31,12 @@ fn now_nanos() -> u64 {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
 }
-/// Record a modifier press/release. `vk` is a Windows virtual-key code.
-///
-/// For Shift, the press time is also recorded so that the scroll injector
-/// can query `shift_hold_secs()` for nonlinear Shift acceleration (PR-B).
 pub fn set_vk(vk: u32, down: bool) {
     let bit = match vk as u16 {
         VK_SHIFT => SHIFT,
         VK_CONTROL => CTRL,
         VK_MENU => ALT,
+        VK_LWIN | VK_RWIN => WIN,
         _ => return,
     };
     if bit == SHIFT && down {

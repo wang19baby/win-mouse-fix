@@ -96,6 +96,8 @@ pub struct Config {
     #[serde(default)]
     pub touch: TouchConfig,
     #[serde(default)]
+    pub snap: SnapConfig,
+    #[serde(default)]
     pub profiles: Vec<Profile>,
 }
 
@@ -611,6 +613,7 @@ impl Default for Config {
             dpi: DpiConfig::default(),
             remote: RemoteConfig::default(),
             touch: TouchConfig::default(),
+            snap: SnapConfig::default(),
             profiles: Vec::new(),
         }
     }
@@ -1205,5 +1208,100 @@ longpress_ms = 600
         // Untouched fields remain at defaults
         assert!((cfg.gain - default_touch_gain()).abs() < 1e-9);
         assert_eq!(cfg.tap_ms, default_touch_tap_ms());
+    }
+}
+
+/// Snap Zone configuration (Phase B).
+/// Off by default so the feature must be explicitly enabled in config.toml.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SnapConfig {
+    /// Enable snap zones (Alt+LeftClick window drag snapping).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Snap edge activation threshold in pixels from the screen edge.
+    #[serde(default = "default_snap_threshold")]
+    pub threshold: i32,
+    /// Hotkey registry: action name → key combination.
+    #[serde(default)]
+    pub hotkeys: HotkeyConfig,
+    /// Layout presets for Win+1..9 snap-to-grid.
+    /// Each entry is a named grid (rows × cols) with optional gap.
+    /// Win+N activates the N-th layout's N-th cell.
+    #[serde(default)]
+    pub layouts: Vec<LayoutPreset>,
+}
+
+fn default_snap_threshold() -> i32 { 20 }
+
+/// A single hotkey binding
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HotkeyEntry {
+    pub key: String,
+}
+
+impl Default for HotkeyEntry {
+    fn default() -> Self {
+        HotkeyEntry { key: String::new() }
+    }
+}
+
+/// Map of named snap actions to their hotkey bindings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct HotkeyConfig {
+    #[serde(default)]
+    pub always_on_top: HotkeyEntry,
+    #[serde(default)]
+    pub rollup: HotkeyEntry,
+    #[serde(default)]
+    pub borderless: HotkeyEntry,
+    #[serde(default)]
+    pub snap_left: HotkeyEntry,
+    #[serde(default)]
+    pub snap_right: HotkeyEntry,
+    #[serde(default)]
+    pub snap_up: HotkeyEntry,
+    #[serde(default)]
+    pub snap_down: HotkeyEntry,
+    #[serde(default)]
+    pub move_left: HotkeyEntry,
+    #[serde(default)]
+    pub move_right: HotkeyEntry,
+}
+
+/// A named layout preset: rows × cols grid with optional gap.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LayoutPreset {
+    /// Display name shown in UI.
+    pub name: String,
+    /// Number of rows in the grid.
+    pub rows: u8,
+    /// Number of columns in the grid.
+    pub cols: u8,
+    /// Gap in pixels between cells (default 4).
+    #[serde(default = "default_layout_gap")]
+    pub gap: i32,
+}
+
+fn default_layout_gap() -> i32 { 4 }
+
+impl LayoutPreset {
+    /// Convert to a `Layout` for use by the snap engine.
+    pub fn to_layout(&self) -> crate::snap::Layout {
+        crate::snap::Layout {
+            rows: self.rows,
+            cols: self.cols,
+            gap: self.gap,
+        }
+    }
+}
+
+impl Default for SnapConfig {
+    fn default() -> Self {
+        SnapConfig {
+            enabled: false,
+            threshold: 20,
+            hotkeys: HotkeyConfig::default(),
+            layouts: Vec::new(),
+        }
     }
 }

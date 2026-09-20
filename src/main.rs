@@ -10,10 +10,10 @@ mod modifiers;
 mod remap;
 mod remote;
 mod scroll;
+mod snap;
 #[cfg(test)]
 mod trackpad_gesture;
 mod win;
-
 use config::Config;
 use parking_lot::RwLock;
 use std::sync::LazyLock;
@@ -135,5 +135,6 @@ fn main() {
     }
     win::hooks::uninstall();
     win::hooks::stop_scroll();
+    snap::destroy();
     log::write("Win Mouse Fix exited.");
 }

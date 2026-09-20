@@ -80,7 +80,90 @@ enum DragOutput {
     TaskView = 3,    // drag → Win+Tab (virtual desktop overview)
     ShowDesktop = 4, // drag → Win+D (minimize all / restore)
 }
+static SNAP_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Cached snap threshold in pixels.
+static SNAP_THRESHOLD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(20);
+
+/// Active snap drag state: hwnd, window rect at grab, grab offset.
+static SNAP_DRAG: RwLock<Option<SnapDragState>> = RwLock::new(None);
+
+/// Per-monitor cached zones
+/// Key: HMONITOR as isize, Value: cached zones vec.
+static ZONE_CACHE: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<isize, Vec<crate::snap::Zone>>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// Returns cached zones for the monitor containing `hwnd`, rebuilding if needed.
+fn get_cached_zones(hwnd: isize) -> Option<Vec<crate::snap::Zone>> {
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO};
+
+    let hmonitor = unsafe { MonitorFromWindow(hwnd, 2 /* MONITOR_DEFAULTTONEAREST */) };
+    if hmonitor == 0 {
+        return None;
+    }
+    let mut cache = ZONE_CACHE.lock();
+    if let Some(zones) = cache.get(&hmonitor) {
+        return Some(zones.clone());
+    }
+
+    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    if unsafe { GetMonitorInfoW(hmonitor, &mut info as *mut _ as *mut _) } == 0 {
+        return None;
+    }
+
+    let threshold = SNAP_THRESHOLD.load(Ordering::Relaxed);
+    let work = info.rcWork;
+    let zones = crate::snap::build_zones(work, threshold);
+    cache.insert(hmonitor, zones.clone());
+    Some(zones)
+}
+
+/// Invalidate cached zones (call on display configuration change).
+#[allow(dead_code)]
+pub fn invalidate_zone_cache() {
+    ZONE_CACHE.lock().clear();
+}
+
+struct SnapDragState {
+    #[allow(dead_code)]
+    hwnd: isize,
+    #[allow(dead_code)]
+    original_rect: windows_sys::Win32::Foundation::RECT,
+    #[allow(dead_code)]
+    snapped_rect: windows_sys::Win32::Foundation::RECT,
+}
+/// Rollup state: (hwnd, original_rect). When None, window is not rolled up.
+static ROLLUP_STATE: RwLock<Option<(isize, windows_sys::Win32::Foundation::RECT)>> = RwLock::new(None);
+
+/// Aero Shake state: hwnd being shaken, last cursor X, shake count, last direction.
+#[allow(dead_code)]
+static SHAKE_STATE: RwLock<Option<ShakeState>> = RwLock::new(None);
+
+#[allow(dead_code)]
+struct ShakeState {
+    hwnd: isize,
+    last_x: i32,
+    shake_count: u8,
+    last_dir: i8,
+}
+
+#[allow(dead_code)]
+const SHAKE_PIXELS: i32 = 80;
+#[allow(dead_code)]
+const SHAKE_THRESHOLD: u8 = 3;
+
+#[allow(dead_code)]
+fn point_on_title_bar(hwnd: isize, pt: &windows_sys::Win32::Foundation::POINT) -> bool {
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, GetAncestor, GA_ROOT, GetSystemMetrics, SM_CYSIZE};
+        let mut rect = std::mem::zeroed();
+        let root = GetAncestor(hwnd, GA_ROOT);
+        if GetWindowRect(root, &mut rect) == 0 { return false; }
+        let title_h = GetSystemMetrics(SM_CYSIZE);
+        pt.x >= rect.left && pt.x < rect.right && pt.y >= rect.top && pt.y < rect.top + title_h
+    }
+}
 /// Map the config `drag.mode` string to a [`DragOutput`].
 #[allow(dead_code)]
 fn drag_output(mode: &str) -> DragOutput {
@@ -153,6 +236,8 @@ pub fn apply_config(cfg: Config) -> Result<(), String> {
     *CONFIG.write() = cfg;
     let cfg = CONFIG.read();
 
+    // Refresh snap layouts from config so Win+1..9 uses user-defined grids
+    crate::snap::refresh_layouts(&cfg.snap.layouts);
     // Start the injector only when scroll is enabled AND smooth mode is enabled.
     // When smooth is off, wheel events pass through unmodified (with modifiers applied).
     if cfg.scroll.enabled && cfg.scroll.smooth {
@@ -201,8 +286,9 @@ pub fn apply_config(cfg: Config) -> Result<(), String> {
     SCROLL_ENABLED.store(cfg.scroll.enabled, Ordering::Relaxed);
     BUTTONS_ENABLED.store(cfg.buttons.enabled, Ordering::Relaxed);
     DRAG_ENABLED.store(cfg.drag.enabled, Ordering::Relaxed);
+    SNAP_ENABLED.store(cfg.snap.enabled, Ordering::Relaxed);
+    SNAP_THRESHOLD.store(cfg.snap.threshold, Ordering::Relaxed);
     WINDOW_SWITCHER_ENABLED.store(cfg.buttons.window_switcher, Ordering::Relaxed);
-    // Cache drag mode as u8 for the lock-free mousemove hot path.
     let mode_u8 = match cfg.drag.mode.as_str() {
         "scroll" => 1u8,
         "navigate" => 2u8,
@@ -822,14 +908,47 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
         }
         // ── Mousemove ────────────────────────────────────────────────────────────
         if ev == WM_MOUSEMOVE {
-            // Window-drag gesture: behaviour depends on DRAG_MODE atomic.
             if DRAG_ENABLED.load(Ordering::Relaxed) {
                 match DRAG_MODE.load(Ordering::Relaxed) {
                     0u8 => {
-                        // DragOutput::Move
-                        if let Some(ctrl) = DRAG.read().as_ref() {
-                            if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
-                                crate::win::window::move_window(ctrl.hwnd(), x, y);
+                        let mut drag = DRAG.write();
+                        if let Some(ctrl) = drag.as_mut() {
+                            if ctrl.is_active() {
+                                let hwnd = ctrl.hwnd();
+                                if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
+                                    // Get current window size to compute full rect
+                                    if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                                        let w = rect.right - rect.left;
+                                        let h = rect.bottom - rect.top;
+                                        let window_rect = windows_sys::Win32::Foundation::RECT {
+                                            left: x,
+                                            top: y,
+                                            right: x + w,
+                                            bottom: y + h,
+                                        };
+
+                                        // Check snap zones
+                                        if let Some(zones) = get_cached_zones(hwnd) {
+                                            if let Some(snap) = crate::snap::compute_snap(&window_rect, &zones) {
+                                                // Zone crossed — apply preview and update snap state
+                                                crate::snap::show_preview(&snap);
+                                                *SNAP_DRAG.write() = Some(SnapDragState {
+                                                    hwnd,
+                                                    original_rect: rect,
+                                                    snapped_rect: snap.target,
+                                                });
+                                            } else {
+                                                // No snap zone — move freely and hide preview
+                                                crate::snap::hide_preview();
+                                                *SNAP_DRAG.write() = None;
+                                                crate::win::window::move_window(hwnd, x, y);
+                                            }
+                                        } else {
+                                            // No zones available — move freely
+                                            crate::win::window::move_window(hwnd, x, y);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1059,13 +1178,10 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                             }
                         }
                     } else if !down && ctrl.is_active() && ctrl.matches_release(btn) {
+                        // Hide preview and clear snap state on release
+                        crate::snap::hide_preview();
+                        *SNAP_DRAG.write() = None;
                         ctrl.end();
-                        // Do NOT swallow the UP: the foreground app must see the
-                        // button release to reset its internal "button held"
-                        // state, otherwise subsequent left-clicks silently
-                        // fail because Windows still thinks the button is
-                        // pressed. Drag-to-move operates entirely via injected
-                        // mouse moves and does not need to capture UP.
                     }
                 }
             }
@@ -1084,6 +1200,132 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize)
             crate::modifiers::set_vk(ks.vkCode, down);
             if ks.vkCode == VK_SPACE as u32 {
                 SPACE_HELD.store(down, Ordering::Relaxed);
+            }
+
+            // ── Snap Quick Actions ──────────────────────────────────────────
+            if down && SNAP_ENABLED.load(Ordering::Relaxed) {
+                let mods = crate::modifiers::state();
+                let win_held = (mods & crate::modifiers::WIN) != 0;
+                let alt_held = (mods & crate::modifiers::ALT) != 0;
+                let shift_held = (mods & crate::modifiers::SHIFT) != 0;
+                let vk = ks.vkCode as u8;
+
+                // Win+Shift+Left → move window to left virtual desktop
+                if win_held && shift_held && vk == 0x25 {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        crate::win::virtual_desktop::move_window_to_left(hwnd);
+                    }
+                    return 1;
+                }
+                // Win+Shift+Right → move window to right virtual desktop
+                if win_held && shift_held && vk == 0x27 {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        crate::win::virtual_desktop::move_window_to_right(hwnd);
+                    }
+                    return 1;
+                }
+                // Win+Alt+T → AlwaysOnTop toggle
+                if win_held && alt_held && (vk == b'T' || vk == b't') {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        crate::win::window::toggle_always_on_top(hwnd);
+                    }
+                    return 1;
+                }
+                // Win+Alt+R → Rollup / Unroll
+                if win_held && alt_held && (vk == b'R' || vk == b'r') {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        let mut state = ROLLUP_STATE.write();
+                        if let Some((rolled_hwnd, orig_rect)) = state.as_ref() {
+                            if *rolled_hwnd == hwnd {
+                                crate::win::window::unroll_window(hwnd, orig_rect);
+                                *state = None;
+                            } else if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                                crate::win::window::rollup_window(hwnd, &rect);
+                                *state = Some((hwnd, rect));
+                            }
+                        } else if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                            crate::win::window::rollup_window(hwnd, &rect);
+                            *state = Some((hwnd, rect));
+                        }
+                    }
+                    return 1;
+                }
+                // Win+Alt+B → Borderless toggle
+                if win_held && alt_held && (vk == b'B' || vk == b'b') {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        crate::win::window::toggle_borderless(hwnd);
+                    }
+                    return 1;
+                }
+                // Win+Left → snap window to left half
+                if win_held && vk == 0x25 {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        if let Some(zones) = get_cached_zones(hwnd) {
+                            if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                                if let Some(result) = crate::snap::compute_edge_snap(
+                                    rect.left, rect.top, false, &zones) {
+                                    crate::win::window::set_window_rect(hwnd, &result.target);
+                                }
+                            }
+                        }
+                    }
+                    return 1;
+                }
+                // Win+Right → snap window to right half
+                if win_held && vk == 0x27 {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        if let Some(zones) = get_cached_zones(hwnd) {
+                            if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                                if let Some(result) = crate::snap::compute_edge_snap(
+                                    rect.right, rect.bottom, false, &zones) {
+                                    crate::win::window::set_window_rect(hwnd, &result.target);
+                                }
+                            }
+                        }
+                    }
+                    return 1;
+                }
+                // Win+Up → snap window to top half
+                if win_held && vk == 0x26 {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        if let Some(zones) = get_cached_zones(hwnd) {
+                            if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                                if let Some(result) = crate::snap::compute_edge_snap(
+                                    rect.left, rect.top, true, &zones) {
+                                    crate::win::window::set_window_rect(hwnd, &result.target);
+                                }
+                            }
+                        }
+                    }
+                    return 1;
+                }
+                // Win+Down → minimize / restore
+                if win_held && vk == 0x28 {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        if crate::win::window::is_minimized(hwnd) {
+                            crate::win::window::restore_window(hwnd);
+                        } else {
+                            crate::win::window::minimize_window(hwnd);
+                        }
+                    }
+                    return 1;
+                }
+                // Win+1..9 → snap to layout grid cell (layout_index=key-1, cell_index=key-1)
+                if win_held && vk >= b'1' && vk <= b'9' {
+                    if let Some(hwnd) = crate::win::window::foreground_hwnd() {
+                        let layout_index = (vk - b'1') as usize;
+                        let cell_index = (vk - b'1') as usize;
+                        crate::snap::apply_layout_with_index(hwnd, layout_index, cell_index);
+                    }
+                    return 1;
+                }
+                // Win+Tab → open window list overlay and navigate forward
+                if win_held && vk == 0x09 { // VK_TAB
+                    // Trigger the Alt+Tab overlay (Alt+Tab keydown, then release Alt immediately)
+                    // The existing window_switcher handles wheel navigation once overlay is open
+                    crate::win::window_switcher::open_overlay();
+                    return 1;
+                }
             }
         }
     }

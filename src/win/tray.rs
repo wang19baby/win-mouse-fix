@@ -22,7 +22,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RegisterClassExW, SendDlgItemMessageW, SetForegroundWindow, SetTimer,
     ShowWindow, TrackPopupMenu, TranslateMessage, BM_GETCHECK, BS_AUTORADIOBUTTON, ICONINFO,
     IDC_ARROW, IDI_APPLICATION, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_YESNO,
-    MF_CHECKED, MF_STRING, MF_UNCHECKED, SM_CXICON, SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
+    SM_CXICON, SW_SHOW, TPM_RIGHTBUTTON, TPM_RETURNCMD,
     WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION,
     WS_CHILD, WS_GROUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
@@ -50,6 +51,7 @@ const ID_REMOTE: usize = 1008;
 const ID_SETTINGS: usize = 1009;
 #[allow(dead_code)]
 const ID_PROFILES: usize = 1010;
+const ID_LAYOUT_EDITOR: usize = 1012;
 const ID_HELP: usize = 1011;
 static FW_DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -505,7 +507,9 @@ unsafe fn show_menu(hwnd: isize) {
         "录制映射..."
     };
     AppendMenuW(menu, MF_STRING, ID_ADDMODE, to_wide(addmode_label).as_ptr());
-    // Trackpad toggle: ✓ if server is running, blank if not.
+    AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    AppendMenuW(menu, MF_STRING, ID_LAYOUT_EDITOR, to_wide("布局编辑器...").as_ptr());
+    // Trackpad toggle
     let remote_flags = MF_STRING
         | if crate::remote::info().is_some() {
             MF_CHECKED
@@ -556,6 +560,9 @@ unsafe fn show_menu(hwnd: isize) {
             }
         }
         ID_ADDMODE => start_addmode(hwnd),
+        ID_LAYOUT_EDITOR => {
+            unsafe { crate::win::layout_editor::start(hwnd) }
+        }
         ID_HELP => show_help(),
         ID_EXIT => {
             let result = MessageBoxW(
@@ -1320,3 +1327,4 @@ mod firewall_tests {
         assert_eq!(parse_port("not-a-url"), 18765);
     }
 }
+

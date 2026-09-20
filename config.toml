@@ -49,3 +49,40 @@ enabled = false
 port = 18765
 large_screen_split = true
 split_ratio = 0.4
+# ── Snap ─────────────────────────────────────────────────────────────────────
+[snap]
+enabled = true
+threshold = 20
+
+[snap.hotkeys]
+# Format: key = "Modifiers+Key" (Modifiers: Win, Alt, Ctrl, Shift)
+# Uncomment and modify to customize. Empty string = disable.
+# always_on_top = { key = "Win+Alt+T" }
+# rollup = { key = "Win+Alt+R" }
+# borderless = { key = "Win+Alt+B" }
+# snap_left = { key = "Win+Left" }
+# snap_right = { key = "Win+Right" }
+# snap_up = { key = "Win+Up" }
+# snap_down = { key = "Win+Down" }
+# move_left = { key = "Win+Shift+Left" }
+# move_right = { key = "Win+Shift+Right" }
+
+# Layout presets: each entry defines a grid (rows × cols) with optional gap.
+# Win+N activates layout[N-1]'s cell[index] where index = N-1.
+[[snap.layouts]]
+name = "2x2"
+rows = 2
+cols = 2
+gap = 4
+
+[[snap.layouts]]
+name = "2x3"
+rows = 2
+cols = 3
+gap = 4
+
+[[snap.layouts]]
+name = "3x3"
+rows = 3
+cols = 3
+gap = 4
