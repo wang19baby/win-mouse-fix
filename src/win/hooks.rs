@@ -1138,6 +1138,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             if did_begin {
                 // Consume the trigger down because the matching up is consumed
                 // when the drag ends. Passing only one half leaves X1 stuck.
+                eprintln!("DRAG: begin swallow btn={} return", btn as u8);
                 return 1;
             }
 
@@ -1148,7 +1149,15 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         ctrl.end();
                         true
                     }
-                    _ => false,
+                    Some(ctrl) => {
+                        eprintln!("DRAG: did_end=false btn={} down={} is_active={} matches={}", 
+                            btn as u8, down, ctrl.is_active(), ctrl.matches_release(btn));
+                        false
+                    }
+                    _ => {
+                        eprintln!("DRAG: did_end=false btn={} no_ctrl", btn as u8);
+                        false
+                    }
                 }
             };
             if did_end {
@@ -1169,6 +1178,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             }
 
             // Button remapping with ClickCycle support.
+            eprintln!("DRAG: remap btn={} down={} buttons_on={}", btn as u8, down, buttons_on);
             if buttons_on {
                 let kb_state = crate::modifiers::state();
                 let held_btns = get_tracker().read().held_modifier_buttons();
