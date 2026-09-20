@@ -8,7 +8,9 @@ mod layouts;
 pub use layouts::{apply_layout_with_index, refresh_layouts, Layout};
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{POINT, RECT};
-use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO, MonitorFromPoint, MonitorFromWindow};
+use windows_sys::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
@@ -78,7 +80,12 @@ fn refresh_displays() -> DisplayState {
     let vw = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
     let vh = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
 
-    let virtual_screen = RECT { left: vx, top: vy, right: vx + vw, bottom: vy + vh };
+    let virtual_screen = RECT {
+        left: vx,
+        top: vy,
+        right: vx + vw,
+        bottom: vy + vh,
+    };
 
     let step_x = if vw > 4 { vw / 4 } else { 1 };
     let step_y = if vh > 4 { vh / 4 } else { 1 };
@@ -90,7 +97,9 @@ fn refresh_displays() -> DisplayState {
             let px = vx + col * step_x;
             let py = vy + row * step_y;
             let pt = POINT { x: px, y: py };
-            let hmon = unsafe { MonitorFromPoint(pt, 2 /* MONITOR_DEFAULTTONEAREST */) };
+            let hmon = unsafe {
+                MonitorFromPoint(pt, 2 /* MONITOR_DEFAULTTONEAREST */)
+            };
             if hmon == NULL_HMONITOR || seen.contains(&hmon) {
                 continue;
             }
@@ -121,12 +130,17 @@ fn refresh_displays() -> DisplayState {
         }
     }
 
-    DisplayState { monitors, virtual_screen }
+    DisplayState {
+        monitors,
+        virtual_screen,
+    }
 }
 
 /// Returns the work-area rect for the monitor containing `hwnd`.
 pub fn work_area_of(hwnd: isize) -> Option<RECT> {
-    let hmon = unsafe { MonitorFromWindow(hwnd, 2 /* MONITOR_DEFAULTTONEAREST */) };
+    let hmon = unsafe {
+        MonitorFromWindow(hwnd, 2 /* MONITOR_DEFAULTTONEAREST */)
+    };
     if hmon == NULL_HMONITOR {
         return None;
     }
@@ -160,7 +174,7 @@ pub enum ZoneAnchor {
 impl ZoneAnchor {
     /// Human-readable label for preview overlays.
     #[allow(dead_code)]
-fn label(&self) -> &'static str {
+    fn label(&self) -> &'static str {
         match self {
             ZoneAnchor::Top => "Top",
             ZoneAnchor::Bottom => "Bottom",
@@ -232,51 +246,131 @@ pub fn build_zones(work: RECT, threshold: i32) -> Vec<Zone> {
         // ── Edges ──────────────────────────────────────────────────
         Zone {
             anchor: ZoneAnchor::Top,
-            trigger: RECT { left: l, top: t, right: l + w, bottom: t + threshold },
-            target: RECT { left: l, top: t, right: l + w, bottom: t + h / 2 },
+            trigger: RECT {
+                left: l,
+                top: t,
+                right: l + w,
+                bottom: t + threshold,
+            },
+            target: RECT {
+                left: l,
+                top: t,
+                right: l + w,
+                bottom: t + h / 2,
+            },
             threshold,
         },
         Zone {
             anchor: ZoneAnchor::Bottom,
-            trigger: RECT { left: l, top: work.bottom - threshold, right: l + w, bottom: work.bottom },
-            target: RECT { left: l, top: t + h / 2, right: l + w, bottom: work.bottom },
+            trigger: RECT {
+                left: l,
+                top: work.bottom - threshold,
+                right: l + w,
+                bottom: work.bottom,
+            },
+            target: RECT {
+                left: l,
+                top: t + h / 2,
+                right: l + w,
+                bottom: work.bottom,
+            },
             threshold,
         },
         Zone {
             anchor: ZoneAnchor::Left,
-            trigger: RECT { left: l, top: t, right: l + threshold, bottom: t + h },
-            target: RECT { left: l, top: t, right: l + w / 2, bottom: t + h },
+            trigger: RECT {
+                left: l,
+                top: t,
+                right: l + threshold,
+                bottom: t + h,
+            },
+            target: RECT {
+                left: l,
+                top: t,
+                right: l + w / 2,
+                bottom: t + h,
+            },
             threshold,
         },
         Zone {
             anchor: ZoneAnchor::Right,
-            trigger: RECT { left: work.right - threshold, top: t, right: work.right, bottom: t + h },
-            target: RECT { left: l + w / 2, top: t, right: work.right, bottom: t + h },
+            trigger: RECT {
+                left: work.right - threshold,
+                top: t,
+                right: work.right,
+                bottom: t + h,
+            },
+            target: RECT {
+                left: l + w / 2,
+                top: t,
+                right: work.right,
+                bottom: t + h,
+            },
             threshold,
         },
         // ── Corners ────────────────────────────────────────────────
         Zone {
             anchor: ZoneAnchor::TopLeft,
-            trigger: RECT { left: l, top: t, right: l + w / 2, bottom: t + threshold },
-            target: RECT { left: l, top: t, right: l + w / 2, bottom: t + h / 2 },
+            trigger: RECT {
+                left: l,
+                top: t,
+                right: l + w / 2,
+                bottom: t + threshold,
+            },
+            target: RECT {
+                left: l,
+                top: t,
+                right: l + w / 2,
+                bottom: t + h / 2,
+            },
             threshold,
         },
         Zone {
             anchor: ZoneAnchor::TopRight,
-            trigger: RECT { left: l + w / 2, top: t, right: l + w, bottom: t + threshold },
-            target: RECT { left: l + w / 2, top: t, right: l + w, bottom: t + h / 2 },
+            trigger: RECT {
+                left: l + w / 2,
+                top: t,
+                right: l + w,
+                bottom: t + threshold,
+            },
+            target: RECT {
+                left: l + w / 2,
+                top: t,
+                right: l + w,
+                bottom: t + h / 2,
+            },
             threshold,
         },
         Zone {
             anchor: ZoneAnchor::BottomLeft,
-            trigger: RECT { left: l, top: work.bottom - threshold, right: l + w / 2, bottom: work.bottom },
-            target: RECT { left: l, top: t + h / 2, right: l + w / 2, bottom: work.bottom },
+            trigger: RECT {
+                left: l,
+                top: work.bottom - threshold,
+                right: l + w / 2,
+                bottom: work.bottom,
+            },
+            target: RECT {
+                left: l,
+                top: t + h / 2,
+                right: l + w / 2,
+                bottom: work.bottom,
+            },
             threshold,
         },
         Zone {
             anchor: ZoneAnchor::BottomRight,
-            trigger: RECT { left: l + w / 2, top: work.bottom - threshold, right: l + w, bottom: work.bottom },
-            target: RECT { left: l + w / 2, top: t + h / 2, right: l + w, bottom: work.bottom },
+            trigger: RECT {
+                left: l + w / 2,
+                top: work.bottom - threshold,
+                right: l + w,
+                bottom: work.bottom,
+            },
+            target: RECT {
+                left: l + w / 2,
+                top: t + h / 2,
+                right: l + w,
+                bottom: work.bottom,
+            },
             threshold,
         },
         // ── Full monitor (Aero Snap) ───────────────────────────────
@@ -298,17 +392,32 @@ pub fn build_zones(work: RECT, threshold: i32) -> Vec<Zone> {
 pub fn compute_snap(window_rect: &RECT, zones: &[Zone]) -> Option<SnapResult> {
     // First pass: corners only.
     for zone in zones {
-        if matches!(zone.anchor, ZoneAnchor::TopLeft | ZoneAnchor::TopRight | ZoneAnchor::BottomLeft | ZoneAnchor::BottomRight) {
+        if matches!(
+            zone.anchor,
+            ZoneAnchor::TopLeft
+                | ZoneAnchor::TopRight
+                | ZoneAnchor::BottomLeft
+                | ZoneAnchor::BottomRight
+        ) {
             if rect_intersects(window_rect, &zone.trigger) {
-                return Some(SnapResult { anchor: zone.anchor, target: zone.target });
+                return Some(SnapResult {
+                    anchor: zone.anchor,
+                    target: zone.target,
+                });
             }
         }
     }
     // Second pass: edges (Monitor zone excluded from auto-snap).
     for zone in zones {
-        if matches!(zone.anchor, ZoneAnchor::Top | ZoneAnchor::Bottom | ZoneAnchor::Left | ZoneAnchor::Right) {
+        if matches!(
+            zone.anchor,
+            ZoneAnchor::Top | ZoneAnchor::Bottom | ZoneAnchor::Left | ZoneAnchor::Right
+        ) {
             if rect_intersects(window_rect, &zone.trigger) {
-                return Some(SnapResult { anchor: zone.anchor, target: zone.target });
+                return Some(SnapResult {
+                    anchor: zone.anchor,
+                    target: zone.target,
+                });
             }
         }
     }
@@ -319,22 +428,43 @@ pub fn compute_snap(window_rect: &RECT, zones: &[Zone]) -> Option<SnapResult> {
 /// Returns `None` if cursor is in the center non-trigger area.
 /// Zones are checked in specificity order: corners > edges > monitor.
 #[allow(dead_code)]
-pub fn compute_resize_zone(cursor: &POINT, _window_rect: &RECT, zones: &[Zone]) -> Option<SnapResult> {
+pub fn compute_resize_zone(
+    cursor: &POINT,
+    _window_rect: &RECT,
+    zones: &[Zone],
+) -> Option<SnapResult> {
     // Check zones in priority order: corners first, then edges, then monitor.
     // We do two passes so that specificity always wins over insertion order.
     // First pass: corners only.
     for zone in zones {
-        if matches_zone_anchor(zone, &[ZoneAnchor::TopLeft, ZoneAnchor::TopRight, ZoneAnchor::BottomLeft, ZoneAnchor::BottomRight]) {
+        if matches_zone_anchor(
+            zone,
+            &[
+                ZoneAnchor::TopLeft,
+                ZoneAnchor::TopRight,
+                ZoneAnchor::BottomLeft,
+                ZoneAnchor::BottomRight,
+            ],
+        ) {
             if pt_in_rect(cursor, &zone.trigger) {
-                return Some(SnapResult { anchor: zone.anchor, target: zone.target });
+                return Some(SnapResult {
+                    anchor: zone.anchor,
+                    target: zone.target,
+                });
             }
         }
     }
     // Second pass: edges only (Monitor excluded — it's not a resize direction).
     for zone in zones {
-        if matches!(zone.anchor, ZoneAnchor::Top | ZoneAnchor::Bottom | ZoneAnchor::Left | ZoneAnchor::Right) {
+        if matches!(
+            zone.anchor,
+            ZoneAnchor::Top | ZoneAnchor::Bottom | ZoneAnchor::Left | ZoneAnchor::Right
+        ) {
             if pt_in_rect(cursor, &zone.trigger) {
-                return Some(SnapResult { anchor: zone.anchor, target: zone.target });
+                return Some(SnapResult {
+                    anchor: zone.anchor,
+                    target: zone.target,
+                });
             }
         }
     }
@@ -354,9 +484,9 @@ pub fn compute_edge_snap(x: i32, y: i32, horizontal: bool, zones: &[Zone]) -> Op
 
     for zone in zones {
         let trigger_edge = match (zone.anchor, horizontal) {
-            (ZoneAnchor::Left, true) => Some(zone.trigger.right),   // x axis
+            (ZoneAnchor::Left, true) => Some(zone.trigger.right), // x axis
             (ZoneAnchor::Right, true) => Some(zone.trigger.left),
-            (ZoneAnchor::Top, false) => Some(zone.trigger.bottom),   // y axis
+            (ZoneAnchor::Top, false) => Some(zone.trigger.bottom), // y axis
             (ZoneAnchor::Bottom, false) => Some(zone.trigger.top),
             _ => None, // corners not relevant for threshold-crossing
         };
@@ -368,10 +498,22 @@ pub fn compute_edge_snap(x: i32, y: i32, horizontal: bool, zones: &[Zone]) -> Op
         if dist <= zone.threshold {
             match best {
                 None => {
-                    best = Some((dist, SnapResult { anchor: zone.anchor, target: zone.target }));
+                    best = Some((
+                        dist,
+                        SnapResult {
+                            anchor: zone.anchor,
+                            target: zone.target,
+                        },
+                    ));
                 }
                 Some((best_dist, _)) if dist < best_dist => {
-                    best = Some((dist, SnapResult { anchor: zone.anchor, target: zone.target }));
+                    best = Some((
+                        dist,
+                        SnapResult {
+                            anchor: zone.anchor,
+                            target: zone.target,
+                        },
+                    ));
                 }
                 _ => {}
             }
@@ -426,19 +568,39 @@ pub fn apply_snap(window: &RECT, result: &SnapResult, _drag_delta: (i32, i32)) -
     match result.anchor {
         ZoneAnchor::Top => {
             // Fill top half: bottom edge → target bottom, preserve left/right edges.
-            RECT { left: window.left, top: result.target.top, right: window.right, bottom: result.target.bottom }
+            RECT {
+                left: window.left,
+                top: result.target.top,
+                right: window.right,
+                bottom: result.target.bottom,
+            }
         }
         ZoneAnchor::Bottom => {
             // Fill bottom half: top edge → target top, preserve left/right edges.
-            RECT { left: window.left, top: result.target.top, right: window.right, bottom: result.target.bottom }
+            RECT {
+                left: window.left,
+                top: result.target.top,
+                right: window.right,
+                bottom: result.target.bottom,
+            }
         }
         ZoneAnchor::Left => {
             // Fill left half: right edge → target right, preserve top/bottom edges.
-            RECT { left: result.target.left, top: window.top, right: result.target.right, bottom: window.bottom }
+            RECT {
+                left: result.target.left,
+                top: window.top,
+                right: result.target.right,
+                bottom: window.bottom,
+            }
         }
         ZoneAnchor::Right => {
             // Fill right half: left edge → target left, preserve top/bottom edges.
-            RECT { left: result.target.left, top: window.top, right: result.target.right, bottom: window.bottom }
+            RECT {
+                left: result.target.left,
+                top: window.top,
+                right: result.target.right,
+                bottom: window.bottom,
+            }
         }
         // Corner and monitor snaps: replace entirely.
         _ => result.target,
@@ -487,7 +649,12 @@ mod tests {
     use super::*;
 
     fn work_1920x1080() -> RECT {
-        RECT { left: 0, top: 0, right: 1920, bottom: 1080 }
+        RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        }
     }
 
     #[test]
@@ -502,7 +669,12 @@ mod tests {
         // Window at left edge, x=5, but y in middle (not in corner y-range).
         // Corner TopLeft/BottomLeft y-ranges: [0,20) and [1060,1080).
         // Window y=(200,600) avoids both → pure Left snap.
-        let window = RECT { left: 5, top: 200, right: 960, bottom: 600 };
+        let window = RECT {
+            left: 5,
+            top: 200,
+            right: 960,
+            bottom: 600,
+        };
         let result = compute_snap(&window, &zones);
         assert!(result.is_some());
         assert_eq!(result.unwrap().anchor, ZoneAnchor::Left);
@@ -533,9 +705,22 @@ mod tests {
 
     #[test]
     fn test_apply_snap_top() {
-        let target = RECT { left: 0, top: 0, right: 1920, bottom: 540 };
-        let window = RECT { left: 100, top: 10, right: 1000, bottom: 400 };
-        let result = SnapResult { anchor: ZoneAnchor::Top, target };
+        let target = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 540,
+        };
+        let window = RECT {
+            left: 100,
+            top: 10,
+            right: 1000,
+            bottom: 400,
+        };
+        let result = SnapResult {
+            anchor: ZoneAnchor::Top,
+            target,
+        };
         let snapped = apply_snap(&window, &result, (0, 0));
         assert_eq!(snapped.top, 0);
         assert_eq!(snapped.bottom, 540);
@@ -544,9 +729,22 @@ mod tests {
 
     #[test]
     fn test_apply_snap_corner() {
-        let target = RECT { left: 0, top: 0, right: 960, bottom: 540 };
-        let window = RECT { left: 100, top: 10, right: 1000, bottom: 400 };
-        let result = SnapResult { anchor: ZoneAnchor::TopLeft, target };
+        let target = RECT {
+            left: 0,
+            top: 0,
+            right: 960,
+            bottom: 540,
+        };
+        let window = RECT {
+            left: 100,
+            top: 10,
+            right: 1000,
+            bottom: 400,
+        };
+        let result = SnapResult {
+            anchor: ZoneAnchor::TopLeft,
+            target,
+        };
         let snapped = apply_snap(&window, &result, (0, 0));
         // Corner snap replaces the entire rect.
         assert_eq!(snapped.left, target.left);
@@ -558,7 +756,12 @@ mod tests {
     #[test]
     fn test_clamp_to_bounds_no_overflow() {
         let bounds = work_1920x1080();
-        let r = RECT { left: 500, top: 300, right: 900, bottom: 700 };
+        let r = RECT {
+            left: 500,
+            top: 300,
+            right: 900,
+            bottom: 700,
+        };
         let clamped = clamp_to_bounds(&r, &bounds);
         assert_eq!(clamped.left, r.left);
         assert_eq!(clamped.top, r.top);
@@ -566,10 +769,14 @@ mod tests {
         assert_eq!(clamped.bottom, r.bottom);
     }
 
-
     #[test]
     fn test_pt_in_rect() {
-        let r = RECT { left: 0, top: 0, right: 100, bottom: 100 };
+        let r = RECT {
+            left: 0,
+            top: 0,
+            right: 100,
+            bottom: 100,
+        };
         assert!(pt_in_rect(&POINT { x: 0, y: 0 }, &r));
         assert!(pt_in_rect(&POINT { x: 50, y: 50 }, &r));
         assert!(!pt_in_rect(&POINT { x: 100, y: 50 }, &r)); // exclusive right

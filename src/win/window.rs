@@ -132,7 +132,10 @@ pub fn foreground_exe() -> Option<String> {
 pub fn is_always_on_top(hwnd: isize) -> bool {
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
-        let ex_style = GetWindowLongPtrW(hwnd, windows_sys::Win32::UI::WindowsAndMessaging::GWL_EXSTYLE) as u32;
+        let ex_style = GetWindowLongPtrW(
+            hwnd,
+            windows_sys::Win32::UI::WindowsAndMessaging::GWL_EXSTYLE,
+        ) as u32;
         (ex_style & windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST) != 0
     }
 }
@@ -145,8 +148,15 @@ pub fn toggle_always_on_top(hwnd: isize) -> bool {
         use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST};
         SetWindowPos(
             hwnd,
-            if currently { windows_sys::Win32::UI::WindowsAndMessaging::HWND_NOTOPMOST } else { HWND_TOPMOST },
-            0, 0, 0, 0,
+            if currently {
+                windows_sys::Win32::UI::WindowsAndMessaging::HWND_NOTOPMOST
+            } else {
+                HWND_TOPMOST
+            },
+            0,
+            0,
+            0,
+            0,
             windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
                 | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE
                 | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
@@ -159,7 +169,10 @@ pub fn toggle_always_on_top(hwnd: isize) -> bool {
 pub fn minimize_window(hwnd: isize) {
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow;
-        ShowWindow(hwnd, windows_sys::Win32::UI::WindowsAndMessaging::SW_MINIMIZE);
+        ShowWindow(
+            hwnd,
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_MINIMIZE,
+        );
     }
 }
 
@@ -167,7 +180,10 @@ pub fn minimize_window(hwnd: isize) {
 pub fn restore_window(hwnd: isize) {
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow;
-        ShowWindow(hwnd, windows_sys::Win32::UI::WindowsAndMessaging::SW_RESTORE);
+        ShowWindow(
+            hwnd,
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_RESTORE,
+        );
     }
 }
 
@@ -182,9 +198,7 @@ pub fn is_minimized(hwnd: isize) -> bool {
 /// Returns true if `hwnd` is maximized.
 #[allow(dead_code)]
 pub fn is_maximized(hwnd: isize) -> bool {
-    unsafe {
-        IsZoomed(hwnd) != 0
-    }
+    unsafe { IsZoomed(hwnd) != 0 }
 }
 
 /// Get the title bar height of `hwnd` (approximate, using SM_CYCAPTION).
@@ -201,7 +215,9 @@ pub fn title_bar_height() -> i32 {
 /// Stores the original rect before rolling.
 pub fn rollup_window(hwnd: isize, original_rect: &RECT) {
     unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SetWindowPos, SM_CYCAPTION, SWP_NOACTIVATE, SWP_NOZORDER};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SetWindowPos, SM_CYCAPTION, SWP_NOACTIVATE, SWP_NOZORDER,
+        };
         let title_h = GetSystemMetrics(SM_CYCAPTION);
         SetWindowPos(
             hwnd,
@@ -240,7 +256,11 @@ pub fn foreground_hwnd() -> Option<isize> {
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
         let hwnd = GetForegroundWindow();
-        if hwnd == 0 { None } else { Some(hwnd) }
+        if hwnd == 0 {
+            None
+        } else {
+            Some(hwnd)
+        }
     }
 }
 
@@ -248,17 +268,26 @@ pub fn foreground_hwnd() -> Option<isize> {
 pub fn toggle_borderless(hwnd: isize) {
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
         };
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
         let has_caption = (style & 0x00C00000) != 0;
         let new_style = if has_caption {
             style & !0x00C00000 & !0x00080000 // remove caption + sysmenu
         } else {
-            style | 0x00C00000 | 0x00080000   // add caption + sysmenu
+            style | 0x00C00000 | 0x00080000 // add caption + sysmenu
         };
         SetWindowLongPtrW(hwnd, GWL_STYLE, new_style as isize);
-        SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+        SetWindowPos(
+            hwnd,
+            0,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+        );
     }
 }
 
@@ -324,18 +353,25 @@ pub fn window_list() -> &'static parking_lot::Mutex<Vec<WindowEntry>> {
 fn refresh_window_list() -> Vec<WindowEntry> {
     let mut result = Vec::new();
     unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, IsWindowVisible, GetWindowModuleFileNameW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetWindowModuleFileNameW, GetWindowTextW, IsWindowVisible,
+        };
 
         unsafe extern "system" fn enum_proc(hwnd: isize, lparam: isize) -> i32 {
-            if hwnd == 0 { return 1; }
-            if IsWindowVisible(hwnd) == 0 { return 1; }
+            if hwnd == 0 {
+                return 1;
+            }
+            if IsWindowVisible(hwnd) == 0 {
+                return 1;
+            }
 
             // Skip windows without a title
             let mut title_buf = [0u16; 512];
             let title_len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
             // Get exe name from window (full path via GetWindowModuleFileNameW)
             let mut exe_buf = [0u16; 1024];
-            let exe_len = GetWindowModuleFileNameW(hwnd, exe_buf.as_mut_ptr(), exe_buf.len() as u32);
+            let exe_len =
+                GetWindowModuleFileNameW(hwnd, exe_buf.as_mut_ptr(), exe_buf.len() as u32);
             let exe_name = if exe_len > 0 {
                 std::path::Path::new(&String::from_utf16_lossy(&exe_buf[..exe_len as usize]))
                     .file_name()
@@ -346,13 +382,20 @@ fn refresh_window_list() -> Vec<WindowEntry> {
             };
 
             let title = String::from_utf16_lossy(&title_buf[..title_len as usize]);
-            let entry = WindowEntry { hwnd, title, exe: exe_name };
+            let entry = WindowEntry {
+                hwnd,
+                title,
+                exe: exe_name,
+            };
             let list = &mut *(lparam as *mut Vec<WindowEntry>);
             list.push(entry);
             1
         }
 
-        EnumWindows(Some(enum_proc), &mut result as *mut Vec<WindowEntry> as isize);
+        EnumWindows(
+            Some(enum_proc),
+            &mut result as *mut Vec<WindowEntry> as isize,
+        );
     }
     result
 }

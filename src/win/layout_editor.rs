@@ -8,16 +8,12 @@ use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowExW,
-    GetDlgItem, GetMessageW, GetWindowTextW, LoadCursorW, MSG, PostQuitMessage,
-    RegisterClassExW, SendMessageW, SetWindowTextW, TranslateMessage,
-    BS_PUSHBUTTON,
-    EN_KILLFOCUS, ES_NUMBER, IDC_ARROW,
-    LBN_SELCHANGE, LB_ADDSTRING, LB_GETCOUNT, LB_GETCURSEL,
-    LB_RESETCONTENT, LB_SETCURSEL, LBS_NOTIFY,
-    WM_COMMAND, WM_CREATE, WM_DESTROY,
-    WS_BORDER, WS_CAPTION, WS_CHILD, WS_SYSMENU, WS_VISIBLE,
-    WNDCLASSEXW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowExW, GetDlgItem,
+    GetMessageW, GetWindowTextW, LoadCursorW, PostQuitMessage, RegisterClassExW, SendMessageW,
+    SetWindowTextW, TranslateMessage, BS_PUSHBUTTON, EN_KILLFOCUS, ES_NUMBER, IDC_ARROW,
+    LBN_SELCHANGE, LBS_NOTIFY, LB_ADDSTRING, LB_GETCOUNT, LB_GETCURSEL, LB_RESETCONTENT,
+    LB_SETCURSEL, MSG, WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSEXW, WS_BORDER, WS_CAPTION,
+    WS_CHILD, WS_SYSMENU, WS_VISIBLE,
 };
 
 // UpDown / Spin control constants (u32)
@@ -55,15 +51,16 @@ const IDC_BTN_CANCEL: usize = 4012;
 // ── State ─────────────────────────────────────────────────────────────────────
 
 /// Working copy of layout presets for this dialog session.
-static WORKING: OnceLock<parking_lot::Mutex<Vec<crate::config::LayoutPreset>>> =
-    OnceLock::new();
+static WORKING: OnceLock<parking_lot::Mutex<Vec<crate::config::LayoutPreset>>> = OnceLock::new();
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 /// Open the layout editor dialog as a modal window anchored to `parent`.
 pub unsafe fn start(parent: isize) {
     let current: Vec<_> = crate::CONFIG.read().snap.layouts.clone();
-    *WORKING.get_or_init(|| parking_lot::Mutex::new(Vec::new())).lock() = current;
+    *WORKING
+        .get_or_init(|| parking_lot::Mutex::new(Vec::new()))
+        .lock() = current;
 
     register_class();
 
@@ -72,7 +69,10 @@ pub unsafe fn start(parent: isize) {
         to_wide(CLASS_NAME).as_ptr(),
         to_wide("Snap 布局编辑器").as_ptr(),
         WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        420, 180, 500, 440,
+        420,
+        180,
+        500,
+        440,
         parent,
         0,
         GetModuleHandleW(null()),
@@ -101,7 +101,9 @@ fn layout_display(l: &crate::config::LayoutPreset) -> String {
 
 unsafe fn refresh_list(hwnd: HWND) {
     let list = FindWindowExW(hwnd, 0, to_wide("ListBox").as_ptr(), null());
-    if list == 0 { return; }
+    if list == 0 {
+        return;
+    }
     SendMessageW(list, LB_RESETCONTENT, 0, 0);
     let layouts = WORKING.get().unwrap().lock();
     for l in layouts.iter() {
@@ -116,10 +118,14 @@ unsafe fn refresh_list(hwnd: HWND) {
 fn selected_index(hwnd: HWND) -> Option<usize> {
     unsafe {
         let list = FindWindowExW(hwnd, 0, to_wide("ListBox").as_ptr(), null());
-        if list == 0 { return None; }
+        if list == 0 {
+            return None;
+        }
         let sel = SendMessageW(list, LB_GETCURSEL, 0, 0) as usize;
         let count = SendMessageW(list, LB_GETCOUNT, 0, 0) as usize;
-        if sel >= count { return None; }
+        if sel >= count {
+            return None;
+        }
         Some(sel)
     }
 }
@@ -150,7 +156,9 @@ unsafe fn show_layout(hwnd: HWND, index: usize) {
 unsafe fn read_edit_fields(hwnd: HWND, index: usize) {
     let get_text = |id: usize| -> String {
         let ctrl = GetDlgItem(hwnd, id as _);
-        if ctrl == 0 { return String::new(); }
+        if ctrl == 0 {
+            return String::new();
+        }
         let mut buf = [0u16; 128];
         let len = GetWindowTextW(ctrl, buf.as_mut_ptr(), buf.len() as i32) as usize;
         String::from_utf16_lossy(&buf[..len])
@@ -163,7 +171,12 @@ unsafe fn read_edit_fields(hwnd: HWND, index: usize) {
 
     let layouts = &mut *WORKING.get().unwrap().lock();
     if index < layouts.len() {
-        layouts[index] = crate::config::LayoutPreset { name, rows, cols, gap };
+        layouts[index] = crate::config::LayoutPreset {
+            name,
+            rows,
+            cols,
+            gap,
+        };
     }
 }
 
@@ -201,7 +214,12 @@ unsafe fn register_class() {
 
 // ── Window Procedure ───────────────────────────────────────────────────────────
 
-unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_CREATE => create_window(hwnd),
 
@@ -262,7 +280,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, _lpa
                     0
                 }
 
-                _ if id == IDC_NAME_EDIT || id == IDC_ROWS_EDIT || id == IDC_COLS_EDIT || id == IDC_GAP_EDIT => {
+                _ if id == IDC_NAME_EDIT
+                    || id == IDC_ROWS_EDIT
+                    || id == IDC_COLS_EDIT
+                    || id == IDC_GAP_EDIT =>
+                {
                     if code == EN_KILLFOCUS {
                         if let Some(idx) = selected_index(hwnd) {
                             read_edit_fields(hwnd, idx);
@@ -292,17 +314,37 @@ unsafe fn create_window(hwnd: HWND) -> LRESULT {
 
     // List box
     let _list = CreateWindowExW(
-        0, to_wide("ListBox").as_ptr(), null(),
+        0,
+        to_wide("ListBox").as_ptr(),
+        null(),
         style!(WS_CHILD, WS_VISIBLE, WS_BORDER, LBS_NOTIFY),
-        12, 10, 460, 190,
-        hwnd, IDC_LIST as _, hmod, null(),
+        12,
+        10,
+        460,
+        190,
+        hwnd,
+        IDC_LIST as _,
+        hmod,
+        null(),
     );
     refresh_list(hwnd);
 
     // Labels
     let mk_label = |txt: &str, x: i32, y: i32, id: usize| -> isize {
-        CreateWindowExW(0, to_wide("Static").as_ptr(), to_wide(txt).as_ptr(),
-            style!(WS_CHILD, WS_VISIBLE), x, y, 60, 18, hwnd, id as _, hmod, null())
+        CreateWindowExW(
+            0,
+            to_wide("Static").as_ptr(),
+            to_wide(txt).as_ptr(),
+            style!(WS_CHILD, WS_VISIBLE),
+            x,
+            y,
+            60,
+            18,
+            hwnd,
+            id as _,
+            hmod,
+            null(),
+        )
     };
     mk_label("名称:", 12, 208, 100);
     mk_label("行数:", 155, 208, 101);
@@ -310,29 +352,124 @@ unsafe fn create_window(hwnd: HWND) -> LRESULT {
     mk_label("间距:", 385, 208, 103);
 
     // Edit fields
-    let rows_edit = CreateWindowExW(0, to_wide("Edit").as_ptr(), null(),
+    let rows_edit = CreateWindowExW(
+        0,
+        to_wide("Edit").as_ptr(),
+        null(),
         style!(WS_CHILD, WS_VISIBLE, WS_BORDER, ES_NUMBER),
-        155, 226, 65, 24, hwnd, IDC_ROWS_EDIT as _, hmod, null());
-    let cols_edit = CreateWindowExW(0, to_wide("Edit").as_ptr(), null(),
+        155,
+        226,
+        65,
+        24,
+        hwnd,
+        IDC_ROWS_EDIT as _,
+        hmod,
+        null(),
+    );
+    let cols_edit = CreateWindowExW(
+        0,
+        to_wide("Edit").as_ptr(),
+        null(),
         style!(WS_CHILD, WS_VISIBLE, WS_BORDER, ES_NUMBER),
-        275, 226, 65, 24, hwnd, IDC_COLS_EDIT as _, hmod, null());
-    let gap_edit = CreateWindowExW(0, to_wide("Edit").as_ptr(), null(),
+        275,
+        226,
+        65,
+        24,
+        hwnd,
+        IDC_COLS_EDIT as _,
+        hmod,
+        null(),
+    );
+    let gap_edit = CreateWindowExW(
+        0,
+        to_wide("Edit").as_ptr(),
+        null(),
         style!(WS_CHILD, WS_VISIBLE, WS_BORDER, ES_NUMBER),
-        385, 226, 80, 24, hwnd, IDC_GAP_EDIT as _, hmod, null());
-    let _name_edit = CreateWindowExW(0, to_wide("Edit").as_ptr(), null(),
+        385,
+        226,
+        80,
+        24,
+        hwnd,
+        IDC_GAP_EDIT as _,
+        hmod,
+        null(),
+    );
+    let _name_edit = CreateWindowExW(
+        0,
+        to_wide("Edit").as_ptr(),
+        null(),
         style!(WS_CHILD, WS_VISIBLE, WS_BORDER),
-        12, 226, 130, 24, hwnd, IDC_NAME_EDIT as _, hmod, null());
+        12,
+        226,
+        130,
+        24,
+        hwnd,
+        IDC_NAME_EDIT as _,
+        hmod,
+        null(),
+    );
 
     // Spin controls
-    let spin_rows = CreateWindowExW(0, to_wide("msctls_updown32").as_ptr(), null(),
-        style!(WS_CHILD, WS_VISIBLE, UDS_SETBUDDYINT, UDS_ARROWKEYS, UDS_AUTOBUDDY),
-        220, 226, 20, 24, hwnd, IDC_SPIN_ROWS as _, hmod, null());
-    let spin_cols = CreateWindowExW(0, to_wide("msctls_updown32").as_ptr(), null(),
-        style!(WS_CHILD, WS_VISIBLE, UDS_SETBUDDYINT, UDS_ARROWKEYS, UDS_AUTOBUDDY),
-        340, 226, 20, 24, hwnd, IDC_SPIN_COLS as _, hmod, null());
-    let spin_gap = CreateWindowExW(0, to_wide("msctls_updown32").as_ptr(), null(),
-        style!(WS_CHILD, WS_VISIBLE, UDS_SETBUDDYINT, UDS_ARROWKEYS, UDS_AUTOBUDDY),
-        465, 226, 20, 24, hwnd, IDC_SPIN_GAP as _, hmod, null());
+    let spin_rows = CreateWindowExW(
+        0,
+        to_wide("msctls_updown32").as_ptr(),
+        null(),
+        style!(
+            WS_CHILD,
+            WS_VISIBLE,
+            UDS_SETBUDDYINT,
+            UDS_ARROWKEYS,
+            UDS_AUTOBUDDY
+        ),
+        220,
+        226,
+        20,
+        24,
+        hwnd,
+        IDC_SPIN_ROWS as _,
+        hmod,
+        null(),
+    );
+    let spin_cols = CreateWindowExW(
+        0,
+        to_wide("msctls_updown32").as_ptr(),
+        null(),
+        style!(
+            WS_CHILD,
+            WS_VISIBLE,
+            UDS_SETBUDDYINT,
+            UDS_ARROWKEYS,
+            UDS_AUTOBUDDY
+        ),
+        340,
+        226,
+        20,
+        24,
+        hwnd,
+        IDC_SPIN_COLS as _,
+        hmod,
+        null(),
+    );
+    let spin_gap = CreateWindowExW(
+        0,
+        to_wide("msctls_updown32").as_ptr(),
+        null(),
+        style!(
+            WS_CHILD,
+            WS_VISIBLE,
+            UDS_SETBUDDYINT,
+            UDS_ARROWKEYS,
+            UDS_AUTOBUDDY
+        ),
+        465,
+        226,
+        20,
+        24,
+        hwnd,
+        IDC_SPIN_GAP as _,
+        hmod,
+        null(),
+    );
 
     // Buddy + range for spins
     SendMessageW(spin_rows, UDM_SETBUDDY, rows_edit as _, 0);
@@ -344,9 +481,20 @@ unsafe fn create_window(hwnd: HWND) -> LRESULT {
 
     // Buttons
     let mk_btn = |txt: &str, x: i32, y: i32, w: i32, h: i32, id: usize| -> isize {
-        CreateWindowExW(0, to_wide("Button").as_ptr(), to_wide(txt).as_ptr(),
+        CreateWindowExW(
+            0,
+            to_wide("Button").as_ptr(),
+            to_wide(txt).as_ptr(),
             style!(WS_CHILD, WS_VISIBLE, BS_PUSHBUTTON),
-            x, y, w, h, hwnd, id as _, hmod, null())
+            x,
+            y,
+            w,
+            h,
+            hwnd,
+            id as _,
+            hmod,
+            null(),
+        )
     };
     mk_btn("新增", 12, 265, 80, 28, IDC_BTN_ADD);
     mk_btn("删除", 100, 265, 80, 28, IDC_BTN_DEL);

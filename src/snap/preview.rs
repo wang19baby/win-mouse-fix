@@ -3,10 +3,10 @@
 //! Renders a semi-transparent overlay window showing the snap target region
 //! during window drag. Uses a layered topmost window with per-pixel alpha.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::Foundation::{
-    HWND, HANDLE, LPARAM, LRESULT, POINT as WIN_POINT, RECT, SIZE as WIN_SIZE, WPARAM,
+    HANDLE, HWND, LPARAM, LRESULT, POINT as WIN_POINT, RECT, SIZE as WIN_SIZE, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
@@ -14,9 +14,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, RegisterClassExW, SetWindowPos, ShowWindow,
-    UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, SWP_NOACTIVATE, SWP_NOZORDER,
-    WM_DESTROY, WM_PAINT, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, SWP_NOACTIVATE, SWP_NOZORDER, WM_DESTROY,
+    WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use super::SnapResult;
@@ -217,8 +216,14 @@ fn update_overlay_position(result: &SnapResult) {
 
             let window_dc: HDC = GetDC(hwnd);
 
-            let dst_origin = WIN_POINT { x: rect.left, y: rect.top };
-            let dst_size = WIN_SIZE { cx: width, cy: height };
+            let dst_origin = WIN_POINT {
+                x: rect.left,
+                y: rect.top,
+            };
+            let dst_size = WIN_SIZE {
+                cx: width,
+                cy: height,
+            };
             let src_origin = WIN_POINT { x: 0, y: 0 };
 
             UpdateLayeredWindow(
@@ -250,15 +255,7 @@ pub fn hide_preview() {
         if let Some(hwnd) = OVERLAY_HWND.lock().take() {
             unsafe {
                 // SWP_HIDEWINDOW = 0x0001
-                SetWindowPos(
-                    hwnd,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOACTIVATE | SWP_NOZORDER | 0x0001,
-                );
+                SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOZORDER | 0x0001);
             }
         }
     }

@@ -27,8 +27,8 @@ effect = { type = "modified_scroll", data = { modification = "precision" } }
 # Moves the window under the pointer while the trigger is dragged. Opt in after
 # choosing a trigger that does not conflict with normal selection.
 [drag]
-enabled = false
-button = "left"
+enabled = true
+button = "x1+alt"
 mode = "move"
 
 # Acceleration remains off until the move-hook integration is complete.

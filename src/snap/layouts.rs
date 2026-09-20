@@ -16,17 +16,29 @@ pub struct Layout {
 impl Layout {
     /// 2x2 grid (default 4-window layout)
     pub const fn two_by_two() -> Self {
-        Layout { rows: 2, cols: 2, gap: 4 }
+        Layout {
+            rows: 2,
+            cols: 2,
+            gap: 4,
+        }
     }
 
     /// 2x3 grid (6-window layout)
     pub const fn two_by_three() -> Self {
-        Layout { rows: 2, cols: 3, gap: 4 }
+        Layout {
+            rows: 2,
+            cols: 3,
+            gap: 4,
+        }
     }
 
     /// 3x3 grid (9-window layout)
     pub const fn three_by_three() -> Self {
-        Layout { rows: 3, cols: 3, gap: 4 }
+        Layout {
+            rows: 3,
+            cols: 3,
+            gap: 4,
+        }
     }
 
     /// Number of cells in this layout.
@@ -113,7 +125,12 @@ mod tests {
     use super::*;
 
     fn work() -> RECT {
-        RECT { left: 0, top: 0, right: 1920, bottom: 1080 }
+        RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        }
     }
 
     #[test]
@@ -123,12 +140,12 @@ mod tests {
         let r = layout.cell_rect(&work(), 0).unwrap();
         assert_eq!(r.left, 0);
         assert_eq!(r.top, 0);
-        assert_eq!(r.right, 958);   // (1920 - 4) / 2
-        assert_eq!(r.bottom, 538);   // (1080 - 4) / 2
+        assert_eq!(r.right, 958); // (1920 - 4) / 2
+        assert_eq!(r.bottom, 538); // (1080 - 4) / 2
 
         // Cell 1 (top-right)
         let r = layout.cell_rect(&work(), 1).unwrap();
-        assert_eq!(r.left, 962);    // 958 + gap
+        assert_eq!(r.left, 962); // 958 + gap
         assert_eq!(r.top, 0);
         assert_eq!(r.right, 1920);
         assert_eq!(r.bottom, 538);
@@ -136,7 +153,7 @@ mod tests {
         // Cell 2 (bottom-left)
         let r = layout.cell_rect(&work(), 2).unwrap();
         assert_eq!(r.left, 0);
-        assert_eq!(r.top, 542);     // 538 + gap
+        assert_eq!(r.top, 542); // 538 + gap
         assert_eq!(r.right, 958);
         assert_eq!(r.bottom, 1080);
 
@@ -163,12 +180,12 @@ mod tests {
         assert_eq!(r.right, 637);
         // Cell 2: row-major col=2, row=0 → top-right
         let r = layout.cell_rect(&work(), 2).unwrap();
-        assert_eq!(r.left, 1282);  // 2*(637+4)
+        assert_eq!(r.left, 1282); // 2*(637+4)
         assert_eq!(r.top, 0);
 
         // Cell 3: row=1, col=0 → bottom-left
         let r = layout.cell_rect(&work(), 3).unwrap();
         assert_eq!(r.left, 0);
-        assert_eq!(r.top, 542);   // 538 + gap
+        assert_eq!(r.top, 542); // 538 + gap
     }
 }

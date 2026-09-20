@@ -1231,7 +1231,9 @@ pub struct SnapConfig {
     pub layouts: Vec<LayoutPreset>,
 }
 
-fn default_snap_threshold() -> i32 { 20 }
+fn default_snap_threshold() -> i32 {
+    20
+}
 
 /// A single hotkey binding
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1282,7 +1284,9 @@ pub struct LayoutPreset {
     pub gap: i32,
 }
 
-fn default_layout_gap() -> i32 { 4 }
+fn default_layout_gap() -> i32 {
+    4
+}
 
 impl LayoutPreset {
     /// Convert to a `Layout` for use by the snap engine.

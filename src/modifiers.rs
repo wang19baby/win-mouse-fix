@@ -5,16 +5,20 @@
 //! "hold a key while scrolling" tricks). Stored as a single atomic bitmask so
 //! the hook thread and the scroll injector thread can both touch it cheaply.
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::LazyLock;
 use std::time::Instant;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU,
+    VK_RSHIFT, VK_RWIN, VK_SHIFT,
+};
 
 pub const SHIFT: u8 = 1 << 0;
 pub const CTRL: u8 = 1 << 1;
 pub const ALT: u8 = 1 << 2;
 pub const WIN: u8 = 1 << 3;
 static STATE: AtomicU8 = AtomicU8::new(0);
+static LEFT_ALT_HELD: AtomicBool = AtomicBool::new(false);
 /// Nanoseconds since the lazy epoch captured when Shift was last pressed.
 /// Zero means "Shift has never been pressed in this process" (or the program
 /// started after Shift was already down — caller treats as 0 hold).
@@ -32,10 +36,13 @@ fn now_nanos() -> u64 {
         .unwrap_or(0)
 }
 pub fn set_vk(vk: u32, down: bool) {
+    if vk as u16 == VK_LMENU {
+        LEFT_ALT_HELD.store(down, Ordering::SeqCst);
+    }
     let bit = match vk as u16 {
-        VK_SHIFT => SHIFT,
-        VK_CONTROL => CTRL,
-        VK_MENU => ALT,
+        VK_SHIFT | VK_LSHIFT | VK_RSHIFT => SHIFT,
+        VK_CONTROL | VK_LCONTROL | VK_RCONTROL => CTRL,
+        VK_MENU | VK_LMENU | VK_RMENU => ALT,
         VK_LWIN | VK_RWIN => WIN,
         _ => return,
     };
@@ -65,6 +72,9 @@ pub fn shift_held() -> bool {
     STATE.load(Ordering::SeqCst) & SHIFT != 0
 }
 
+pub fn left_alt_held() -> bool {
+    LEFT_ALT_HELD.load(Ordering::SeqCst)
+}
 /// Seconds since Shift was last pressed down, or `0.0` if Shift is not held
 /// or has never been pressed in this process.
 ///
@@ -121,7 +131,9 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use std::sync::OnceLock;
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_SHIFT};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        VK_CONTROL, VK_LMENU, VK_RMENU, VK_SHIFT,
+    };
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         TEST_LOCK
@@ -159,6 +171,23 @@ mod tests {
             apply_scroll_modifiers(120, false, true, 1.0, true),
             (120, true)
         );
+    }
+
+    #[test]
+    fn left_alt_state_excludes_right_alt() {
+        let _g = test_lock();
+        set_vk(VK_LMENU as u32, false);
+        set_vk(VK_RMENU as u32, false);
+        assert!(!left_alt_held());
+
+        set_vk(VK_RMENU as u32, true);
+        assert!(!left_alt_held());
+        set_vk(VK_RMENU as u32, false);
+
+        set_vk(VK_LMENU as u32, true);
+        assert!(left_alt_held());
+        set_vk(VK_LMENU as u32, false);
+        assert!(!left_alt_held());
     }
 
     // ── PR-B: shift hold-time tracking ────────────────────────────────────────

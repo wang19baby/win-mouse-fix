@@ -90,14 +90,21 @@ static SNAP_DRAG: RwLock<Option<SnapDragState>> = RwLock::new(None);
 
 /// Per-monitor cached zones
 /// Key: HMONITOR as isize, Value: cached zones vec.
-static ZONE_CACHE: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<isize, Vec<crate::snap::Zone>>>> =
-    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+static ZONE_CACHE: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<isize, Vec<crate::snap::Zone>>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 /// Returns cached zones for the monitor containing `hwnd`, rebuilding if needed.
 fn get_cached_zones(hwnd: isize) -> Option<Vec<crate::snap::Zone>> {
+    if !SNAP_ENABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+
     use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO};
 
-    let hmonitor = unsafe { MonitorFromWindow(hwnd, 2 /* MONITOR_DEFAULTTONEAREST */) };
+    let hmonitor = unsafe {
+        MonitorFromWindow(hwnd, 2 /* MONITOR_DEFAULTTONEAREST */)
+    };
     if hmonitor == 0 {
         return None;
     }
@@ -134,7 +141,8 @@ struct SnapDragState {
     snapped_rect: windows_sys::Win32::Foundation::RECT,
 }
 /// Rollup state: (hwnd, original_rect). When None, window is not rolled up.
-static ROLLUP_STATE: RwLock<Option<(isize, windows_sys::Win32::Foundation::RECT)>> = RwLock::new(None);
+static ROLLUP_STATE: RwLock<Option<(isize, windows_sys::Win32::Foundation::RECT)>> =
+    RwLock::new(None);
 
 /// Aero Shake state: hwnd being shaken, last cursor X, shake count, last direction.
 #[allow(dead_code)]
@@ -156,10 +164,14 @@ const SHAKE_THRESHOLD: u8 = 3;
 #[allow(dead_code)]
 fn point_on_title_bar(hwnd: isize, pt: &windows_sys::Win32::Foundation::POINT) -> bool {
     unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, GetAncestor, GA_ROOT, GetSystemMetrics, SM_CYSIZE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetSystemMetrics, GetWindowRect, GA_ROOT, SM_CYSIZE,
+        };
         let mut rect = std::mem::zeroed();
         let root = GetAncestor(hwnd, GA_ROOT);
-        if GetWindowRect(root, &mut rect) == 0 { return false; }
+        if GetWindowRect(root, &mut rect) == 0 {
+            return false;
+        }
         let title_h = GetSystemMetrics(SM_CYSIZE);
         pt.x >= rect.left && pt.x < rect.right && pt.y >= rect.top && pt.y < rect.top + title_h
     }
@@ -276,9 +288,7 @@ pub fn apply_config(cfg: Config) -> Result<(), String> {
         *REMAP_ENGINE.write() = None;
     }
     if cfg.drag.enabled {
-        *DRAG.write() = Some(DragController::new(crate::gesture::parse_button(
-            &cfg.drag.button,
-        )));
+        *DRAG.write() = Some(DragController::from_config(&cfg.drag.button));
     } else {
         *DRAG.write() = None;
     }
@@ -289,6 +299,10 @@ pub fn apply_config(cfg: Config) -> Result<(), String> {
     SNAP_ENABLED.store(cfg.snap.enabled, Ordering::Relaxed);
     SNAP_THRESHOLD.store(cfg.snap.threshold, Ordering::Relaxed);
     WINDOW_SWITCHER_ENABLED.store(cfg.buttons.window_switcher, Ordering::Relaxed);
+    if !cfg.snap.enabled {
+        crate::snap::hide_preview();
+        *SNAP_DRAG.write() = None;
+    }
     let mode_u8 = match cfg.drag.mode.as_str() {
         "scroll" => 1u8,
         "navigate" => 2u8,
@@ -911,43 +925,48 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             if DRAG_ENABLED.load(Ordering::Relaxed) {
                 match DRAG_MODE.load(Ordering::Relaxed) {
                     0u8 => {
-                        let mut drag = DRAG.write();
-                        if let Some(ctrl) = drag.as_mut() {
-                            if ctrl.is_active() {
-                                let hwnd = ctrl.hwnd();
-                                if let Some((x, y)) = ctrl.target_pos(ms.pt.x, ms.pt.y) {
-                                    // Get current window size to compute full rect
-                                    if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
-                                        let w = rect.right - rect.left;
-                                        let h = rect.bottom - rect.top;
-                                        let window_rect = windows_sys::Win32::Foundation::RECT {
-                                            left: x,
-                                            top: y,
-                                            right: x + w,
-                                            bottom: y + h,
-                                        };
+                        let move_target = {
+                            let drag = DRAG.read();
+                            drag.as_ref().and_then(|ctrl| {
+                                if ctrl.is_active() {
+                                    ctrl.target_pos(ms.pt.x, ms.pt.y)
+                                        .map(|(x, y)| (ctrl.hwnd(), x, y))
+                                } else {
+                                    None
+                                }
+                            })
+                        };
 
-                                        // Check snap zones
-                                        if let Some(zones) = get_cached_zones(hwnd) {
-                                            if let Some(snap) = crate::snap::compute_snap(&window_rect, &zones) {
-                                                // Zone crossed — apply preview and update snap state
-                                                crate::snap::show_preview(&snap);
-                                                *SNAP_DRAG.write() = Some(SnapDragState {
-                                                    hwnd,
-                                                    original_rect: rect,
-                                                    snapped_rect: snap.target,
-                                                });
-                                            } else {
-                                                // No snap zone — move freely and hide preview
-                                                crate::snap::hide_preview();
-                                                *SNAP_DRAG.write() = None;
-                                                crate::win::window::move_window(hwnd, x, y);
-                                            }
-                                        } else {
-                                            // No zones available — move freely
-                                            crate::win::window::move_window(hwnd, x, y);
-                                        }
+                        if let Some((hwnd, x, y)) = move_target {
+                            // Never hold DRAG while calling Win32 or snap code:
+                            // SetWindowPos can synchronously re-enter this hook.
+                            if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                                let w = rect.right - rect.left;
+                                let h = rect.bottom - rect.top;
+                                let window_rect = windows_sys::Win32::Foundation::RECT {
+                                    left: x,
+                                    top: y,
+                                    right: x + w,
+                                    bottom: y + h,
+                                };
+
+                                if let Some(zones) = get_cached_zones(hwnd) {
+                                    if let Some(snap) =
+                                        crate::snap::compute_snap(&window_rect, &zones)
+                                    {
+                                        crate::snap::show_preview(&snap);
+                                        *SNAP_DRAG.write() = Some(SnapDragState {
+                                            hwnd,
+                                            original_rect: rect,
+                                            snapped_rect: snap.target,
+                                        });
+                                    } else {
+                                        crate::snap::hide_preview();
+                                        *SNAP_DRAG.write() = None;
+                                        crate::win::window::move_window(hwnd, x, y);
                                     }
+                                } else {
+                                    crate::win::window::move_window(hwnd, x, y);
                                 }
                             }
                         }
@@ -1077,6 +1096,78 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                     return 1;
                 }
             }
+            // Window drag takes precedence over button remapping.
+            let should_begin = {
+                let drag = DRAG.read();
+                drag.as_ref()
+                    .map(|ctrl| {
+                        down && !ctrl.is_active()
+                            && ctrl.matches_trigger(btn, true, crate::modifiers::left_alt_held())
+                    })
+                    .unwrap_or(false)
+            };
+
+            let did_begin = if should_begin {
+                let target = crate::win::window::window_at_cursor(&ms.pt).and_then(|hwnd| {
+                    crate::win::window::get_window_rect(hwnd)
+                        .map(|rect| (hwnd, ms.pt.x - rect.left, ms.pt.y - rect.top))
+                });
+                match target {
+                    Some((hwnd, grab_dx, grab_dy)) => {
+                        let mut drag = DRAG.write();
+                        match drag.as_mut() {
+                            Some(ctrl)
+                                if !ctrl.is_active()
+                                    && ctrl.matches_trigger(
+                                        btn,
+                                        down,
+                                        crate::modifiers::left_alt_held(),
+                                    ) =>
+                            {
+                                ctrl.begin(hwnd, grab_dx, grab_dy, ms.pt.x, ms.pt.y);
+                                true
+                            }
+                            _ => false,
+                        }
+                    }
+                    None => false,
+                }
+            } else {
+                false
+            };
+            if did_begin {
+                // Consume the trigger down because the matching up is consumed
+                // when the drag ends. Passing only one half leaves X1 stuck.
+                return 1;
+            }
+
+            let did_end = {
+                let mut drag = DRAG.write();
+                match drag.as_mut() {
+                    Some(ctrl) if !down && ctrl.is_active() && ctrl.matches_release(btn) => {
+                        ctrl.end();
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if did_end {
+                // The window drag owns this X1 release, but the remap tracker
+                // still has to observe it or X1 remains a held modifier and
+                // suppresses later button events.
+                crate::snap::hide_preview();
+                *SNAP_DRAG.write() = None;
+                *DRAG_EFFECT.write() = None;
+                if buttons_on {
+                    let active_mods = ActiveModifiers {
+                        keyboard: crate::modifiers::state() as u32,
+                        buttons: get_tracker().read().held_modifier_buttons(),
+                    };
+                    let _ = get_tracker().write().on_button_up(btn, None, &active_mods);
+                }
+                return 1;
+            }
+
             // Button remapping with ClickCycle support.
             if buttons_on {
                 let kb_state = crate::modifiers::state();
@@ -1151,37 +1242,6 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                                 return 1;
                             }
                         }
-                    }
-                }
-            }
-
-            // Window-drag takes precedence over remap for its trigger button.
-            // NOTE: do NOT swallow on button-down — that would eat ordinary clicks.
-            // The drag activates lazily on mousemove once movement is detected.
-            {
-                let mut drag = DRAG.write();
-                if let Some(ctrl) = drag.as_mut() {
-                    if down
-                        && ctrl.matches_trigger(btn, down, SPACE_HELD.load(Ordering::Relaxed))
-                        && !ctrl.is_active()
-                    {
-                        if let Some(hwnd) = crate::win::window::window_at_cursor(&ms.pt) {
-                            if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
-                                // Store hwnd + offset; swallowing happens in mousemove.
-                                ctrl.begin(
-                                    hwnd,
-                                    ms.pt.x - rect.left,
-                                    ms.pt.y - rect.top,
-                                    ms.pt.x,
-                                    ms.pt.y,
-                                );
-                            }
-                        }
-                    } else if !down && ctrl.is_active() && ctrl.matches_release(btn) {
-                        // Hide preview and clear snap state on release
-                        crate::snap::hide_preview();
-                        *SNAP_DRAG.write() = None;
-                        ctrl.end();
                     }
                 }
             }
@@ -1263,7 +1323,8 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize)
                         if let Some(zones) = get_cached_zones(hwnd) {
                             if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
                                 if let Some(result) = crate::snap::compute_edge_snap(
-                                    rect.left, rect.top, false, &zones) {
+                                    rect.left, rect.top, false, &zones,
+                                ) {
                                     crate::win::window::set_window_rect(hwnd, &result.target);
                                 }
                             }
@@ -1277,7 +1338,11 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize)
                         if let Some(zones) = get_cached_zones(hwnd) {
                             if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
                                 if let Some(result) = crate::snap::compute_edge_snap(
-                                    rect.right, rect.bottom, false, &zones) {
+                                    rect.right,
+                                    rect.bottom,
+                                    false,
+                                    &zones,
+                                ) {
                                     crate::win::window::set_window_rect(hwnd, &result.target);
                                 }
                             }
@@ -1291,7 +1356,8 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize)
                         if let Some(zones) = get_cached_zones(hwnd) {
                             if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
                                 if let Some(result) = crate::snap::compute_edge_snap(
-                                    rect.left, rect.top, true, &zones) {
+                                    rect.left, rect.top, true, &zones,
+                                ) {
                                     crate::win::window::set_window_rect(hwnd, &result.target);
                                 }
                             }
@@ -1320,7 +1386,8 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize)
                     return 1;
                 }
                 // Win+Tab → open window list overlay and navigate forward
-                if win_held && vk == 0x09 { // VK_TAB
+                if win_held && vk == 0x09 {
+                    // VK_TAB
                     // Trigger the Alt+Tab overlay (Alt+Tab keydown, then release Alt immediately)
                     // The existing window_switcher handles wheel navigation once overlay is open
                     crate::win::window_switcher::open_overlay();

@@ -68,21 +68,31 @@ fn ensure_com() -> bool {
 // ─── Public API ────────────────────────────────────────────────────────────
 
 /// Switch to the virtual desktop to the left of the current one.
-pub fn switch_virtual_desktop_left() { switch_impl(-1); }
+pub fn switch_virtual_desktop_left() {
+    switch_impl(-1);
+}
 
 /// Switch to the virtual desktop to the right of the current one.
-pub fn switch_virtual_desktop_right() { switch_impl(1); }
+pub fn switch_virtual_desktop_right() {
+    switch_impl(1);
+}
 
 /// Move `hwnd` to the virtual desktop to the left of the current one.
-pub fn move_window_to_left(hwnd: isize) { move_window_impl(hwnd, -1); }
+pub fn move_window_to_left(hwnd: isize) {
+    move_window_impl(hwnd, -1);
+}
 
 /// Move `hwnd` to the virtual desktop to the right of the current one.
-pub fn move_window_to_right(hwnd: isize) { move_window_impl(hwnd, 1); }
+pub fn move_window_to_right(hwnd: isize) {
+    move_window_impl(hwnd, 1);
+}
 
 // ─── Internal ─────────────────────────────────────────────────────────────
 
 fn switch_impl(direction: i32) {
-    if !ensure_com() { return; }
+    if !ensure_com() {
+        return;
+    }
     unsafe {
         let mut vdm: *mut IVirtualDesktopManagerInternal = core::ptr::null_mut();
         let hr = CoCreateInstance(
@@ -92,10 +102,14 @@ fn switch_impl(direction: i32) {
             &IID_VD_INTERNAL as *const _,
             &mut vdm as *mut *mut IVirtualDesktopManagerInternal as *mut *mut std::ffi::c_void,
         );
-        if hr < 0 || vdm.is_null() { return; }
+        if hr < 0 || vdm.is_null() {
+            return;
+        }
         let vdm = &*vdm;
         let mut idx: u32 = 0;
-        if vdm.GetCurrentDesktopIndex(&mut idx) < 0 { return; }
+        if vdm.GetCurrentDesktopIndex(&mut idx) < 0 {
+            return;
+        }
         if direction < 0 {
             let _ = vdm.NavigateLeft(idx);
         } else {
@@ -107,7 +121,9 @@ fn switch_impl(direction: i32) {
 /// Move `hwnd` to the virtual desktop in the given direction.
 /// Uses IVirtualDesktopManager to get/set the window's desktop ID.
 fn move_window_impl(hwnd: isize, _direction: i32) {
-    if !ensure_com() { return; }
+    if !ensure_com() {
+        return;
+    }
     unsafe {
         use windows_sys::core::GUID;
 
@@ -145,7 +161,9 @@ fn move_window_impl(hwnd: isize, _direction: i32) {
             &CLSID_VDM as *const GUID as *mut _,
             &mut vdm as *mut *mut IVirtualDesktopManager as *mut *mut std::ffi::c_void,
         );
-        if hr < 0 || vdm.is_null() { return; }
+        if hr < 0 || vdm.is_null() {
+            return;
+        }
 
         let vdm = &*vdm;
         let vtbl = &*vdm.lpVtbl;
@@ -153,7 +171,9 @@ fn move_window_impl(hwnd: isize, _direction: i32) {
         let mut desktop_id: GUID = core::mem::zeroed();
         let fn_get: unsafe fn(*const IVDMVtbl, isize, *mut GUID) -> i32 =
             core::mem::transmute(vtbl.GetWindowDesktopIdOnCurrentVirtualDesktop);
-        if fn_get(vdm.lpVtbl, hwnd, &mut desktop_id) < 0 { return; }
+        if fn_get(vdm.lpVtbl, hwnd, &mut desktop_id) < 0 {
+            return;
+        }
 
         let fn_set: unsafe fn(*const IVDMVtbl, isize, *const GUID) -> i32 =
             core::mem::transmute(vtbl.SetWindowDesktopId);
