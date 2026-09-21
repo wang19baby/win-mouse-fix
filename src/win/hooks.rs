@@ -41,6 +41,33 @@ pub const OUR_MARKER: usize = 0xFA57_0000;
 fn is_our_injected_event(flags: u32, extra_info: usize) -> bool {
     (flags & LLMHF_INJECTED) != 0 || extra_info == OUR_MARKER
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FocusCenterHotkeyAction {
+    Ignore,
+    Trigger,
+    ConsumeRelease,
+}
+
+fn focus_center_hotkey_action(
+    button: MouseButton,
+    down: bool,
+    modifiers: u8,
+    owns_x1: bool,
+) -> FocusCenterHotkeyAction {
+    if button != MouseButton::X1 {
+        return FocusCenterHotkeyAction::Ignore;
+    }
+    if owns_x1 {
+        return FocusCenterHotkeyAction::ConsumeRelease;
+    }
+    let required = crate::modifiers::CTRL | crate::modifiers::ALT;
+    if down && modifiers & required == required {
+        FocusCenterHotkeyAction::Trigger
+    } else {
+        FocusCenterHotkeyAction::Ignore
+    }
+}
 /// Timer ID for ClickCycle level-expiration ticks.
 pub(crate) const CLICK_TIMER_ID: usize = 3006;
 
@@ -66,6 +93,10 @@ fn get_tracker() -> &'static RwLock<ClickCycleTracker> {
 
 /// Space key state, tracked by the keyboard hook for Space-drag gestures.
 static SPACE_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Tracks ownership of the physical X1 press so its matching release remains
+/// swallowed even if Ctrl or Alt is released first.
+static FOCUS_CENTER_HOTKEY_OWNS_X1: AtomicBool = AtomicBool::new(false);
 
 /// Active window-drag gesture controller; `None` disables gestures.
 static DRAG: RwLock<Option<DragController>> = RwLock::new(None);
@@ -299,6 +330,7 @@ pub fn apply_config(cfg: Config) -> Result<(), String> {
     SNAP_ENABLED.store(cfg.snap.enabled, Ordering::Relaxed);
     SNAP_THRESHOLD.store(cfg.snap.threshold, Ordering::Relaxed);
     WINDOW_SWITCHER_ENABLED.store(cfg.buttons.window_switcher, Ordering::Relaxed);
+    crate::win::focus_center::init_worker()?;
     // Focus-center: move cursor to the center of the newly focused window.
     crate::win::focus_center::set_enabled(cfg.general.focus_center);
     if cfg.general.focus_center {
@@ -750,6 +782,7 @@ pub fn uninstall() {
             KEY_HOOK = 0;
         }
     }
+    FOCUS_CENTER_HOTKEY_OWNS_X1.store(false, Ordering::Relaxed);
     crate::win::focus_center::stop();
     stop_click_timer();
 }
@@ -1087,6 +1120,32 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                     let _ = crate::add_mode::on_button_event(btn, 1, false, &active_mods);
                 }
                 return CallNextHookEx(0, code, wparam, lparam);
+            }
+            // Ctrl+Alt+X1 is an explicit focus-center action. It owns both
+            // halves of the X1 click and takes priority over Alt+X1 drag/remap.
+            let hotkey_action = focus_center_hotkey_action(
+                btn,
+                down,
+                crate::modifiers::state(),
+                FOCUS_CENTER_HOTKEY_OWNS_X1.load(Ordering::Relaxed),
+            );
+            match hotkey_action {
+                FocusCenterHotkeyAction::Trigger => {
+                    // Capture the target and post to the tray loop, which only
+                    // queues the dedicated SendInput worker. No hook-owning
+                    // thread performs cursor injection.
+                    if crate::win::tray::request_focus_center() {
+                        FOCUS_CENTER_HOTKEY_OWNS_X1.store(true, Ordering::Relaxed);
+                        return 1;
+                    }
+                }
+                FocusCenterHotkeyAction::ConsumeRelease => {
+                    if !down {
+                        FOCUS_CENTER_HOTKEY_OWNS_X1.store(false, Ordering::Relaxed);
+                    }
+                    return 1;
+                }
+                FocusCenterHotkeyAction::Ignore => {}
             }
             // Never intercept right-click: the system tray needs it for the context
             // menu. Right-click remapping is not a common use case.
@@ -1627,4 +1686,39 @@ mod tests {
         drop(rx);
         assert!(!enqueue_smooth_wheel(Some(&tx), input));
     }
+
+    #[test]
+    fn ctrl_alt_x1_triggers_focus_center_and_owns_release() {
+        let modifiers = crate::modifiers::CTRL | crate::modifiers::ALT;
+        assert_eq!(
+            focus_center_hotkey_action(MouseButton::X1, true, modifiers, false),
+            FocusCenterHotkeyAction::Trigger
+        );
+        assert_eq!(
+            focus_center_hotkey_action(MouseButton::X1, false, 0, true),
+            FocusCenterHotkeyAction::ConsumeRelease
+        );
+    }
+
+    #[test]
+    fn focus_center_hotkey_requires_ctrl_alt_and_x1_down() {
+        let ctrl_alt = crate::modifiers::CTRL | crate::modifiers::ALT;
+        assert_eq!(
+            focus_center_hotkey_action(MouseButton::X1, true, crate::modifiers::CTRL, false),
+            FocusCenterHotkeyAction::Ignore
+        );
+        assert_eq!(
+            focus_center_hotkey_action(MouseButton::X1, true, crate::modifiers::ALT, false),
+            FocusCenterHotkeyAction::Ignore
+        );
+        assert_eq!(
+            focus_center_hotkey_action(MouseButton::X2, true, ctrl_alt, false),
+            FocusCenterHotkeyAction::Ignore
+        );
+        assert_eq!(
+            focus_center_hotkey_action(MouseButton::X1, false, ctrl_alt, false),
+            FocusCenterHotkeyAction::Ignore
+        );
+    }
+
 }

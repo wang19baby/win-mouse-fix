@@ -18,13 +18,14 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
     DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIcon,
-    GetCursorPos, GetMessageW, GetSystemMetrics, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
-    PostQuitMessage, RegisterClassExW, SendDlgItemMessageW, SetForegroundWindow, SetTimer,
-    ShowWindow, TrackPopupMenu, TranslateMessage, BM_GETCHECK, BS_AUTORADIOBUTTON, ICONINFO,
-    IDC_ARROW, IDI_APPLICATION, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_YESNO,
-    MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SM_CXICON, SW_SHOW, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_TIMER,
-    WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_GROUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics, KillTimer, LoadCursorW,
+    LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SendDlgItemMessageW,
+    SetForegroundWindow, SetTimer, ShowWindow, TrackPopupMenu, TranslateMessage, BM_GETCHECK,
+    BS_AUTORADIOBUTTON, ICONINFO, IDC_ARROW, IDI_APPLICATION, IDYES, MB_ICONINFORMATION,
+    MB_ICONQUESTION, MB_OK, MB_YESNO, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SM_CXICON,
+    SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_GROUP, WS_SYSMENU, WS_TABSTOP,
+    WS_VISIBLE,
 };
 
 const BST_CHECKED: u32 = 0x0001;
@@ -35,6 +36,7 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
 const WM_TRAYICON: u32 = WM_APP + 1;
+const WM_FOCUS_CENTER: u32 = WM_APP + 2;
 const ID_EXIT: usize = 1001;
 const ID_ABOUT: usize = 1002;
 const ID_SMOOTH: usize = 1003;
@@ -97,6 +99,17 @@ pub(crate) fn hwnd() -> windows_sys::Win32::Foundation::HWND {
     *TRAY_HWND
         .get()
         .unwrap_or(&windows_sys::Win32::Foundation::HWND::default())
+}
+
+/// Capture the foreground target while handling the physical hotkey, then
+/// defer the request until after the low-level hook has returned.
+pub(crate) fn request_focus_center() -> bool {
+    let target = unsafe { GetForegroundWindow() };
+    let target_window = hwnd();
+    if target == 0 || target_window == 0 {
+        return false;
+    }
+    unsafe { PostMessageW(target_window, WM_FOCUS_CENTER, target as usize, 0) != 0 }
 }
 
 static CONFIG_MTIME: parking_lot::Mutex<Option<std::time::SystemTime>> =
@@ -391,6 +404,10 @@ unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam:
             if lparam as u32 == WM_RBUTTONUP {
                 show_menu(hwnd);
             }
+            0
+        }
+        WM_FOCUS_CENTER => {
+            let _ = crate::win::focus_center::request_window(wparam as isize);
             0
         }
         WM_TIMER => {
