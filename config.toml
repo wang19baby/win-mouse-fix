@@ -1,5 +1,5 @@
 [general]
-start_hidden = false
+focus_center = true
 log_path = ""
 
 [scroll]

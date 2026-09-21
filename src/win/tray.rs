@@ -50,6 +50,7 @@ const ID_REMOTE: usize = 1008;
 const ID_SETTINGS: usize = 1009;
 #[allow(dead_code)]
 const ID_PROFILES: usize = 1010;
+const ID_FOCUS_CENTER: usize = 1013;
 const ID_LAYOUT_EDITOR: usize = 1012;
 const ID_HELP: usize = 1011;
 static FW_DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -505,14 +506,20 @@ unsafe fn show_menu(hwnd: isize) {
     } else {
         "录制映射..."
     };
-    AppendMenuW(menu, MF_STRING, ID_ADDMODE, to_wide(addmode_label).as_ptr());
-    AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    let focus_center_flags = MF_STRING
+        | if crate::win::hooks::feature_enabled(crate::win::hooks::Feature::FocusCenter) {
+            MF_CHECKED
+        } else {
+            MF_UNCHECKED
+        };
     AppendMenuW(
         menu,
-        MF_STRING,
-        ID_LAYOUT_EDITOR,
-        to_wide("布局编辑器...").as_ptr(),
+        focus_center_flags,
+        ID_FOCUS_CENTER,
+        to_wide("焦点居中").as_ptr(),
     );
+    AppendMenuW(menu, MF_STRING, ID_ADDMODE, to_wide(addmode_label).as_ptr());
+    AppendMenuW(menu, MF_SEPARATOR, 0, null());
     // Trackpad toggle
     let remote_flags = MF_STRING
         | if crate::remote::info().is_some() {
@@ -546,12 +553,14 @@ unsafe fn show_menu(hwnd: isize) {
     crate::win::hooks::MENU_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
     DestroyMenu(menu);
 
-    match cmd as usize {
-        ID_SMOOTH | ID_REMAP => {
+     match cmd as usize {
+        ID_SMOOTH | ID_REMAP | ID_FOCUS_CENTER => {
             let feature = if cmd as usize == ID_SMOOTH {
                 crate::win::hooks::Feature::SmoothScroll
-            } else {
+            } else if cmd as usize == ID_REMAP {
                 crate::win::hooks::Feature::ButtonRemap
+            } else {
+                crate::win::hooks::Feature::FocusCenter
             };
             if let Err(e) = crate::win::hooks::toggle_feature(feature) {
                 crate::log::write(&format!("feature toggle failed: {e}"));

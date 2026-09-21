@@ -103,8 +103,22 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GeneralConfig {
+    #[serde(default)]
     pub start_hidden: bool,
     pub log_path: Option<String>,
+    /// Move cursor to the center of the newly focused window after Alt+Tab / Win+Tab.
+    #[serde(default)]
+    pub focus_center: bool,
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        GeneralConfig {
+            start_hidden: true,
+            log_path: None,
+            focus_center: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -567,10 +581,7 @@ impl Default for Profile {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            general: GeneralConfig {
-                start_hidden: true,
-                log_path: None,
-            },
+            general: GeneralConfig::default(),
             scroll: ScrollConfig {
                 enabled: false,
                 smooth: true,

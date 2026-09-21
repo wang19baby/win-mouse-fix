@@ -45,10 +45,10 @@ fn is_our_injected_event(flags: u32, extra_info: usize) -> bool {
 pub(crate) const CLICK_TIMER_ID: usize = 3006;
 
 /// Which top-level feature a tray-menu toggle acts on.
-#[derive(Clone, Copy)]
 pub enum Feature {
     SmoothScroll,
     ButtonRemap,
+    FocusCenter,
 }
 
 /// Built from the button-remap config; `None` disables remapping.
@@ -299,6 +299,13 @@ pub fn apply_config(cfg: Config) -> Result<(), String> {
     SNAP_ENABLED.store(cfg.snap.enabled, Ordering::Relaxed);
     SNAP_THRESHOLD.store(cfg.snap.threshold, Ordering::Relaxed);
     WINDOW_SWITCHER_ENABLED.store(cfg.buttons.window_switcher, Ordering::Relaxed);
+    // Focus-center: move cursor to the center of the newly focused window.
+    crate::win::focus_center::set_enabled(cfg.general.focus_center);
+    if cfg.general.focus_center {
+        crate::win::focus_center::start();
+    } else {
+        crate::win::focus_center::stop();
+    }
     if !cfg.snap.enabled {
         crate::snap::hide_preview();
         *SNAP_DRAG.write() = None;
@@ -641,6 +648,7 @@ pub fn feature_enabled(f: Feature) -> bool {
     match f {
         Feature::SmoothScroll => base.scroll.enabled,
         Feature::ButtonRemap => base.buttons.enabled,
+        Feature::FocusCenter => base.general.focus_center,
     }
 }
 
@@ -653,6 +661,7 @@ pub fn toggle_feature(f: Feature) -> Result<(), String> {
     match f {
         Feature::SmoothScroll => base.scroll.enabled = !base.scroll.enabled,
         Feature::ButtonRemap => base.buttons.enabled = !base.buttons.enabled,
+        Feature::FocusCenter => base.general.focus_center = !base.general.focus_center,
     }
     base.save()
         .map_err(|e| format!("无法保存 config.toml: {e}"))?;
@@ -741,6 +750,7 @@ pub fn uninstall() {
             KEY_HOOK = 0;
         }
     }
+    crate::win::focus_center::stop();
     stop_click_timer();
 }
 
