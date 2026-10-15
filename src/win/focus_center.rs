@@ -54,7 +54,6 @@ pub(crate) fn request_window(hwnd: HWND) -> bool {
     }
 }
 
-
 fn normalize_absolute_coordinate(value: i32, origin: i32, span: i32) -> Option<i32> {
     let maximum = span.checked_sub(1)?;
     if maximum <= 0 {
@@ -172,7 +171,6 @@ pub(crate) fn center_window(hwnd: HWND) -> bool {
 
     unsafe { move_cursor(center_x, center_y) }
 }
-
 
 /// WinEvent callback — fires on every foreground window change.
 #[allow(non_snake_case)]

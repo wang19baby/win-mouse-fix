@@ -5,7 +5,7 @@
 ## P0：交付门禁与现有体验
 
 - [x] 记录工作树与编译/格式/lint 基线，保留用户焦点居中实验；仅处理门禁相关 PoC 辅助代码与格式。
-- [x] 修复 format/strict Clippy；全目标测试 270 passed、5 ignored，实际浏览器 30 passed（包含拖选生命周期回归）。
+- [x] 修复 format/strict Clippy；dev 交付版本全目标测试 242 passed、5 ignored，实际浏览器 30 passed（不含留在原工作区的未发布 PoC 测试）。
 - [x] GUI：真实托盘设置/应用配置/配置目录入口；保存基础配置保留 profile；NaN/非法文件拒绝；Cancel 不写盘；保存并录制不丢草稿；关闭不退出进程。
 - [x] 指针加速：显式启用的 `WM_MOUSEMOVE` 原生透传 + 有界异步补偿；真实 SendInput/注入重同步/禁用链路已受控运行验证；数学边界有测试，真实鼠标手感仍在 P2。
 - [x] 校正 README/ROADMAP/PLAN/CHANGELOG/运行时清单，明确 exe 同目录配置与已接入/待真机的区别。
