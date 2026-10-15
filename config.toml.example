@@ -119,3 +119,6 @@ enabled = false
 port = 18765
 # Local browser/testing only: prevents LAN binding and firewall changes.
 local_only = false
+# Auto-open window list + touchpad on receiving viewports at least 600 x 600 CSS px.
+# Manual mode switching stays available when automatic selection is disabled.
+large_screen_split = true

@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tablet QR/default entry now selects window-list + touchpad split view on the receiving device instead of the PC displaying the QR; phones retain the full touchpad, manual mode selection preserves pairing/nonce and touch-only preference, and the refreshed v4 offline shell includes the corrected pages
 - Remote drag selection now uses per-session monotonic IDs, 250 ms renewal and a two-second lease on one bounded injection worker; cancellation bypasses the motion queue, failed releases retain ownership and retry, and graceful exit removes hooks before joining the worker
 - Both phone surfaces share the same drag lifecycle, discard cancelled motion, and block new gestures while a release is pending; the offline shell includes the shared script
 - Added reproducible native text-selection/loss/exit smoke and disposable-source mutation checks; browser acceptance sources and dependency lockfile are no longer ignored

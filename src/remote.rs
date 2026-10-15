@@ -25,7 +25,6 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[derive(Clone)]
 pub struct RemoteInfo {
     pub url: String,
-    pub pad_url: String,
 }
 
 static REMOTE: LazyLock<RwLock<Option<RemoteInfo>>> = LazyLock::new(|| RwLock::new(None));
@@ -251,11 +250,7 @@ fn start_server_inner(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let url = format!("http://{ip}:{port}/?t={token}&v={nonce}");
-    let pad_url = format!("http://{ip}:{port}/pad.html?t={token}&v={nonce}");
-    let remote_info = RemoteInfo {
-        url: url.clone(),
-        pad_url,
-    };
+    let remote_info = RemoteInfo { url: url.clone() };
     let stop = Arc::new(AtomicBool::new(false));
     let (broadcast_tx, broadcast_rx) = std::sync::mpsc::sync_channel(MAX_PENDING_BROADCASTS);
     let broadcast_stop = Arc::clone(&stop);
@@ -1284,7 +1279,7 @@ fn serve_qr_page(stream: &mut TcpStream) {
                     .iter()
                     .map(|c| if *c == Color::Dark { 1u8 } else { 0u8 })
                     .collect();
-                let data = serde_json::json!({ "url": &info.url, "pad_url": &info.pad_url, "size": n, "modules": modules });
+                let data = serde_json::json!({ "url": &info.url, "size": n, "modules": modules });
                 let json = serde_json::to_string(&data).unwrap_or_default();
                 QR_HTML.replace("__QR_DATA__", &json)
             }

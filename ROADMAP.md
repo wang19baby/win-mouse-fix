@@ -65,6 +65,7 @@
 ### 13.5 PWA 完善（软件接入，手机验收待完成）
 - [x] 创建 `manifest.json`（名称、图标、主题色、display: standalone）
 - [x] SW 正确 MIME；仅缓存静态 shell/manifest，不缓存 token 查询、QR/诊断/缩略图，保留无关缓存；localhost Chromium 离线重载通过
+- [x] 平板默认入口按接收端可用视口选择窗口区＋触控板同屏；支持手动切换及保留仅触控板选择，二维码/复制链接一致；release Chromium 横竖屏验证通过
 - [ ] iOS Safari "添加到主屏幕" 引导 UI
 - [ ] 全屏模式：隐藏地址栏 + 状态栏
 - [ ] 横屏锁定（可选）

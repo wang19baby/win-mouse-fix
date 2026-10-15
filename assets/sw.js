@@ -1,7 +1,7 @@
 // Only secure origins (HTTPS or localhost) can install this worker. Plain LAN
 // HTTP remains an online-only trackpad; it does not weaken browser trust rules.
 const PREFIX = 'win-mouse-fix-shell-';
-const CACHE = `${PREFIX}v3`;
+const CACHE = `${PREFIX}v4`;
 const SHELL = ['/', '/pad.html', '/winlist.html', '/manifest.json', '/drag.js'];
 const SHELL_PATHS = new Set(SHELL);
 
