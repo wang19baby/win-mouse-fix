@@ -525,7 +525,9 @@
 
   // ── Back button ─────────────────────────────────────────────
   document.getElementById('winListBackBtn').addEventListener('click', function(){
-    window.location.href = '/?t=' + encodeURIComponent(token);
+    var url = new URL('/', location.href);
+    url.search = location.search;
+    window.location.href = url.href;
   });
 
   // ── Keyboard nav (Tab trapping) ─────────────────────────────

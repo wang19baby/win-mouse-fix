@@ -148,3 +148,35 @@
 | 覆盖诊断 | 11 个远程输入测试通过；不是 100% 变更行门禁 |
 
 待发布源码/验收输入 SHA-256：`ec54ef1b8b33fe86ee4700b2368f18c27f873bebbbd5b8984be5d442adcf22d8`，复算命令与摘要范围同上。对选定源码、测试、工具、`package-lock.json`、跟踪配置及补记前证据做常见 token/私钥/带密码 URL 模式检查，无匹配；不等于完整安全审计。未安装依赖、未改防火墙，临时应用仍仅使用其独立配置/token；原工作区的本地文件保留。P2 真机边界和保证降级不变。
+
+## 平板默认同屏修复（当前续作）
+
+用户报告平板扫码后仍只有妙控板，作为故障依据，不以桌面单测否定。源码定位：`/` 固定返回纯触控板，二维码页的大屏判断运行在显示二维码的电脑上，实际二维码仍编码 `/`，接收端没有默认分流。
+
+修复在 `fix/tablet-default-split` 实施，基于 main `4730103`；本节记录提交合并前的验证结果。复用现有 `/pad.html`，不新增布局框架或输入协议：
+
+- 接收端认证 status 到达时，`large_screen_split=true` 且视口宽、高都至少 600 CSS px，默认转到窗口区＋触控板同屏。手机横屏不因宽度较大而误判；已连接状态下的周期 status 不触发模式跳转。
+- 提供“同屏”及“仅触控板”；后者通过 `mode=trackpad` 在刷新后保留。页面切换保留配对 token 和构建 nonce，手动同屏不受自动分屏开关限制。
+- 二维码、复制地址和打开链接使用同一默认入口，删除不再使用的单独 `pad_url` 字段。窗口页返回也保留查询参数。SW shell 版本更新为 v4，保持原有静态缓存 allowlist 和凭据排除规则。
+- 已重新生成 `target/release/win-mouse-fix.exe`；网页嵌入 exe，正在运行的旧进程不会随文件变化而更新，需要重启电脑端程序后重新打开连接地址。
+
+### 本次验证
+
+| 检查 | 观察结果 |
+|---|---|
+| fmt、offline all-target check、debug strict Clippy | 全部通过 |
+| `cargo test --offline --all-targets` | 242 passed，5 ignored，0 failed |
+| `cargo build --offline --release --bin win-mouse-fix` | 通过 |
+| `cargo clippy --offline --release --all-targets -- -D warnings` | 通过 |
+| `WMF_E2E_EXE` 指向上述 release 产物，执行既有 `npx --no-install playwright test` | 30 passed；未把这些用例宣称为新增平板回归 |
+| 真实 Chromium、1024×768 接收端 | 从默认 `/` 进入已连接的 `/pad.html`；窗口区左侧约 40%，触控板右侧约 60%，配对和 nonce 保留 |
+| 同一页面旋转至 768×1024 | 窗口区在上、触控板在下；触控区域有实际可见高度，截图只隐藏窗口内容以保护隐私 |
+| 手机 390×844 及 844×390 | 默认均为全屏触控板；手动同屏可进入并连接 |
+| 平板“仅触控板”→刷新→“同屏” | 选择保留，无默认跳回循环；重新同屏后配对和 nonce 仍保留 |
+| 仅在自有临时实例配置中关闭 `large_screen_split`，观察真实 status 热重载 | 大屏默认保持全屏；手动同屏仍可用 |
+| 电脑 1440×900 配对页 | 实际复制框与打开链接一致，指向 `/`，保留配对和 nonce，不按电脑屏幕选择 pad URL |
+| `python tools/drag_smoke.py --exe target/release/win-mouse-fix.exe` | 整句拖选、所有权隔离、租期/断线/半帧释放、停止重启和正常退出全部通过；退出码 0 |
+
+浏览器跨文档等待曾超时，随后改为导航后的独立 DOM/状态/几何读取完成验证，没有为绕过检查修改产品逻辑或放宽布局断言。平板和手机页脚本错误记录均为 0；自有 tab、应用、临时配置/token 均已清理，未修改用户配置、未改防火墙。实体 iOS/Android 平板仍需用户设备复核，本节只是 release Chromium 软件验收。
+
+源码/验收输入摘要（范围及复算命令同上）：`685e573c0ee2b2c411e7ce8e736a9300c6aae72a2dee5bc1ade6f523fa24c570`。
