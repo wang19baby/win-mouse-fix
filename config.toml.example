@@ -1,7 +1,7 @@
 [general]
 start_hidden = true
-# Optional rolling log file. Uncomment to capture output when run headless.
-log_path = "D:/work_space/personal_workspace/win-mouse-fix/win-mouse-fix.log"
+# Optional rolling log file (relative to the process working directory).
+# log_path = "win-mouse-fix.log"
 
 [scroll]
 enabled = true
@@ -81,17 +81,17 @@ effect = { type = "modified_scroll", data = { modification = "precision" } }
 # trigger = { type = "button", button = "x2", level = 1, duration = "click" }
 # effect = { type = "show_desktop" }
 
-# Drag gestures (left-click drag)
+# Drag gestures: opt in after selecting a trigger that preserves normal clicks.
 # Modes: "move" (drag window), "scroll" (drag-to-scroll), "navigate" (back/forward),
 #        "taskview" (drag up = Win+Tab), "showdesktop" (drag down = Win+D)
 [drag]
-enabled = true
+enabled = false
 button = "left"
 mode = "move"
 
-# Pointer acceleration (subtle; adjusts mouse sensitivity by movement speed)
+# Additional Windows-processed cursor gain, not raw HID acceleration.
 [accel]
-enabled = true
+enabled = false
 sensitivity = 1000.0
 min_factor = 1.0
 max_factor = 2.0
@@ -115,5 +115,7 @@ diag_min = 20.0        # Minimum displacement on both axes for diagonal detectio
 diag_ratio = 1.6       # Max ratio between axes for diagonal (higher = more strict)
 
 [remote]
-enabled = true
+enabled = false
 port = 18765
+# Local browser/testing only: prevents LAN binding and firewall changes.
+local_only = false

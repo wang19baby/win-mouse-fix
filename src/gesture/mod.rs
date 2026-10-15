@@ -13,7 +13,8 @@ pub enum TriggerButton {
 
 /// Parse a config string into a [`TriggerButton`].
 pub fn parse_button(s: &str) -> TriggerButton {
-    match s {
+    let base = s.split('+').next().unwrap_or(s);
+    match base {
         "middle" => TriggerButton::Middle,
         "x1" => TriggerButton::X1,
         "x2" => TriggerButton::X2,
@@ -57,6 +58,7 @@ struct ActiveDrag {
 /// Recognizes window-drag gestures from mouse/keyboard events.
 pub struct DragController {
     button: TriggerButton,
+    require_left_alt: bool,
     active: Option<ActiveDrag>,
 }
 
@@ -64,8 +66,18 @@ impl DragController {
     pub fn new(button: TriggerButton) -> Self {
         Self {
             button,
+            require_left_alt: false,
             active: None,
         }
+    }
+
+    pub fn from_config(trigger: &str) -> Self {
+        let mut controller = Self::new(parse_button(trigger));
+        controller.require_left_alt = trigger
+            .split('+')
+            .skip(1)
+            .any(|modifier| modifier.eq_ignore_ascii_case("alt"));
+        controller
     }
 
     pub fn is_active(&self) -> bool {
@@ -76,8 +88,8 @@ impl DragController {
         self.active.as_ref().map(|a| a.hwnd).unwrap_or(0)
     }
 
-    pub fn matches_trigger(&self, btn: MouseButton, down: bool, _space: bool) -> bool {
-        if !down {
+    pub fn matches_trigger(&self, btn: MouseButton, down: bool, left_alt_held: bool) -> bool {
+        if !down || (self.require_left_alt && !left_alt_held) {
             return false;
         }
         match self.button {
@@ -183,9 +195,19 @@ mod tests {
     fn parse_button_variants() {
         assert!(matches!(parse_button("middle"), TriggerButton::Middle));
         assert!(matches!(parse_button("x1"), TriggerButton::X1));
+        assert!(matches!(parse_button("x1+alt"), TriggerButton::X1));
         assert!(matches!(parse_button("x2"), TriggerButton::X2));
         assert!(matches!(parse_button("left"), TriggerButton::Left));
         assert!(matches!(parse_button("unknown"), TriggerButton::Left));
+    }
+
+    #[test]
+    fn configured_alt_modifier_is_required() {
+        let ctrl = DragController::from_config("x1+alt");
+        assert!(!ctrl.matches_trigger(MouseButton::X1, true, false));
+        assert!(ctrl.matches_trigger(MouseButton::X1, true, true));
+        assert!(!ctrl.matches_trigger(MouseButton::Left, true, true));
+        assert!(!ctrl.matches_trigger(MouseButton::X1, false, true));
     }
 
     #[test]

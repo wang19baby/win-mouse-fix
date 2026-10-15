@@ -18,13 +18,14 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
     DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, DrawIcon,
-    GetCursorPos, GetMessageW, GetSystemMetrics, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
-    PostQuitMessage, RegisterClassExW, SendDlgItemMessageW, SetForegroundWindow, SetTimer,
-    ShowWindow, TrackPopupMenu, TranslateMessage, BM_GETCHECK, BS_AUTORADIOBUTTON, ICONINFO,
-    IDC_ARROW, IDI_APPLICATION, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_YESNO,
-    MF_CHECKED, MF_STRING, MF_UNCHECKED, SM_CXICON, SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION,
-    WS_CHILD, WS_GROUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics, KillTimer, LoadCursorW,
+    LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SendDlgItemMessageW,
+    SetForegroundWindow, SetTimer, ShowWindow, TrackPopupMenu, TranslateMessage, BM_GETCHECK,
+    BS_AUTORADIOBUTTON, ICONINFO, IDC_ARROW, IDI_APPLICATION, IDYES, MB_ICONINFORMATION,
+    MB_ICONQUESTION, MB_OK, MB_YESNO, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SM_CXICON,
+    SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_GROUP, WS_SYSMENU, WS_TABSTOP,
+    WS_VISIBLE,
 };
 
 const BST_CHECKED: u32 = 0x0001;
@@ -35,6 +36,7 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
 const WM_TRAYICON: u32 = WM_APP + 1;
+const WM_FOCUS_CENTER: u32 = WM_APP + 2;
 const ID_EXIT: usize = 1001;
 const ID_ABOUT: usize = 1002;
 const ID_SMOOTH: usize = 1003;
@@ -46,10 +48,11 @@ const ID_BATTERY: usize = 1006;
 const ID_DPI: usize = 1007;
 
 const ID_REMOTE: usize = 1008;
-#[allow(dead_code)]
 const ID_SETTINGS: usize = 1009;
-#[allow(dead_code)]
 const ID_PROFILES: usize = 1010;
+const ID_FOCUS_CENTER: usize = 1013;
+const ID_CONFIG_LOCATION: usize = 1014;
+const ID_LAYOUT_EDITOR: usize = 1012;
 const ID_HELP: usize = 1011;
 static FW_DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -95,6 +98,17 @@ pub(crate) fn hwnd() -> windows_sys::Win32::Foundation::HWND {
     *TRAY_HWND
         .get()
         .unwrap_or(&windows_sys::Win32::Foundation::HWND::default())
+}
+
+/// Capture the foreground target while handling the physical hotkey, then
+/// defer the request until after the low-level hook has returned.
+pub(crate) fn request_focus_center() -> bool {
+    let target = unsafe { GetForegroundWindow() };
+    let target_window = hwnd();
+    if target == 0 || target_window == 0 {
+        return false;
+    }
+    unsafe { PostMessageW(target_window, WM_FOCUS_CENTER, target as usize, 0) != 0 }
 }
 
 static CONFIG_MTIME: parking_lot::Mutex<Option<std::time::SystemTime>> =
@@ -212,8 +226,10 @@ pub fn create() -> Result<(), String> {
         // Hot-reload: poll config.toml mtime via the tray timer (see check_reload_config).
         SetTimer(hwnd, ID_TIMER_CONFIG, CONFIG_RELOAD_MS, None);
         SetTimer(hwnd, ID_TIMER_PROFILE, PROFILE_POLL_MS, None);
-        // Battery and DPI polling disabled — set to 0 to re-enable if needed.
-        // SetTimer(hwnd, ID_TIMER_BATTERY_ICON, BATTERY_ICON_MS, None);
+        // Battery icon: BG poll thread (device::battery::start_bg_poll) already updates the
+        // cache; this timer only reads the cache and redraws the tray icon — no writes.
+        SetTimer(hwnd, ID_TIMER_BATTERY_ICON, BATTERY_ICON_MS, None);
+        // DPI polling disabled — requires hardware HID++ write that must be validated on real hardware.
         // SetTimer(hwnd, ID_TIMER_DPI, DPI_POLL_MS, None);
         // Seed last-mtime so the first tick doesn't trigger a redundant reload.
         *CONFIG_MTIME.lock() = std::fs::metadata(crate::config::config_path())
@@ -391,6 +407,10 @@ unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam:
             }
             0
         }
+        WM_FOCUS_CENTER => {
+            let _ = crate::win::focus_center::request_window(wparam as isize);
+            0
+        }
         WM_TIMER => {
             if wparam == ID_TIMER_ADDMODE {
                 poll_addmode_capture(hwnd);
@@ -408,8 +428,12 @@ unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam:
             0
         }
         WM_COMMAND => {
-            if wparam == ID_ADDMODE {
-                start_addmode(hwnd);
+            match wparam {
+                ID_ADDMODE => start_addmode(hwnd),
+                ID_SETTINGS => crate::gui::open_settings(),
+                ID_PROFILES => crate::gui::open_profiles(),
+                ID_CONFIG_LOCATION => open_config_location(hwnd),
+                _ => {}
             }
             0
         }
@@ -417,7 +441,7 @@ unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam:
             KillTimer(hwnd, ID_TIMER_ADDMODE);
             KillTimer(hwnd, ID_TIMER_CONFIG);
             KillTimer(hwnd, ID_TIMER_PROFILE);
-            // KillTimer(hwnd, ID_TIMER_BATTERY_ICON);
+            KillTimer(hwnd, ID_TIMER_BATTERY_ICON);
             // KillTimer(hwnd, ID_TIMER_DPI);
             KillTimer(hwnd, crate::win::hooks::CLICK_TIMER_ID);
 
@@ -437,7 +461,7 @@ unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam:
 unsafe fn check_reload_config() {
     let path = crate::config::config_path();
     let mut last = CONFIG_MTIME.lock();
-    if !crate::config::config_changed(&path, &mut last) {
+    if !crate::config::config_changed(&path, &mut last) && crate::win::hooks::runtime_ready() {
         return;
     }
     drop(last);
@@ -449,13 +473,14 @@ unsafe fn check_reload_config() {
     }
     let desired_remote = crate::CONFIG.read().remote.clone();
 
-    let port_changed = previous_remote.port != desired_remote.port;
+    let binding_changed = previous_remote.port != desired_remote.port
+        || previous_remote.local_only != desired_remote.local_only;
     if !desired_remote.enabled {
         if crate::remote::info().is_some() {
             crate::remote::stop_server();
         }
     } else {
-        if port_changed && crate::remote::info().is_some() {
+        if binding_changed && crate::remote::info().is_some() {
             crate::remote::stop_server();
         }
         if crate::remote::info().is_none() {
@@ -504,8 +529,34 @@ unsafe fn show_menu(hwnd: isize) {
     } else {
         "录制映射..."
     };
+    let focus_center_flags = MF_STRING
+        | if crate::win::hooks::feature_enabled(crate::win::hooks::Feature::FocusCenter) {
+            MF_CHECKED
+        } else {
+            MF_UNCHECKED
+        };
+    AppendMenuW(
+        menu,
+        focus_center_flags,
+        ID_FOCUS_CENTER,
+        to_wide("焦点居中").as_ptr(),
+    );
     AppendMenuW(menu, MF_STRING, ID_ADDMODE, to_wide(addmode_label).as_ptr());
-    // Trackpad toggle: ✓ if server is running, blank if not.
+    AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    AppendMenuW(menu, MF_STRING, ID_SETTINGS, to_wide("设置...").as_ptr());
+    AppendMenuW(
+        menu,
+        MF_STRING,
+        ID_PROFILES,
+        to_wide("应用配置...").as_ptr(),
+    );
+    AppendMenuW(
+        menu,
+        MF_STRING,
+        ID_CONFIG_LOCATION,
+        to_wide("打开配置目录").as_ptr(),
+    );
+    // Trackpad toggle
     let remote_flags = MF_STRING
         | if crate::remote::info().is_some() {
             MF_CHECKED
@@ -539,11 +590,13 @@ unsafe fn show_menu(hwnd: isize) {
     DestroyMenu(menu);
 
     match cmd as usize {
-        ID_SMOOTH | ID_REMAP => {
+        ID_SMOOTH | ID_REMAP | ID_FOCUS_CENTER => {
             let feature = if cmd as usize == ID_SMOOTH {
                 crate::win::hooks::Feature::SmoothScroll
-            } else {
+            } else if cmd as usize == ID_REMAP {
                 crate::win::hooks::Feature::ButtonRemap
+            } else {
+                crate::win::hooks::Feature::FocusCenter
             };
             if let Err(e) = crate::win::hooks::toggle_feature(feature) {
                 crate::log::write(&format!("feature toggle failed: {e}"));
@@ -556,6 +609,10 @@ unsafe fn show_menu(hwnd: isize) {
             }
         }
         ID_ADDMODE => start_addmode(hwnd),
+        ID_LAYOUT_EDITOR => unsafe { crate::win::layout_editor::start(hwnd) },
+        ID_SETTINGS | ID_PROFILES | ID_CONFIG_LOCATION => {
+            PostMessageW(hwnd, WM_COMMAND, cmd as usize, 0);
+        }
         ID_HELP => show_help(),
         ID_EXIT => {
             let result = MessageBoxW(
@@ -734,6 +791,33 @@ unsafe fn show_addmode_message(hwnd: isize, payload: &crate::add_mode::AddModePa
     let _ = crate::add_mode::disable();
 }
 
+fn open_config_location(owner: isize) {
+    let config = crate::config::config_path();
+    let args = to_wide(&format!("/select,\"{}\"", config.display()));
+    unsafe {
+        let result = ShellExecuteW(
+            owner,
+            to_wide("open").as_ptr(),
+            to_wide("explorer.exe").as_ptr(),
+            args.as_ptr(),
+            null(),
+            1,
+        );
+        if result <= 32 {
+            MessageBoxW(
+                owner,
+                to_wide(&format!(
+                    "无法打开配置目录（错误 {result}）：\n{}",
+                    config.display()
+                ))
+                .as_ptr(),
+                to_wide("Win Mouse Fix").as_ptr(),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+    }
+}
+
 /// Show concise instructions for actions that are reachable from the tray.
 fn show_help() {
     let help_text = "\
@@ -755,6 +839,8 @@ Win Mouse Fix 使用说明
 
 配置文件：
 • config.toml 位于程序 exe 同目录
+• 托盘“设置...”编辑基础配置，“应用配置...”管理 profile
+• “打开配置目录”定位实际读取的文件
 • 保存文件后约 1 秒自动热重载
 • 支持 [[profiles]] 按前台程序切换配置
 

@@ -1,4 +1,6 @@
+pub mod focus_center;
 pub mod hooks;
+pub mod layout_editor;
 pub mod message_loop;
 pub mod tray;
 pub mod virtual_desktop;

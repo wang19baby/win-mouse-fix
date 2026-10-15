@@ -286,6 +286,27 @@ A1 防火墙+IP / A2 砍 SSE / A3 删 vibrate / A4 独立手势识别器 / B1 �
 
 1. [高] 用真实鼠标验收平滑滚动、左键拖拽、按键录制和中键窗口切换，建立延迟/CPU 基线。
 2. [高] 用 iOS Safari 与 Android Chrome 验收手机触控、断线重连、防火墙和 Web Speech。
-3. [高] 在支持的 Logitech 设备上验证电量、HID++ DPI function code 与跨屏写入，再启用托盘/DPI 定时器。
-4. [中] 设计不会产生 SendInput 回环或双倍位移的指针加速接线方案，再把 P5 从算法阶段提升为运行时功能。
-5. [中] 完成多网卡选择、Service Worker 和手机端连接质量反馈。
+3. [高] 在支持的 Logitech 设备上验证电量、HID++ DPI function code 与跨屏写入，再启用 DPI 自动写入。电量缓存托盘定时器已安全接入。
+4. [中] 验收 P5 已接入的原生透传 + 异步增量方案：非 Raw Input，真实鼠标、UIPI 与屏幕边缘手感仍需验证。
+5. [中] 完成多网卡选择、手机可信 HTTPS 安装/离线和连接质量反馈。静态 SW shell 已经 localhost Chromium 验证。
+
+---
+
+## 当前收敛迭代（2026-10-14）
+
+可执行验收规格在 `docs/project-completion-spec.md`，逐项待办在 `TODO.md`。本节覆盖旧 Phase 段落中过时的完成标记，不改写历史记录。
+
+| 顺序 | 任务 | 依赖 / 验收 |
+|---|---|---|
+| 0 | 恢复 format、strict Clippy、完整测试门禁 | 保留用户焦点居中逻辑；仅清理未接入 PoC 的门禁警告并格式化；实测见验证证据 |
+| 1 | 原生设置 GUI 与 per-app 配置 | 托盘可打开；关闭不退出；保存基础配置不扁平化 profile；无效输入不改变运行状态 |
+| 1 | 可选指针加速 | `WH_MOUSE_LL` 仅观测 native 移动，通过容量受限队列在独立线程注入**额外**位移；注入与外部事件重置坐标基线，所有失败时透传原生事件 |
+| 1 | 手机离线资源和可复现 E2E | `/sw.js` 返回正确 MIME，离线 shell 无 token 泄漏；隔离运行目录启停服务；普通 LAN HTTP 无法满足浏览器 PWA 安全上下文，需可信 HTTPS/localhost 验收 |
+| 2 | 电量展示与 DPI 功能边界 | 后台缓存可安全刷新托盘；硬件 DPI 写入仍关闭，需真机读回、超时/热插拔验收后才可启用 |
+| 3 | 全量门禁、实际 Win32 和浏览器 smoke | 运行后更新 ROADMAP、README、CHANGELOG 与 TODO，区分软件接入和真实硬件验收 |
+
+失败模型：全局钩子阻塞或自反馈、错误配置覆盖 profile、GUI 关闭终止托盘进程、Web App 离线缓存 bearer、未经确认的 HID 写入。这些路径必须分别有可观察验证，不以单元测试数量替代真机验收。
+
+2026-10-19 收敛结果：软件任务状态与剩余真机门槛以 `TODO.md` 为准；验证命令、受控失败恢复、Win32 GUI 和 Chromium 离线场景见 `docs/project-completion-evidence.md`。钩子安装失败后同配置会重试；录制入口先明确保存设置，不再静默丢弃草稿。
+
+远程拖选收尾：`docs/project-completion-spec.md` 的 R1–R12 定义协议、所有权及失联/退出释放边界。统一软件验收入口为 `tools/drag-gauntlet.ps1`；真实鼠标和手机仍按 `TODO.md` P2 单独验收，不能以浏览器模拟回执替代原生输入证据。

@@ -94,6 +94,8 @@
   <div class="tf-wrap"><textarea id="textField" placeholder="输入文字…" rows="1"></textarea><span id="charCount">0</span></div>
   <button id="sendBtn">发送</button>
   <button id="collapseBtn" title="收起">⌄</button>
+</div>
+<script src="/drag.js"></script>
 <script>
 (function(){
   "use strict";
@@ -150,7 +152,7 @@
   var moveSpeedEma = 0;
 
   // rAF batching: accumulate sub-pixel deltas, flush once per frame.
-  var pendingDx = 0, pendingDy = 0, rafPending = false;
+  var pendingDx = 0, pendingDy = 0, rafPending = false, moveEpoch = 0;
 
   // Two-finger scroll smoothing (EMA).
   var scrollSmoothX = 0, scrollSmoothY = 0, SCROLL_EMA = 0.3;
@@ -174,12 +176,14 @@ var isConnecting = false;
     if(isConnecting) return;
     isConnecting = true;
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(proto + '://' + location.host + '/ws');
-    if(!ws) { isConnecting = false; return; }
+    var socket = new WebSocket(proto + '://' + location.host + '/ws');
+    ws = socket;
 
-    ws.onopen = function(){ statusEl.textContent = '认证中…'; showBanner('握手成功·认证中…'); setTimeout(hideBanner, 1200); ws.send(JSON.stringify({t:'auth', token:token})); };
-    ws.onmessage = function(e){
+    socket.onopen = function(){ if(ws !== socket) return; statusEl.textContent = '认证中…'; showBanner('握手成功·认证中…'); socket.send(JSON.stringify({t:'auth', token:token})); };
+    socket.onmessage = function(e){
+      if(ws !== socket) return;
       var m; try { m = JSON.parse(e.data); } catch(_) { return; }
+      drag.onServerMessage(m);
       if(m.t === 'status'){
         authed = true; stopReconnect = false; backoff = 500; statusEl.textContent = '已连接'; hideBanner();
         // Apply touch config from server if provided
@@ -205,11 +209,15 @@ var isConnecting = false;
         // Report phone battery to server
         reportPhoneBattery();
       }
-      else if(m.t === 'reject'){ statusEl.textContent = '认证失败'; showBanner('认证失败' + (m.reason ? ' ('+m.reason+')' : '') + ' · 请重新扫码'); stopReconnect = true; try { ws.close(); } catch(_){} }
+      else if(m.t === 'reject'){ authed = false; drag.onWsReject(); statusEl.textContent = '认证失败'; showBanner('认证失败' + (m.reason ? ' ('+m.reason+')' : '') + ' · 请重新扫码'); stopReconnect = true; try { socket.close(); } catch(_){} }
     };
 
-    ws.onclose = function(e){
-      authed = false; statusEl.textContent = '断开，重连…'; isConnecting = false; isConnecting = false; isConnecting = false; isConnecting = false;
+    socket.onclose = function(e){
+      if(ws !== socket) return;
+      authed = false; isConnecting = false;
+      drag.onWsClose();
+      if (stopReconnect) return; // Preserve the actionable authentication error.
+      statusEl.textContent = '断开，重连…';
       var code = e && e.code ? e.code : '?';
       var reason = e && e.reason ? e.reason : '';
       var clean = e && e.wasClean;
@@ -218,13 +226,18 @@ var isConnecting = false;
       if(!stopReconnect) setTimeout(connect, backoff);
       backoff = Math.min(backoff * 2, 8000);
     };
-    ws.onerror = function(e){
+    socket.onerror = function(e){
+      if(ws !== socket) return;
+      drag.onWsError();
       showBanner('WS错误 [code=' + (e && e.code ? e.code : '?') + ']');
-      try { ws.close(); } catch(_){}
+      try { socket.close(); } catch(_){}
     };
   }
 
-  function send(obj){ if(ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+  function send(obj){
+    if(!ws || ws.readyState !== 1) return false;
+    try { ws.send(JSON.stringify(obj)); return true; } catch(_) { return false; }
+  }
   window.send = send; // expose to module-level window_list code
 
   // Battery display
@@ -255,15 +268,16 @@ var isConnecting = false;
     });
   }
 
-  // Long-press drag: 1 finger held still for LONGPRESS_MS → window drag mode
+  // Longpress requests a checked, session-owned left-button lease.
   function startLongpressTimer(){
-    if(!g || g.longpressTimer) return;
+    if(!g || g.longpressTimer || g.longpressFired) return;
     g.longpressTimer = setTimeout(function(){
       if(g && g.committedCount === 1 && !g.anyMoved && !g.longpressFired){
-        g.longpressFired = true;
-        if(authed) send({t:'gesture', g:'longpress_drag'});
-        updateHud(1, '窗口拖拽');
-        ripple(g.startC.x, g.startC.y);
+        cancelLongpressTimer();
+        resetMoves();
+        g.longpressFired = drag.startDrag();
+        if(g.longpressFired) ripple(g.startC.x, g.startC.y);
+        else { g.anyMoved = true; updateHud(0, '拖选未开始'); }
       }
     }, LONGPRESS_MS);
   }
@@ -282,7 +296,8 @@ var isConnecting = false;
     pendingDy += dy;
     if(!rafPending){
       rafPending = true;
-      requestAnimationFrame(flushMove);
+      var epoch = moveEpoch;
+      requestAnimationFrame(function(){ if(epoch === moveEpoch) flushMove(); });
     }
   }
 
@@ -295,8 +310,14 @@ var isConnecting = false;
     moveSpeedEma = moveSpeedEma * MOVE_EMA + mag * (1 - MOVE_EMA);
     var factor = moveSpeedEma <= ACCEL_REF ? 1 : 1 + (moveSpeedEma - ACCEL_REF) / ACCEL_SLOPE;
     if(factor > ACCEL_MAX_MULT) factor = ACCEL_MAX_MULT;
-    var g = SENS * factor;
-    send({t:'move', dx:Math.round(dx*g), dy:Math.round(dy*g)});
+    var gain = SENS * factor;
+    if(drag.isDragging()) drag.moveDrag(Math.round(dx*gain), Math.round(dy*gain));
+    else if(!drag.isBlocked()) send({t:'move', dx:Math.round(dx*gain), dy:Math.round(dy*gain)});
+  }
+
+  function resetMoves(){
+    moveEpoch++;
+    pendingDx = 0; pendingDy = 0; rafPending = false; moveSpeedEma = 0;
   }
 
   function ripple(x,y){
@@ -332,8 +353,7 @@ var isConnecting = false;
 
   function newGesture(list){
     var c = centroid(list);
-    moveSpeedEma = 0; // fresh speed estimate each gesture, no stale boost
-    pendingDx = 0; pendingDy = 0; // flush any leftover move deltas
+    resetMoves();
     scrollSmoothX = 0; scrollSmoothY = 0; // reset scroll smoothing
     zoomAccum = 0; // reset zoom accumulator
     g = {
@@ -370,6 +390,10 @@ var isConnecting = false;
   }
 
   pad.addEventListener('pointerdown', function(e){
+    if(drag.isBlocked()){ e.preventDefault(); return; }
+    if(pointers.size > 0 && drag.isDragging()){
+      drag.onSecondPointer(); e.preventDefault(); return;
+    }
     pad.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, {x:e.clientX, y:e.clientY, startX:e.clientX, startY:e.clientY, startT:performance.now(), moved:false});
     var list = activePointers();
@@ -483,33 +507,31 @@ var isConnecting = false;
   }, {passive:false});
 
   function onUp(e){
-    var p = pointers.get(e.pointerId); if(!p){ return; }
+    var p = pointers.get(e.pointerId); if(!p) return;
     pointers.delete(e.pointerId);
-    var list = activePointers();
-
-    if(g){
+    var list = activePointers(), gesture = g;
+    if(gesture){
       cancelLongpressTimer();
-      // End longpress drag if it was active
-      if(g.longpressFired && authed){ send({t:'gesture', g:'longpress_end'}); }
-      var count = g.committed ? g.committedCount : g.maxCount;
-      var quick = (performance.now() - g.startT) < TAP_MS;
-      // Tap = short, no real movement, no swipe fired, and all fingers lifted.
-      if(!g.swipeFired && !g.anyMoved && quick && list.length === 0){
+      if(gesture.longpressFired){ flushMove(); drag.endDrag(); resetMoves(); }
+      var count = gesture.committed ? gesture.committedCount : gesture.maxCount;
+      var quick = (performance.now() - gesture.startT) < TAP_MS;
+      if(!gesture.longpressFired && !gesture.swipeFired && !gesture.anyMoved && quick && list.length === 0){
         if(count === 1 && authed){ send({t:'tap', b:'left'}); ripple(p.startX, p.startY); }
         else if(count === 2 && authed){ send({t:'tap', b:'right'}); ripple(p.startX, p.startY); }
-        else if(count === MIN_GESTURE_FINGERS && authed){ send({t:'gesture', g:'taskview'}); }
-        else if(count >= MIN_GESTURE_FINGERS + 1 && authed){ send({t:'gesture', g:'showdesktop'}); }
+        else if(count === MIN_GESTURE_FINGERS && authed) send({t:'gesture', g:'taskview'});
+        else if(count >= MIN_GESTURE_FINGERS + 1 && authed) send({t:'gesture', g:'showdesktop'});
       }
-      // Re-baseline a 2-finger scroll when a finger lifts, to avoid a jump.
-      if(g.committedCount === 2 && list.length > 0){ g.lastC = centroid(list); scrollSmoothX = 0; scrollSmoothY = 0; zoomAccum = 0; }
-      if(list.length === 0){ g = null; updateHud(0, '待机'); }
+      if(g === gesture && gesture.committedCount === 2 && list.length > 0){
+        gesture.lastC = centroid(list); scrollSmoothX = 0; scrollSmoothY = 0; zoomAccum = 0;
+      }
+      if(list.length === 0){ g = null; if(!gesture.longpressFired) updateHud(0, '待机'); }
     }
     e.preventDefault();
   }
   pad.addEventListener('pointerup', onUp, {passive:false});
-  pad.addEventListener('pointercancel', function(e){
-    pointers.delete(e.pointerId);
-    if(activePointers().length === 0){ g = null; updateHud(0, '待机'); }
+  pad.addEventListener('pointercancel', function(){ drag.onLostCapture(); });
+  pad.addEventListener('lostpointercapture', function(e){
+    if(pointers.has(e.pointerId)) drag.onLostCapture();
   });
 
   // kill iOS pinch-zoom / double-tap zoom / context menu
@@ -578,18 +600,34 @@ var isConnecting = false;
   window.addEventListener('online', function(){ if(!ws || ws.readyState === 3) connect(); });
   document.addEventListener('visibilitychange', function(){ if(!document.hidden && (!ws || ws.readyState === 3)) connect(); });
 
+  function cancelGesture(){
+    cancelLongpressTimer();
+    var captured = Array.from(pointers.keys());
+    pointers.clear(); g = null; resetMoves();
+    captured.forEach(function(id){ if(pad.hasPointerCapture(id)) pad.releasePointerCapture(id); });
+    updateHud(0, '待机');
+  }
+  var drag = makeDragFactory({
+    getSend: function(){ return send; },
+    isAuthed: function(){ return authed; },
+    updateHud: updateHud,
+    onCancel: cancelGesture
+  });
+  window.addEventListener('blur', drag.onBlur);
+  window.addEventListener('pagehide', drag.onVisibilityHidden);
+  document.addEventListener('visibilitychange', function(){ if(document.hidden) drag.onVisibilityHidden(); });
+
   updateHud(0, '待机');
   connect();
 
   // Register Service Worker for offline caching
   if('serviceWorker' in navigator){
-    // ?v=3 busts the HTTP cache for sw.js itself so the browser actually
-    // picks up the new v2 SW on the next page load. Without the bust, a
-    // browser that has cached sw.js once will keep using the old copy even
-    // after the server ships a fix.
+    // Secure-context offline shell includes the shared drag controller.
     navigator.serviceWorker.register('/sw.js?v=3').catch(function(){});
   }
 
+
 })();
 </script>
+</body>
 </html>
