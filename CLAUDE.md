@@ -35,20 +35,20 @@
 ## 当前实现（win-mouse-fix，Rust + Win32）
 
 项目已超出脚手架阶段。运行时代码、关键缺口和测试结果以 `ROADMAP.md` 及
-`docs/architecture-stability-optimization-evidence.md` 的最近一次实查为准：
+`docs/project-completion-evidence.md` 的最近一次验证为准；旧优化证据保留作历史记录：
 
 - `src/main.rs` —— 入口：加载配置 → 建托盘 → 装钩子 → 可选启动 LAN 服务 → 消息循环 → 有序停止
 - `src/config.rs` + `config.toml` —— TOML 配置、每应用 profile、原子保存与热重载
 - `src/log.rs` —— 文件 + stderr 日志
-- `src/win/tray.rs` —— 系统托盘：全局功能开关、录制映射、手机妙控板、帮助、关于、退出
-- `src/win/hooks.rs` —— `WH_MOUSE_LL` + `WH_KEYBOARD_LL`；wheel 接平滑管线，button 接重映射与拖拽
+- `src/win/tray.rs` + `src/gui.rs` —— 托盘：功能开关、设置、应用配置、实际配置目录、保存并录制、手机妙控板、帮助、关于、退出
+- `src/win/hooks.rs` —— `WH_MOUSE_LL` + `WH_KEYBOARD_LL`；wheel 接平滑管线，button 接重映射与拖拽，move 接可选异步增量加速
 - `src/win/message_loop.rs` —— Win32 消息泵及跨线程 WinEvent hook 请求
 - `src/scroll/` —— 平滑滚动、惯性曲线、亚像素和专用 `SendInput` 注入线程
 - `src/remap/` —— `RemapEntry` / `ClickCycleTracker` / `RemapEngine` / effect 执行
-- `src/accel/` —— 指针加速数学与状态控制器；当前尚未接入 `WM_MOUSEMOVE`
+- `src/accel/` —— 原生移动透传 + 有界异步补偿增量；已接入 `WM_MOUSEMOVE`，非 Raw Input，真实鼠标手感待验收
 - `src/gesture/` —— `DragController` 的 move/scroll/navigate 输出，已接入鼠标钩子
-- `src/remote.rs` + `assets/` —— 可选 LAN HTTP/WebSocket 手机触控板；32 连接上限、有界广播队列、CSPRNG bearer，传输仍为明文且仅适合可信局域网
-- `src/device/` —— Logitech 电量/DPI 查询；托盘刷新与跨屏写入定时器仍待真机验收后启用
+- `src/remote.rs` + `assets/` —— 可选 LAN HTTP/WebSocket 手机触控板；32 连接上限、有界广播、CSPRNG bearer；SW 静态离线 shell 已验证；传输明文仅适合可信 LAN，`remote.local_only` 提供不改防火墙的本地浏览器路径
+- `src/device/` —— Logitech 电量/DPI 查询；电量托盘定时器只读后台缓存已接入；跨屏硬件写入定时器仍关闭，待真机验收
 
 > 发布配置默认启用核心滚动/按键路径；窗口拖拽、指针加速和 LAN 服务采用安全的显式启用。真实输入手感与 HID++ 写入仍必须在目标硬件上验收。
 
@@ -62,7 +62,7 @@
 | 文件配置 + FileMonitor | `config.toml` + 热重载 |
 | `GlobalEventTapThread` | `message_loop.rs` 消息泵线程 |
 
-## 功能落地状态（运行时代码实查于 2026-09-11）
+## 功能落地状态（软件验证更新于 2026-10-19）
 
 按 mac 源码模块逐步落地到 Rust；“代码存在”与“运行时已接入/真机已验收”分开标记：
 
@@ -71,11 +71,11 @@
 | 1 | 平滑滚动 | `Smoothing/` | [完成] 已接入钩子与专用注入线程 | P1 |
 | 2 | 按键重映射 | `Remap/`+`Buttons/` | [完成] RemapEngine/ClickCycle/AddMode 已接入 | P2 |
 | 3 | 点击拖拽手势 | `Drag/` | [完成] move/scroll/navigate 已接入；待真实鼠标手感验收 | P3 |
-| 4 | 指针加速 | `PointerSpeed/` | [部分] 数学与状态控制器有测试，尚未接入移动事件 | P5 |
+| 4 | 指针加速 | `PointerSpeed/` | [已接入/待真机] `WM_MOUSEMOVE` 原生透传 + 异步补偿；不是硬件原始位移曲线 | P5 |
 | 5 | 修改键组合 | `Modifiers/` | [完成] ModifiedScrollModification 已接入 | P4 |
-| 6 | 配置 UI + 热重载 | 托盘菜单 + GUI | [部分] 托盘和热重载可用；独立 GUI 未暴露 | P6 |
-| 7 | 设备层（电量/DPI） | （竞品融合） | [部分] 查询/切换代码存在；显示与自动写入定时器未启用，需真机验收 | P8–P10 |
-| 8 | 手机触控板 | `Touch/` 等价输出 | [部分] LAN HTTP/WS、认证和注入已接入；离线 PWA 与多设备真机验收未完成 | P13 |
+| 6 | 配置 UI + 热重载 | 托盘菜单 + GUI | [已接入] 设置/应用配置可见；基础配置与 profile 分离；保存/取消经原生窗口验证 | P6 |
+| 7 | 设备层（电量/DPI） | （竞品融合） | [部分] 后台电量缓存展示已启用；硬件 DPI 自动写入仍关闭，需真机验收 | P8–P10 |
+| 8 | 手机触控板 | `Touch/` 等价输出 | [部分] LAN/认证/注入接入；SW 离线经 localhost Chromium 验证，真实手机安装/手势待验收 | P13 |
 
 > Phase 编号与本表顺序不完全一致。设备能力、指针加速和手机端兼容性不得仅凭单元测试宣称完成；以真实硬件/浏览器验收为最终门槛。
 

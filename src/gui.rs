@@ -1,9 +1,11 @@
 //! Lightweight Win32 settings dialog — tabbed GUI for config.toml editing.
 //!
-//! Opens a modal dialog with 4 tabs (General / Scroll / Pointer / Buttons).
-//! On OK, writes the updated config to disk and hot-applies it via `apply_config`.
-#![allow(dead_code)]
+//! Opens a modeless window with 4 tabs (General / Scroll / Pointer / Buttons).
+//! On OK, writes the updated base config to disk and hot-applies it.
+//! Closing the window (X or Cancel) discards edits and preserves the main process.
 use std::ptr::{null, null_mut};
+use toml::value::Table;
+use windows_sys::Win32::Graphics::Gdi::COLOR_WINDOW;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY_CURRENT_USER, KEY_ALL_ACCESS,
@@ -11,10 +13,9 @@ use windows_sys::Win32::System::Registry::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetDlgItem, GetWindowTextW, LoadCursorW,
-    MessageBoxW, PostQuitMessage, RegisterClassExW, SendDlgItemMessageW, SetWindowTextW,
-    ShowWindow, IDC_ARROW, LB_ADDSTRING, LB_DELETESTRING, LB_GETCURSEL, LB_SETCURSEL, WM_COMMAND,
-    WM_CREATE, WM_DESTROY, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_GROUP, WS_SYSMENU, WS_TABSTOP,
-    WS_VISIBLE,
+    MessageBoxW, RegisterClassExW, SendDlgItemMessageW, SetWindowTextW, ShowWindow, IDC_ARROW,
+    LB_ADDSTRING, LB_DELETESTRING, LB_GETCURSEL, WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSEXW,
+    WS_CAPTION, WS_CHILD, WS_DISABLED, WS_GROUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 
 // ─── Control IDs (every control has a unique ID) ───────────────────────────
@@ -166,7 +167,29 @@ const CTRL_TABLE: &[CtrlDef] = &[
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
-pub fn open_settings(parent: isize) {
+/// Guard to prevent multiple settings windows from being open simultaneously.
+/// When a settings window is closed, its HWND is cleared via WM_DESTROY.
+static SETTINGS_HWND: parking_lot::Mutex<Option<isize>> = parking_lot::Mutex::new(None);
+/// Remap edits are staged until the settings window is saved.
+static SETTINGS_DRAFT: parking_lot::Mutex<Option<Vec<crate::remap::RemapEntry>>> =
+    parking_lot::Mutex::new(None);
+
+/// Opens the settings window. If a window is already open, brings it to front.
+/// Closing the window (X or Cancel) does NOT exit the main process.
+pub fn open_settings() {
+    // If window already exists, bring it to foreground and return.
+    let existing = *SETTINGS_HWND.lock();
+    if let Some(hwnd) = existing {
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetForegroundWindow, ShowWindow, SW_RESTORE,
+            };
+            SetForegroundWindow(hwnd);
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        return;
+    }
+
     use std::sync::Once;
     static INIT: Once = Once::new();
 
@@ -182,7 +205,7 @@ pub fn open_settings(parent: isize) {
             hInstance: hmod,
             hIcon: 0,
             hCursor: LoadCursorW(0, IDC_ARROW),
-            hbrBackground: 0,
+            hbrBackground: (COLOR_WINDOW + 1) as isize,
             lpszMenuName: null(),
             lpszClassName: class_name.as_ptr(),
             hIconSm: 0,
@@ -199,14 +222,15 @@ pub fn open_settings(parent: isize) {
             300,
             200,
             500,
-            400,
-            parent,
+            430,
+            0, // A visible window cannot be owned by the invisible HWND_MESSAGE tray.
             0,
             GetModuleHandleW(null()),
             null_mut(),
         );
         if hwnd != 0 {
-            ShowWindow(hwnd, 9); // SW_SHOWNA
+            *SETTINGS_HWND.lock() = Some(hwnd);
+            ShowWindow(hwnd, 9); // SW_RESTORE
         }
     }
 }
@@ -284,13 +308,20 @@ unsafe extern "system" fn settings_wnd_proc(
                 30,
                 84,
             );
-            create_checkbox(
-                hwnd,
-                hmod,
-                IDC_CHK_DPI_AUTO,
-                "跨屏时自动调整鼠标 DPI",
+            // Visible but intentionally disabled until HID++ writes are verified.
+            CreateWindowExW(
+                0,
+                to_wide("Button").as_ptr(),
+                to_wide("跨屏时自动调整鼠标 DPI（待硬件验证）").as_ptr(),
+                0x0003u32 | WS_CHILD | WS_VISIBLE | WS_DISABLED,
                 30,
                 112,
+                400,
+                20,
+                hwnd,
+                IDC_CHK_DPI_AUTO as isize,
+                hmod,
+                null_mut(),
             );
             create_label(hwnd, hmod, IDC_LBL_DPI_BASE, "基准 DPI:", 30, 142);
             create_edit(hwnd, hmod, IDC_EDT_DPI_BASE, "800", 160, 139, 80);
@@ -322,12 +353,14 @@ unsafe extern "system" fn settings_wnd_proc(
                 hwnd,
                 hmod,
                 IDC_ADD_REMAP,
-                "录制新映射...",
+                "保存并录制...",
                 130,
                 314,
                 120,
                 26,
             );
+            *SETTINGS_DRAFT.lock() =
+                Some(crate::config::Config::load_or_default().buttons.advanced);
             populate_remap_list(hwnd);
 
             // ── OK / Cancel (always visible) ──
@@ -360,17 +393,20 @@ unsafe extern "system" fn settings_wnd_proc(
             }
 
             match id {
-                IDC_OK => {
+                IDC_OK | IDC_ADD_REMAP => {
                     if let Err(e) = save_config_from_controls(hwnd) {
-                        MessageBoxW(
-                            hwnd,
-                            to_wide(&format!("保存失败: {e}")).as_ptr(),
-                            to_wide("错误").as_ptr(),
-                            0x10,
-                        );
+                        MessageBoxW(hwnd, to_wide(&e).as_ptr(), to_wide("错误").as_ptr(), 0x10);
                         return 0;
                     }
                     DestroyWindow(hwnd);
+                    if id == IDC_ADD_REMAP {
+                        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                            crate::win::tray::hwnd(),
+                            WM_COMMAND,
+                            1005,
+                            0,
+                        );
+                    }
                 }
                 IDC_CANCEL => {
                     DestroyWindow(hwnd);
@@ -378,47 +414,18 @@ unsafe extern "system" fn settings_wnd_proc(
                 IDC_BTN_DELETE => {
                     let sel = SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_GETCURSEL, 0, 0);
                     if sel >= 0 {
-                        // Remove from config.
-                        {
-                            let mut cfg = crate::CONFIG.write();
-                            let idx = sel as usize;
-                            if idx < cfg.buttons.advanced.len() {
-                                cfg.buttons.advanced.remove(idx);
-                                let _ = cfg.save();
+                        let removed = SETTINGS_DRAFT.lock().as_mut().is_some_and(|entries| {
+                            let index = sel as usize;
+                            if index < entries.len() {
+                                entries.remove(index);
+                                true
+                            } else {
+                                false
                             }
+                        });
+                        if removed {
+                            populate_remap_list(hwnd);
                         }
-                        // Refresh list.
-                        SendDlgItemMessageW(
-                            hwnd,
-                            IDC_LST_REMAPS as i32,
-                            LB_DELETESTRING,
-                            sel as usize,
-                            0,
-                        );
-                        // Select next item or last.
-                        let count = SendDlgItemMessageW(
-                            hwnd,
-                            IDC_LST_REMAPS as i32,
-                            0x018B, /* LB_GETCOUNT */
-                            0,
-                            0,
-                        );
-                        let new_sel = if count > 0 { sel.min(count - 1) } else { 0 };
-                        SendDlgItemMessageW(
-                            hwnd,
-                            IDC_LST_REMAPS as i32,
-                            LB_SETCURSEL,
-                            new_sel as usize,
-                            0,
-                        );
-                    }
-                }
-                IDC_ADD_REMAP => {
-                    DestroyWindow(hwnd);
-                    if let Some(p) = get_parent_hwnd(hwnd) {
-                        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
-                            p, WM_COMMAND, 1005, 0,
-                        );
                     }
                 }
                 _ => {}
@@ -426,7 +433,9 @@ unsafe extern "system" fn settings_wnd_proc(
             0
         }
         WM_DESTROY => {
-            PostQuitMessage(0);
+            // Clear the window guard so a new window can be opened.
+            *SETTINGS_HWND.lock() = None;
+            *SETTINGS_DRAFT.lock() = None;
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, _lparam),
@@ -557,16 +566,17 @@ unsafe fn populate_remap_list(hwnd: isize) {
     };
     // Clear existing items.
     while SendDlgItemMessageW(hwnd, IDC_LST_REMAPS as i32, LB_DELETESTRING, 0, 0) > 0 {}
-    let cfg = crate::CONFIG.read();
-    for entry in &cfg.buttons.advanced {
-        let desc = format_remap_entry(entry);
-        SendDlgItemMessageW(
-            hwnd,
-            IDC_LST_REMAPS as i32,
-            LB_ADDSTRING,
-            0,
-            to_wide(&desc).as_ptr() as isize,
-        );
+    if let Some(entries) = SETTINGS_DRAFT.lock().as_ref() {
+        for entry in entries {
+            let desc = format_remap_entry(entry);
+            SendDlgItemMessageW(
+                hwnd,
+                IDC_LST_REMAPS as i32,
+                LB_ADDSTRING,
+                0,
+                to_wide(&desc).as_ptr() as isize,
+            );
+        }
     }
 }
 
@@ -651,7 +661,7 @@ fn format_remap_entry(entry: &crate::remap::RemapEntry) -> String {
 // ─── Config I/O ─────────────────────────────────────────────────────────────
 
 unsafe fn load_config_to_controls(hwnd: isize) {
-    let cfg = crate::CONFIG.read();
+    let cfg = crate::config::Config::load_or_default();
     set_check(hwnd, IDC_CHK_START_HIDDEN, cfg.general.start_hidden);
     set_check(hwnd, IDC_CHK_REMOTE, cfg.remote.enabled);
     set_check(hwnd, IDC_CHK_DPI_AUTO, cfg.dpi.auto_switch);
@@ -675,39 +685,120 @@ unsafe fn load_config_to_controls(hwnd: isize) {
     set_edit_text(hwnd, IDC_EDT_SENS, &cfg.accel.sensitivity.to_string());
 }
 
+struct NumericText {
+    dpi: String,
+    speed: String,
+    step: String,
+    shift: String,
+    stop: String,
+    frame: String,
+    sensitivity: String,
+}
+
+struct NumericFields {
+    dpi: u16,
+    speed: f64,
+    step: f64,
+    shift: f64,
+    stop: f64,
+    frame: f64,
+    sensitivity: f64,
+}
+
+fn finite(label: &str, text: &str) -> Result<f64, String> {
+    let value = text
+        .parse::<f64>()
+        .map_err(|_| format!("{label}: 请输入数字"))?;
+    if !value.is_finite() {
+        return Err(format!("{label}: 必须是有限数字"));
+    }
+    Ok(value)
+}
+
+fn parse_numeric_fields(text: &NumericText) -> Result<NumericFields, String> {
+    let dpi = text
+        .dpi
+        .parse::<u16>()
+        .map_err(|_| "基准 DPI: 请输入整数")?;
+    if !(200..=4000).contains(&dpi) {
+        return Err("基准 DPI: 必须在 200–4000 之间".into());
+    }
+    let speed = finite("速度", &text.speed)?;
+    if speed <= 0.0 {
+        return Err("速度: 必须大于 0".into());
+    }
+    let step = finite("步长", &text.step)?;
+    if step <= 0.0 {
+        return Err("步长: 必须大于 0".into());
+    }
+    let shift = finite("Shift 加速", &text.shift)?;
+    if shift < 1.0 {
+        return Err("Shift 加速: 必须至少为 1".into());
+    }
+    let stop = finite("停止速度", &text.stop)?;
+    if stop < 0.0 {
+        return Err("停止速度: 不可为负数".into());
+    }
+    let frame = finite("基础帧间隔", &text.frame)?;
+    if frame != -1.0 && frame <= 0.0 {
+        return Err("基础帧间隔: 必须为 -1（自动）或正数".into());
+    }
+    let sensitivity = finite("灵敏度", &text.sensitivity)?;
+    if sensitivity <= 0.0 {
+        return Err("灵敏度: 必须大于 0".into());
+    }
+    Ok(NumericFields {
+        dpi,
+        speed,
+        step,
+        shift,
+        stop,
+        frame,
+        sensitivity,
+    })
+}
+
+unsafe fn collect_numeric_fields(hwnd: isize) -> Result<NumericFields, String> {
+    parse_numeric_fields(&NumericText {
+        dpi: get_edit_text(hwnd, IDC_EDT_DPI_BASE),
+        speed: get_edit_text(hwnd, IDC_EDT_SPEED),
+        step: get_edit_text(hwnd, IDC_EDT_STEP),
+        shift: get_edit_text(hwnd, IDC_EDT_SHIFT_SPEEDUP),
+        stop: get_edit_text(hwnd, IDC_EDT_STOP_SPEED),
+        frame: get_edit_text(hwnd, IDC_EDT_BASE_MS),
+        sensitivity: get_edit_text(hwnd, IDC_EDT_SENS),
+    })
+}
+
 unsafe fn save_config_from_controls(hwnd: isize) -> Result<(), String> {
-    let mut cfg = crate::CONFIG.write();
+    // Parse every field before touching disk, registry or runtime state.
+    let numeric = collect_numeric_fields(hwnd).map_err(|e| format!("配置未保存：{e}"))?;
+    let mut cfg = crate::config::Config::load_for_edit()
+        .map_err(|e| format!("配置未保存：无法读取当前文件：{e}"))?;
     cfg.general.start_hidden = get_check(hwnd, IDC_CHK_START_HIDDEN);
     cfg.remote.enabled = get_check(hwnd, IDC_CHK_REMOTE);
-    cfg.dpi.auto_switch = get_check(hwnd, IDC_CHK_DPI_AUTO);
-    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_DPI_BASE).parse::<u16>() {
-        cfg.dpi.base_dpi = v;
-    }
-    set_autostart(get_check(hwnd, IDC_CHK_AUTOSTART));
+    // The hardware-DPI checkbox is disabled until supported devices are verified.
+    cfg.dpi.base_dpi = numeric.dpi;
     cfg.scroll.smooth = get_check(hwnd, IDC_CHK_SMOOTH);
-    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SPEED).parse::<f64>() {
-        cfg.scroll.speed = v;
-    }
-    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_STEP).parse::<f64>() {
-        cfg.scroll.step = v;
-    }
-    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SHIFT_SPEEDUP).parse::<f64>() {
-        cfg.scroll.shift_speedup = v;
-    }
-    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_STOP_SPEED).parse::<f64>() {
-        cfg.scroll.stop_speed = v;
-    }
-    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_BASE_MS).parse::<f64>() {
-        cfg.scroll.base_ms_per_step = v;
-    }
+    cfg.scroll.speed = numeric.speed;
+    cfg.scroll.step = numeric.step;
+    cfg.scroll.shift_speedup = numeric.shift;
+    cfg.scroll.stop_speed = numeric.stop;
+    cfg.scroll.base_ms_per_step = numeric.frame;
     cfg.accel.enabled = get_check(hwnd, IDC_CHK_ACCEL);
-    if let Ok(v) = get_edit_text(hwnd, IDC_EDT_SENS).parse::<f64>() {
-        cfg.accel.sensitivity = v;
+    cfg.accel.sensitivity = numeric.sensitivity;
+    if let Some(entries) = SETTINGS_DRAFT.lock().as_ref() {
+        cfg.buttons.advanced.clone_from(entries);
     }
-    cfg.save().map_err(|e| e.to_string())?;
-    drop(cfg);
-    let cfg = crate::CONFIG.read().clone();
-    crate::win::hooks::apply_config(cfg)
+
+    cfg.save().map_err(|e| format!("配置未保存：{e}"))?;
+    let autostart = get_check(hwnd, IDC_CHK_AUTOSTART);
+    if autostart != is_autostart_enabled() {
+        set_autostart(autostart);
+    }
+    crate::win::hooks::reload_active_config().map_err(|e| {
+        format!("配置已保存，但运行时启用失败：{e}\n保留此窗口可重试；后台也会重试钩子安装。")
+    })
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -737,14 +828,6 @@ unsafe fn getDlgItem(hwnd: isize, id: usize) -> Option<isize> {
     let h = GetDlgItem(hwnd, id as i32);
     if h != 0 {
         Some(h)
-    } else {
-        None
-    }
-}
-unsafe fn get_parent_hwnd(hwnd: isize) -> Option<isize> {
-    let p = windows_sys::Win32::UI::WindowsAndMessaging::GetParent(hwnd);
-    if p != 0 {
-        Some(p)
     } else {
         None
     }
@@ -845,8 +928,28 @@ const IDCProfiles_OK: usize = 5005;
 #[allow(non_upper_case_globals)]
 const IDCProfiles_CANCEL: usize = 5006;
 
-/// Open the per-app profiles management dialog.
-pub fn open_profiles(parent: isize) {
+/// Guard to prevent multiple profiles windows from being open simultaneously.
+static PROFILES_HWND: parking_lot::Mutex<Option<isize>> = parking_lot::Mutex::new(None);
+/// Profile changes are committed by OK, never by Add/Delete or Cancel.
+static PROFILES_DRAFT: parking_lot::Mutex<Option<Vec<crate::config::Profile>>> =
+    parking_lot::Mutex::new(None);
+
+/// Open the per-app profiles management dialog. Closing the window does NOT exit
+/// the main process. If a window is already open, brings it to front.
+pub fn open_profiles() {
+    // If window already exists, bring it to foreground and return.
+    let existing = *PROFILES_HWND.lock();
+    if let Some(hwnd) = existing {
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetForegroundWindow, ShowWindow, SW_RESTORE,
+            };
+            SetForegroundWindow(hwnd);
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        return;
+    }
+
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| unsafe {
@@ -861,7 +964,7 @@ pub fn open_profiles(parent: isize) {
             hInstance: hmod,
             hIcon: 0,
             hCursor: LoadCursorW(0, IDC_ARROW),
-            hbrBackground: 0,
+            hbrBackground: (COLOR_WINDOW + 1) as isize,
             lpszMenuName: null(),
             lpszClassName: class_name.as_ptr(),
             hIconSm: 0,
@@ -877,13 +980,14 @@ pub fn open_profiles(parent: isize) {
             300,
             200,
             460,
-            360,
-            parent,
+            390,
+            0, // No invisible message-only owner.
             0,
             GetModuleHandleW(null()),
             null_mut(),
         );
         if hwnd != 0 {
+            *PROFILES_HWND.lock() = Some(hwnd);
             ShowWindow(hwnd, 9);
         }
     }
@@ -941,6 +1045,7 @@ unsafe extern "system" fn profiles_wnd_proc(
             // OK / Cancel.
             create_button(hwnd, hmod, IDCProfiles_OK, "确定", 240, 300, 90, 28);
             create_button(hwnd, hmod, IDCProfiles_CANCEL, "取消", 340, 300, 90, 28);
+            *PROFILES_DRAFT.lock() = Some(crate::config::Config::load_or_default().profiles);
             populate_profile_list(hwnd);
             0
         }
@@ -949,36 +1054,81 @@ unsafe extern "system" fn profiles_wnd_proc(
             match id {
                 IDC_BTN_ADD => {
                     let exe = get_edit_text(hwnd, IDC_EDT_EXE);
-                    if !exe.is_empty() {
-                        let mut cfg = crate::CONFIG.write();
-                        cfg.profiles.push(crate::config::Profile {
-                            match_type: "exe".to_string(),
-                            match_exe: Some(exe),
-                            match_device: None,
-                            config: toml::value::Table::new(),
-                        });
-                        let _ = cfg.save();
-                        drop(cfg);
-                        populate_profile_list(hwnd);
-                        set_edit_text(hwnd, IDC_EDT_EXE, "");
+                    if exe.is_empty() {
+                        MessageBoxW(
+                            hwnd,
+                            to_wide("请输入进程名（如 chrome.exe）").as_ptr(),
+                            to_wide("添加配置文件").as_ptr(),
+                            0x10, // MB_ICONERROR
+                        );
+                    } else {
+                        let changed = if let Some(profiles) = PROFILES_DRAFT.lock().as_mut() {
+                            profiles.push(crate::config::Profile {
+                                match_type: "exe".to_string(),
+                                match_exe: Some(exe),
+                                match_device: None,
+                                config: Table::new(),
+                            });
+                            true
+                        } else {
+                            false
+                        };
+                        if changed {
+                            populate_profile_list(hwnd);
+                            set_edit_text(hwnd, IDC_EDT_EXE, "");
+                        }
                     }
                 }
                 IDC_BTN_DEL => {
                     let sel =
                         SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_GETCURSEL, 0, 0);
                     if sel >= 0 {
-                        let mut cfg = crate::CONFIG.write();
-                        let idx = sel as usize;
-                        if idx < cfg.profiles.len() {
-                            cfg.profiles.remove(idx);
-                            let _ = cfg.save();
+                        let removed = PROFILES_DRAFT.lock().as_mut().is_some_and(|profiles| {
+                            let index = sel as usize;
+                            if index < profiles.len() {
+                                profiles.remove(index);
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                        if removed {
+                            populate_profile_list(hwnd);
                         }
-                        drop(cfg);
-                        populate_profile_list(hwnd);
                     }
                 }
                 IDCProfiles_OK => {
-                    DestroyWindow(hwnd);
+                    let result = crate::config::Config::load_for_edit().and_then(|mut cfg| {
+                        if let Some(profiles) = PROFILES_DRAFT.lock().as_ref() {
+                            cfg.profiles.clone_from(profiles);
+                        }
+                        cfg.save()
+                    });
+                    match result {
+                        Ok(()) => {
+                            if let Err(e) = crate::win::hooks::reload_active_config() {
+                                crate::log::write(&format!("profile reload failed: {e}"));
+                                MessageBoxW(
+                                    hwnd,
+                                    to_wide(&format!(
+                                        "配置已保存，但运行时启用失败：{e}\n后台会重试钩子安装。"
+                                    ))
+                                    .as_ptr(),
+                                    to_wide("运行时启用失败").as_ptr(),
+                                    0x10,
+                                );
+                            }
+                            DestroyWindow(hwnd);
+                        }
+                        Err(e) => {
+                            MessageBoxW(
+                                hwnd,
+                                to_wide(&format!("保存失败:\n{e}")).as_ptr(),
+                                to_wide("错误").as_ptr(),
+                                0x10,
+                            );
+                        }
+                    }
                 }
                 IDCProfiles_CANCEL => {
                     DestroyWindow(hwnd);
@@ -987,7 +1137,12 @@ unsafe extern "system" fn profiles_wnd_proc(
             }
             0
         }
-        WM_DESTROY => 0,
+        WM_DESTROY => {
+            // Clear the window guard so a new window can be opened.
+            *PROFILES_HWND.lock() = None;
+            *PROFILES_DRAFT.lock() = None;
+            0
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, _lparam),
     }
 }
@@ -998,16 +1153,70 @@ unsafe fn populate_profile_list(hwnd: isize) {
         None => return,
     };
     while SendDlgItemMessageW(hwnd, IDC_LST_PROFILES as i32, LB_DELETESTRING, 0, 0) > 0 {}
-    let cfg = crate::CONFIG.read();
-    for p in &cfg.profiles {
-        let exe = p.match_exe.as_deref().unwrap_or("(any)");
-        let desc = format!("{exe} → {} 项覆盖", p.config.len());
-        SendDlgItemMessageW(
-            hwnd,
-            IDC_LST_PROFILES as i32,
-            LB_ADDSTRING,
-            0,
-            to_wide(&desc).as_ptr() as isize,
-        );
+    if let Some(profiles) = PROFILES_DRAFT.lock().as_ref() {
+        for p in profiles {
+            let exe = p.match_exe.as_deref().unwrap_or("(any)");
+            let desc = format!("{exe} → {} 项覆盖", p.config.len());
+            SendDlgItemMessageW(
+                hwnd,
+                IDC_LST_PROFILES as i32,
+                LB_ADDSTRING,
+                0,
+                to_wide(&desc).as_ptr() as isize,
+            );
+        }
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_numeric_fields, NumericText};
+
+    fn valid_input() -> NumericText {
+        NumericText {
+            dpi: "800".into(),
+            speed: "1.25".into(),
+            step: "120".into(),
+            shift: "1".into(),
+            stop: "0".into(),
+            frame: "-1".into(),
+            sensitivity: "1000".into(),
+        }
+    }
+
+    #[test]
+    fn settings_numeric_input_accepts_auto_frame_and_boundary() {
+        let parsed = parse_numeric_fields(&valid_input()).unwrap();
+        assert_eq!(parsed.frame, -1.0);
+        assert_eq!(parsed.speed, 1.25);
+        assert_eq!(parsed.dpi, 800);
+    }
+
+    #[test]
+    fn settings_numeric_input_rejects_nan_and_missing_frame_without_panic() {
+        let mut input = valid_input();
+        input.speed = "NaN".into();
+        assert!(parse_numeric_fields(&input).err().unwrap().contains("速度"));
+        input.speed = "1".into();
+        input.frame.clear();
+        assert!(parse_numeric_fields(&input)
+            .err()
+            .unwrap()
+            .contains("基础帧间隔"));
+    }
+
+    #[test]
+    fn settings_numeric_input_rejects_unusable_acceleration_and_step() {
+        let mut input = valid_input();
+        input.sensitivity = "inf".into();
+        assert!(parse_numeric_fields(&input)
+            .err()
+            .unwrap()
+            .contains("灵敏度"));
+        input.sensitivity = "1000".into();
+        input.step = "0".into();
+        assert!(parse_numeric_fields(&input).err().unwrap().contains("步长"));
     }
 }

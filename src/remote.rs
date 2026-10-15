@@ -167,27 +167,29 @@ fn shutdown_connections() {
     for stream in std::mem::take(&mut *OPEN_STREAMS.lock()) {
         let _ = stream.shutdown(Shutdown::Both);
     }
-    for stream in std::mem::take(&mut *ACTIVE.lock()) {
-        let _ = stream.lock().shutdown(Shutdown::Both);
-    }
+    // OPEN_STREAMS contains independent shutdown handles for every connection.
+    // Never take writer locks here: input injection may await the main thread.
+    ACTIVE.lock().clear();
 }
 
 struct ActiveConnectionGuard {
     stream: Arc<Mutex<TcpStream>>,
+    session: Arc<crate::remote_input::Session>,
 }
 
 impl ActiveConnectionGuard {
-    fn register(stream: &TcpStream) -> std::io::Result<Self> {
+    fn register(stream: &TcpStream, stop: &Arc<AtomicBool>) -> std::io::Result<Self> {
         let clone = stream.try_clone()?;
         clone.set_write_timeout(Some(Duration::from_millis(250)))?;
         let stream = Arc::new(Mutex::new(clone));
+        let session = crate::remote_input::Session::new(Arc::clone(&stream), Arc::clone(stop));
         {
             let mut active = ACTIVE.lock();
             active.push(Arc::clone(&stream));
             crate::win::window_list::REMOTE_ACTIVE.store(true, Ordering::Release);
         }
         crate::win::message_loop::request_hook_install();
-        Ok(Self { stream })
+        Ok(Self { stream, session })
     }
 
     fn write_frame(&self, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
@@ -198,6 +200,7 @@ impl ActiveConnectionGuard {
 
 impl Drop for ActiveConnectionGuard {
     fn drop(&mut self) {
+        self.session.cancel();
         let no_clients = {
             let mut active = ACTIVE.lock();
             active.retain(|candidate| !Arc::ptr_eq(candidate, &self.stream));
@@ -224,10 +227,17 @@ fn start_server_inner(
         return Ok(existing);
     }
 
-    let ip = local_ip().ok_or_else(|| "no usable LAN IP found".to_string())?;
-    let preferred_port = crate::CONFIG.read().remote.port;
+    let cfg = crate::CONFIG.read();
+    let ip = if cfg.remote.local_only {
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    } else {
+        local_ip().ok_or_else(|| "no usable LAN IP found".to_string())?
+    };
+    let configure_firewall = configure_firewall && !cfg.remote.local_only;
+    let preferred_port = cfg.remote.port;
+    drop(cfg);
     let (listener, port) = bind_listener(ip, preferred_port)
-        .map_err(|e| format!("cannot bind LAN listener near port {preferred_port}: {e}"))?;
+        .map_err(|e| format!("cannot bind listener near port {preferred_port}: {e}"))?;
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("cannot configure LAN listener: {e}"))?;
@@ -235,6 +245,7 @@ fn start_server_inner(
         Some(token) => token,
         None => load_or_create_token()?,
     };
+    crate::remote_input::start()?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -460,7 +471,8 @@ fn handle_conn(mut stream: TcpStream, token: String, stop: Arc<AtomicBool>) {
     let is_diag;
     let is_report;
     let is_manifest;
-    let _is_sw;
+    let is_sw;
+    let is_drag_script;
     let is_winlist;
     let is_pad;
     loop {
@@ -491,7 +503,8 @@ fn handle_conn(mut stream: TcpStream, token: String, stop: Arc<AtomicBool>) {
                     is_diag = req_path == "/diag";
                     is_report = req_path.starts_with("/report");
                     is_manifest = req_path == "/manifest.json";
-                    _is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
+                    is_sw = req_path == "/sw.js" || req_path.starts_with("/sw.js?");
+                    is_drag_script = req_path == "/drag.js" || req_path.starts_with("/drag.js?");
                     is_winlist =
                         req_path == "/winlist.html" || req_path.starts_with("/winlist.html?");
                     is_pad = req_path == "/pad.html" || req_path.starts_with("/pad.html?");
@@ -547,6 +560,10 @@ fn handle_conn(mut stream: TcpStream, token: String, stop: Arc<AtomicBool>) {
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
     } else if is_manifest {
         serve_manifest(&mut stream);
+    } else if is_sw {
+        serve_sw(&mut stream);
+    } else if is_drag_script {
+        serve_drag_script(&mut stream);
     } else if is_winlist {
         serve_winlist(&mut stream);
     } else if is_pad {
@@ -614,18 +631,20 @@ fn ws_loop(mut stream: TcpStream, token: &str, stop: Arc<AtomicBool>) {
                     0x1 => {
                         // text frame
                         let was = authed;
-                        let result = if let Some(connection) = active_connection.as_ref() {
-                            let mut writer = connection.stream.lock();
-                            dispatch(&payload, token, &mut authed, &mut writer, &stop)
-                        } else {
-                            dispatch(&payload, token, &mut authed, &mut stream, &stop)
-                        };
+                        let result = dispatch(
+                            &payload,
+                            token,
+                            &mut authed,
+                            &mut stream,
+                            &stop,
+                            active_connection.as_ref(),
+                        );
                         if result.is_err() {
                             dbg_log(&format!("remote: ws {ip} dispatch err -> drop"));
                             return;
                         }
                         if !was && authed {
-                            match ActiveConnectionGuard::register(&stream) {
+                            match ActiveConnectionGuard::register(&stream, &stop) {
                                 Ok(connection) => {
                                     active_connection = Some(connection);
                                     dbg_log(&format!("remote: ws {ip} authenticated"));
@@ -785,7 +804,11 @@ fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<(u8, Vec<u8>)>> 
 }
 
 /// Write a server→client frame (never masked).
-fn write_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_frame(
+    stream: &mut TcpStream,
+    opcode: u8,
+    payload: &[u8],
+) -> std::io::Result<()> {
     let len = payload.len();
     if len < 126 {
         stream.write_all(&[0x80 | opcode, len as u8])?;
@@ -895,6 +918,25 @@ pub fn broadcast_win_event(event: &str, hwnd: isize, title: Option<&str>) {
     broadcast_message(&json.to_string());
 }
 
+fn valid_drag_id(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .filter(|id| (1..=9_007_199_254_740_991).contains(id))
+}
+
+fn queue_remote_input(
+    session: &Arc<crate::remote_input::Session>,
+    input: crate::remote_input::Input,
+    stream: &mut TcpStream,
+    active: &ActiveConnectionGuard,
+) -> std::io::Result<()> {
+    if let Err(reason) = session.submit(input) {
+        let reply = serde_json::json!({"t":"input_error","reason":reason});
+        write_client_frame(stream, Some(active), 0x1, reply.to_string().as_bytes())?;
+    }
+    Ok(())
+}
+
 /// Dispatch a text frame. Returns `Err` to close the socket (auth failure).
 fn dispatch(
     payload: &[u8],
@@ -902,8 +944,10 @@ fn dispatch(
     authed: &mut bool,
     stream: &mut TcpStream,
     stop: &Arc<AtomicBool>,
+    active: Option<&ActiveConnectionGuard>,
 ) -> std::io::Result<()> {
-    let v: serde_json::Value = match serde_json::from_slice(payload) {
+    use crate::remote_input::Input;
+    let mut v: serde_json::Value = match serde_json::from_slice(payload) {
         Ok(v) => v,
         Err(_) => return Ok(()), // ignore malformed
     };
@@ -918,7 +962,7 @@ fn dispatch(
             if ok {
                 *authed = true;
                 let status = build_status_json();
-                let _ = write_frame(stream, 0x1, status.as_bytes());
+                write_client_frame(stream, active, 0x1, status.as_bytes())?;
                 // Push window_list immediately after auth so winlist.html doesn't need to request it
                 let windows = crate::win::window_list::enumerate_windows();
                 let desktops = crate::win::window_list::enumerate_desktops();
@@ -931,7 +975,7 @@ fn dispatch(
                     "dispatch: window_list pushed to client ({} windows)",
                     windows.len()
                 ));
-                let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
+                write_client_frame(stream, active, 0x1, json.to_string().as_bytes())?;
             } else {
                 // the browser delivers the reject message and stops retrying
                 // instead of surfacing a bare 1006 and reconnecting forever.
@@ -953,41 +997,73 @@ fn dispatch(
         return Ok(());
     }
 
+    let connection = active.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotConnected,
+            "authenticated session unavailable",
+        )
+    })?;
+    let session = &connection.session;
+
     match t {
+        "drag" => {
+            let Some(id) = v.get("id").and_then(valid_drag_id) else {
+                session.report_drag(0, "rejected", Some("invalid_id"));
+                return Ok(());
+            };
+            match v.get("action").and_then(|value| value.as_str()) {
+                Some("start") => {
+                    if let Err(reason) = session.begin_drag(id) {
+                        session.report_drag(id, "rejected", Some(reason));
+                    }
+                }
+                Some("renew") => {
+                    session.renew_drag(id);
+                }
+                Some("end") => {
+                    session.end_drag(id);
+                }
+                _ => session.report_drag(id, "rejected", Some("invalid_action")),
+            }
+        }
         "move" => {
             let dx = v.get("dx").and_then(|x| x.as_f64()).unwrap_or(0.0) as i32;
             let dy = v.get("dy").and_then(|x| x.as_f64()).unwrap_or(0.0) as i32;
-            crate::scroll::injector::send_mouse_move(dx, dy);
+            let drag_id = match v.get("drag_id") {
+                None => None,
+                Some(value) => match valid_drag_id(value) {
+                    Some(id) => Some(id),
+                    None => return Ok(()),
+                },
+            };
+            queue_remote_input(session, Input::Move { dx, dy, drag_id }, stream, connection)?;
         }
         "scroll" => {
             let dx = v.get("dx").and_then(|x| x.as_f64()).unwrap_or(0.0) as i32;
             let dy = v.get("dy").and_then(|x| x.as_f64()).unwrap_or(0.0) as i32;
-            if dy != 0 {
-                crate::win::hooks::push_remote_scroll(dy, false);
-            }
-            if dx != 0 {
-                crate::win::hooks::push_remote_scroll(dx, true);
-            }
+            queue_remote_input(session, Input::Scroll { dx, dy }, stream, connection)?;
         }
         "zoom" => {
             let delta = v.get("delta").and_then(|x| x.as_f64()).unwrap_or(0.0) as i32;
-            if delta != 0 {
-                crate::win::hooks::send_remote_zoom(delta);
-            }
+            queue_remote_input(session, Input::Zoom { delta }, stream, connection)?;
         }
         "tap" => {
             let right = v.get("b").and_then(|x| x.as_str()) == Some("right");
-            crate::win::hooks::send_remote_click(right);
+            queue_remote_input(session, Input::Tap { right }, stream, connection)?;
         }
         "gesture" => {
-            if let Some(g) = v.get("g").and_then(|x| x.as_str()) {
-                crate::win::hooks::send_remote_gesture(g);
+            if let Some(serde_json::Value::String(gesture)) =
+                v.as_object_mut().and_then(|object| object.remove("g"))
+            {
+                queue_remote_input(session, Input::Gesture(gesture), stream, connection)?;
             }
         }
         "key" => {
-            if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
+            if let Some(serde_json::Value::String(text)) =
+                v.as_object_mut().and_then(|object| object.remove("text"))
+            {
                 if !text.is_empty() {
-                    crate::win::hooks::send_remote_text(text);
+                    queue_remote_input(session, Input::Key(text), stream, connection)?;
                 }
             }
         }
@@ -1006,24 +1082,30 @@ fn dispatch(
                 "dispatch: sending window_list reply windows={}",
                 count
             ));
-            let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
+            write_client_frame(stream, active, 0x1, json.to_string().as_bytes())?;
         }
         "switch_window" => {
-            let ok = if let Some(hwnd_val) = v.get("hwnd") {
-                if let Some(hwnd) = hwnd_val.as_i64() {
-                    crate::win::window_list::focus_window(hwnd as isize)
-                } else {
-                    false
-                }
+            if let Some(hwnd) = v.get("hwnd").and_then(|value| value.as_i64()) {
+                queue_remote_input(
+                    session,
+                    Input::SwitchWindow {
+                        hwnd: hwnd as isize,
+                    },
+                    stream,
+                    connection,
+                )?;
             } else {
-                false
-            };
-            let json = serde_json::json!({"t": "switch_result", "ok": ok});
-            let _ = write_frame(stream, 0x1, json.to_string().as_bytes());
+                write_client_frame(stream, active, 0x1, br#"{"t":"switch_result","ok":false}"#)?;
+            }
         }
         "switch_desktop" => {
             if let Some(idx) = v.get("index").and_then(|x| x.as_u64()) {
-                crate::win::window_list::switch_to_desktop(idx as u32);
+                queue_remote_input(
+                    session,
+                    Input::SwitchDesktop { index: idx as u32 },
+                    stream,
+                    connection,
+                )?;
             }
         }
         "thumb_request" => {
@@ -1124,10 +1206,8 @@ Connection: close\r\n\
     let _ = stream.write_all(body);
 }
 
-#[allow(dead_code)]
 static SW_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/sw.js"));
 
-#[allow(dead_code)]
 fn serve_sw(stream: &mut TcpStream) {
     let body = SW_JS.as_bytes();
     let header = format!(
@@ -1137,6 +1217,17 @@ Content-Length: {}\r\n\
 Cache-Control: no-cache\r\n\
 Connection: close\r\n\
 \r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+}
+
+fn serve_drag_script(stream: &mut TcpStream) {
+    let body = include_bytes!("../assets/drag.js");
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/javascript; charset=utf-8\r\n\
+         Content-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -1676,229 +1767,6 @@ mod tests {
             "192.168.1.11".parse().unwrap(),
             "192.168.1.10".parse().unwrap()
         ));
-    }
-
-    /// Regression: the served trackpad HTML must be syntactically valid JS,
-    /// otherwise every phone browser throws 'SyntaxError: Unexpected token'
-    /// and the trackpad silently fails (no tap, no scroll). We can't run a
-    /// JS parser here, so we approximate: scan for the most common copy-paste
-    /// error — duplicate top-level `var name = ...` declarations.
-    #[test]
-    fn trackpad_html_has_no_duplicate_top_level_vars() {
-        // A duplicate `var params = ...` was hand-edited in by mistake and
-        // broke the whole page until a user opened devtools. Catch it here
-        // before the binary ships.
-        let html = TRACKPAD_HTML;
-        // Walk every top-level `<script>` block; within each one, a name must
-        // not be declared with `var` twice.
-        let mut start = 0usize;
-        while let Some(open) = html[start..].find("<script") {
-            let block_start = start + open;
-            let body_start = html[block_start..]
-                .find('>')
-                .map(|o| block_start + o + 1)
-                .unwrap_or(block_start);
-            let close = match html[body_start..].find("</script>") {
-                Some(c) => body_start + c,
-                None => break,
-            };
-            let body = &html[body_start..close];
-            // Count `var <name> =` declarations (rough heuristic, skips
-            // re-declarations of same name in different scopes which are
-            // legal in JS).
-            let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-            let bytes = body.as_bytes();
-            let mut i = 0;
-            while i < bytes.len() {
-                if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"var " {
-                    // Find identifier end.
-                    let id_start = i + 4;
-                    let mut j = id_start;
-                    while j < bytes.len()
-                        && (bytes[j].is_ascii_alphanumeric()
-                            || bytes[j] == b'_'
-                            || bytes[j] == b'$')
-                    {
-                        j += 1;
-                    }
-                    if j > id_start && j < bytes.len() && bytes[j] == b'=' {
-                        let name = &body[id_start..j];
-                        *counts.entry(name).or_insert(0) += 1;
-                    }
-                    i = j;
-                } else {
-                    i += 1;
-                }
-            }
-            for (name, n) in counts {
-                // `var` is function-scoped so re-declaration is legal, but
-                // our trackpad.js (IIFE) wraps everything in one function,
-                // so duplicates at the same indent are a copy-paste error.
-                if n > 1 {
-                    // Allow `var i` / `var j` style loop counters (common).
-                    if name == "i" || name == "j" || name == "k" {
-                        continue;
-                    }
-                    panic!(
-                        "trackpad.html: top-level `var {name}` declared {n} times — likely a copy-paste error"
-                    );
-                }
-            }
-            start = close + "</script>".len();
-        }
-    }
-
-    /// The previous four hand-edits shipped trackpad.html with JS that
-    /// crashed at runtime — duplicate var params, literal '+' prefix on
-    /// declarations, unclosed pinchMetric() brace, missing LONGPRESS_MS
-    /// const. Each was caught only by the user opening devtools in their
-    /// phone browser. We don't have a JS parser in Rust, but we can at
-    /// least verify the braces balance and every `name` referenced as
-    /// identifier is declared somewhere in the same script block.
-    #[test]
-    fn trackpad_html_is_syntactically_valid() {
-        let html = TRACKPAD_HTML;
-        let mut start = 0usize;
-        while let Some(open) = html[start..].find("<script") {
-            let block_start = start + open;
-            let body_start = html[block_start..]
-                .find('>')
-                .map(|o| block_start + o + 1)
-                .unwrap_or(block_start);
-            let close = match html[body_start..].find("</script>") {
-                Some(c) => body_start + c,
-                None => break,
-            };
-            let body = &html[body_start..close];
-            let bytes = body.as_bytes();
-
-            // 1) Brace / paren / bracket balance.
-            let mut depth: [i32; 3] = [0, 0, 0];
-            let mut in_str: Option<u8> = None;
-            let mut in_line_com = false;
-            let mut in_block_com = false;
-            let mut i = 0;
-            while i < bytes.len() {
-                let c = bytes[i];
-                let next = bytes.get(i + 1).copied();
-                if in_line_com {
-                    if c == b'\n' {
-                        in_line_com = false;
-                    }
-                } else if in_block_com {
-                    if c == b'*' && next == Some(b'/') {
-                        in_block_com = false;
-                        i += 1;
-                    }
-                } else if let Some(q) = in_str {
-                    if c == b'\\' {
-                        i += 1;
-                    } else if c == q {
-                        in_str = None;
-                    }
-                } else {
-                    match c {
-                        b'/' if next == Some(b'/') => {
-                            in_line_com = true;
-                            i += 1;
-                        }
-                        b'/' if next == Some(b'*') => {
-                            in_block_com = true;
-                            i += 1;
-                        }
-                        b'"' | b'\'' | b'`' => {
-                            in_str = Some(c);
-                        }
-                        b'{' => depth[0] += 1,
-                        b'}' => depth[0] -= 1,
-                        b'(' => depth[1] += 1,
-                        b')' => depth[1] -= 1,
-                        b'[' => depth[2] += 1,
-                        b']' => depth[2] -= 1,
-                        _ => {}
-                    }
-                }
-                i += 1;
-            }
-            assert_eq!(
-                depth, [0, 0, 0],
-                "trackpad.html: unbalanced braces/parens/brackets in <script> at byte {block_start}: depth={depth:?}"
-            );
-
-            // 2) Every config constant the touch payload overrides must be
-            //    declared as a `var NAME = ...` (or `var A = ..., NAME = ...`)
-            //    somewhere in this script block. Catches the LONGPRESS_MS bug.
-            let required = [
-                "SENS",
-                "ACCEL_REF",
-                "ACCEL_SLOPE",
-                "ACCEL_MAX_MULT",
-                "MOVE_EMA",
-                "SCROLL_GAIN",
-                "TAP_MS",
-                "TAP_PX",
-                "SWIPE_PX",
-                "DECIDE_PX",
-                "PINCH_BIAS",
-                "DIAG_MIN",
-                "DIAG_RATIO",
-                "LONGPRESS_MS",
-            ];
-            // Manual word-boundary check: find every occurrence of `name`
-            // and ensure neither side is an identifier character.
-            let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-            for name in required {
-                let needle = name.as_bytes();
-                let mut j = 0usize;
-                let mut hit = false;
-                while j + needle.len() <= bytes.len() {
-                    if &bytes[j..j + needle.len()] == needle {
-                        let prev_ok = j == 0 || !is_ident(bytes[j - 1]);
-                        let next_ok =
-                            j + needle.len() == bytes.len() || !is_ident(bytes[j + needle.len()]);
-                        if prev_ok && next_ok {
-                            hit = true;
-                            break;
-                        }
-                    }
-                    j += 1;
-                }
-                assert!(
-                    hit,
-                    "trackpad.html: config var `{name}` referenced in tc.* handler is missing a declaration in this <script> block"
-                );
-            }
-            start = close + "</script>".len();
-        }
-    }
-
-    /// Required DOM ids that the JS expects to bind to.
-    /// regression where the `<div id="banner">` was accidentally
-    /// deleted during a hand-edit, leaving bannerText === null and
-    /// crashing on the first ws.onopen message.
-    #[test]
-    fn trackpad_html_has_required_dom_ids() {
-        let html = TRACKPAD_HTML;
-        for id in &[
-            "pad",
-            "status",
-            "batteries",
-            "fingers",
-            "banner",
-            "bannerText",
-            "inputToggle",
-            "inputBar",
-            "textField",
-            "charCount",
-            "collapseBtn",
-            "sendBtn",
-        ] {
-            let needle = format!("id=\"{id}\"");
-            assert!(
-                html.contains(&needle),
-                "trackpad.html: required DOM id `{id}` is missing. JS will throw 'Cannot set properties of null' when the page loads."
-            );
-        }
     }
 }
 

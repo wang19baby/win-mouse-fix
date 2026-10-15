@@ -42,10 +42,10 @@ unsafe extern "system" fn overlay_wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_PAINT => {
-            let mut ps = std::mem::zeroed::<PAINTSTRUCT>();
+            let mut ps = std::mem::zeroed::<PaintStruct>();
             let hdc = BeginPaint(hwnd, &mut ps);
             if hdc != 0 {
-                let color = ((PREVIEW_COLOR_R as u32) << 0)
+                let color = (PREVIEW_COLOR_R as u32)
                     | ((PREVIEW_COLOR_G as u32) << 8)
                     | ((PREVIEW_COLOR_B as u32) << 16);
                 let brush = CreateSolidBrush(color);
@@ -65,7 +65,7 @@ unsafe extern "system" fn overlay_wnd_proc(
 }
 
 #[repr(C)]
-struct PAINTSTRUCT {
+struct PaintStruct {
     hdc: i64,
     f_erase: i32,
     rc_paint: RECT,
@@ -76,8 +76,8 @@ struct PAINTSTRUCT {
 
 #[link(name = "user32")]
 extern "system" {
-    fn BeginPaint(hwnd: HWND, lpPaint: *mut PAINTSTRUCT) -> i64;
-    fn EndPaint(hwnd: HWND, lpPaint: *const PAINTSTRUCT) -> i32;
+    fn BeginPaint(hwnd: HWND, lpPaint: *mut PaintStruct) -> i64;
+    fn EndPaint(hwnd: HWND, lpPaint: *const PaintStruct) -> i32;
     fn FillRect(hdc: i64, lprc: *const RECT, hbr: HBRUSH) -> i32;
     fn GetClientRect(hwnd: HWND, lpRect: *mut RECT) -> i32;
     fn CreateSolidBrush(color: u32) -> HBRUSH;
@@ -101,7 +101,7 @@ fn init_overlay_class() -> bool {
         hCursor: 0,
         hbrBackground: 0,
         lpszMenuName: std::ptr::null(),
-        lpszClassName: class_name.as_ptr() as *const u16,
+        lpszClassName: class_name.as_ptr(),
         hIconSm: 0,
     };
 
@@ -132,7 +132,7 @@ fn show_overlay_window(result: &SnapResult) {
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
-            class_name.as_ptr() as *const u16,
+            class_name.as_ptr(),
             std::ptr::null(),
             WS_POPUP,
             0,

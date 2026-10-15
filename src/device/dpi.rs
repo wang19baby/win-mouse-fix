@@ -142,9 +142,9 @@ pub fn read_dpi(path: &str) -> Option<u16> {
     }
 }
 
-/// Resolve the Adjustable DPI feature and set the sensor DPI.
-/// Returns `Some(actual)` on success, `None` if the device can't be reached or
-/// lacks the feature (probe degradation — no error is raised).
+/// Resolve the Adjustable DPI feature, request a change, then read the sensor
+/// again. Returns `Some(actual)` only when the reported DPI matches the request;
+/// otherwise the write is unconfirmed and the caller may retry later.
 pub fn apply_dpi(path: &str, dpi: u16) -> Option<u16> {
     unsafe {
         let handle = open(path)?;
@@ -211,8 +211,8 @@ unsafe fn apply_dpi_handle(handle: isize, dpi: u16) -> Option<u16> {
     if !write_report(handle, &req2.encode(), &mut out) {
         return None;
     }
-    // The device confirms asynchronously; echo the requested value as the result.
-    Some(dpi)
+    let actual = read_dpi_handle(handle)?;
+    (actual == dpi).then_some(actual)
 }
 
 unsafe fn write_report(handle: isize, send: &[u8], recv: &mut [u8]) -> bool {

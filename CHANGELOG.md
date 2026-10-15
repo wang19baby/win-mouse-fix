@@ -5,9 +5,16 @@ All notable changes to **Win Mouse Fix** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 2026-09-11
+## [Unreleased] — 2026-10-19
 
 ### Changed
+
+- Exposed modeless native settings and per-app profile dialogs from the tray, with staged edits, finite numeric validation, base/profile separation, an actual config-directory shortcut, and explicit save-before-record behavior
+- Connected opt-in pointer acceleration to `WM_MOUSEMOVE` using native pass-through and bounded asynchronous bonus movements; Windows-processed coordinates are not raw HID acceleration
+- Enabled the read-only five-second tray battery-cache refresh; automatic hardware DPI polling remains disabled pending real-device acceptance
+- Added `[remote].local_only` for loopback-only browser use without LAN binding or firewall changes
+- Browser verification now owns a temporary app instance, discovers its generated token, and stops only that process without modifying existing configuration
+- Aligned sample configuration, feature status, development commands, and hardware acceptance TODO with the actual runtime; user-selected source config remains unchanged
 
 - Scroll injection workers now block while idle and terminate when their last sender is dropped; configuration/profile changes no longer leak polling threads, and unavailable/overloaded workers fail open to native scrolling
 - Foreground-profile polling skips process and disk work when no executable profile exists, and runtime-only configuration changes no longer reinstall input hooks
@@ -20,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Battery discovery now runs immediately off-thread and logs state transitions instead of every poll
 
 ### Fixed
+
+- Remote drag selection now uses per-session monotonic IDs, 250 ms renewal and a two-second lease on one bounded injection worker; cancellation bypasses the motion queue, failed releases retain ownership and retry, and graceful exit removes hooks before joining the worker
+- Both phone surfaces share the same drag lifecycle, discard cancelled motion, and block new gestures while a release is pending; the offline shell includes the shared script
+- Added reproducible native text-selection/loss/exit smoke and disposable-source mutation checks; browser acceptance sources and dependency lockfile are no longer ignored
+- Equal configuration no longer suppresses retries after hook installation failure; profile keys are committed only after successful activation, and save errors distinguish persistence from runtime activation
+- `/sw.js` now serves JavaScript instead of HTML; the allowlisted offline shell excludes credential queries and dynamic/private pages, and activation preserves unrelated origin caches
+- Phone authentication rejection remains actionable after WebSocket close, and the visible standalone window-list page no longer hides its dialog from assistive technology
+- Restored strict all-target formatting/Clippy checks without global warning suppression; replaced HTML source-text heuristics with real browser behavior checks and removed a test that asserted the user's local configuration choices
 
 - Removed a left-button “foreign injection” heuristic that classified ordinary physical clicks as synthetic and bypassed legitimate remaps/drag gestures
 - Removed per-wheel and raw WebSocket payload logging, including bearer-token exposure

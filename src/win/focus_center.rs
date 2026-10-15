@@ -54,7 +54,6 @@ pub(crate) fn request_window(hwnd: HWND) -> bool {
     }
 }
 
-
 fn normalize_absolute_coordinate(value: i32, origin: i32, span: i32) -> Option<i32> {
     let maximum = span.checked_sub(1)?;
     if maximum <= 0 {
@@ -173,7 +172,6 @@ pub(crate) fn center_window(hwnd: HWND) -> bool {
     unsafe { move_cursor(center_x, center_y) }
 }
 
-
 /// WinEvent callback — fires on every foreground window change.
 #[allow(non_snake_case)]
 unsafe extern "system" fn foreground_callback(
@@ -250,7 +248,6 @@ mod tests {
         assert_eq!(normalize_absolute_coordinate(0, 0, 0), None);
         assert_eq!(normalize_absolute_coordinate(0, 0, 1), None);
     }
-
     #[test]
     fn system_class_filter_uses_exact_names() {
         let taskbar: Vec<u16> = "Shell_TrayWnd".encode_utf16().collect();
@@ -258,7 +255,6 @@ mod tests {
         assert!(is_skipped_window_class(&taskbar));
         assert!(!is_skipped_window_class(&app_with_prefix));
     }
-
     #[test]
     fn window_center_rejects_empty_rectangles() {
         assert_eq!(

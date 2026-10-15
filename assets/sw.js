@@ -1,47 +1,45 @@
-const CACHE_NAME = 'trackpad-v5';
-const PRECACHE = [
-  '/',
-  '/manifest.json',
-];
+// Only secure origins (HTTPS or localhost) can install this worker. Plain LAN
+// HTTP remains an online-only trackpad; it does not weaken browser trust rules.
+const PREFIX = 'win-mouse-fix-shell-';
+const CACHE = `${PREFIX}v3`;
+const SHELL = ['/', '/pad.html', '/winlist.html', '/manifest.json', '/drag.js'];
+const SHELL_PATHS = new Set(SHELL);
 
-self.addEventListener('install', (e) => {
-  e.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(PRECACHE))
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE).then((cache) => cache.addAll(SHELL))
       .then(() => self.skipWaiting())
   );
 });
 
-self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(
+      keys.filter((key) => key.startsWith(PREFIX) && key !== CACHE)
+        .map((key) => caches.delete(key))
+    )).then(() => self.clients.claim())
   );
 });
 
-self.addEventListener('fetch', (e) => {
-  // Network-first for everything except WS/reports. Cached responses are
-  // only used as an offline fallback, never preferred over the network.
-  // This way a new build reaches phones immediately instead of serving
-  // stale cached HTML/JS until the user manually clears site data.
-  const url = new URL(e.request.url);
-  if (url.pathname === '/ws' || url.pathname.startsWith('/report')) {
-    return; // Let WebSocket + diagnostic requests pass through
-  }
-  // Never cache trackpad.html — always serve fresh so UI updates land immediately.
-  const isHtml = url.pathname === '/' || url.pathname === '/index.html' || url.pathname.endsWith('.html');
-  if (isHtml) {
-    e.respondWith(fetch(e.request).then(resp => resp.ok ? resp : caches.match(e.request)));
-    return;
-  }
-  e.respondWith(
-    fetch(e.request).then(resp => {
-      if (resp.ok) {
-        const clone = resp.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
-      }
-      return resp;
-    }).catch(() => caches.match(e.request))
-  );
+self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
+  const url = new URL(event.request.url);
+  // No dynamic/administrative route, token-bearing query string, window data,
+  // thumbnail, report, diagnostic page, or unrelated origin enters Cache Storage.
+  if (url.origin !== self.location.origin || !SHELL_PATHS.has(url.pathname)) return;
+
+  event.respondWith((async () => {
+    const key = new Request(url.origin + url.pathname);
+    const cached = await caches.match(key);
+    if (cached) return cached;
+    try {
+      return await fetch(event.request);
+    } catch (error) {
+      if (event.request.mode !== 'navigate') throw error;
+      return new Response('离线：无法连接，请检查网络或服务器状态。', {
+        status: 503,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      });
+    }
+  })());
 });
