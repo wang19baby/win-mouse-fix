@@ -147,6 +147,8 @@ config = { scroll = { smooth = false } }
 3. Scan the displayed QR code with the phone camera
 4. The tray toggle is persisted; `remote.enabled = true` in `config.toml` is an equivalent opt-in and hot-reloads without an app restart
 
+The same QR/link adapts on the receiving device: with `[remote].large_screen_split = true` (default), viewports at least 600 CSS pixels wide **and** high open the window-list + touchpad split view. Landscape places the panes side by side; portrait stacks them. Phones keep the full touchpad. Tap **同屏** to open the split view manually, or **仅触控板** to keep the full touchpad even after reload. Setting `large_screen_split = false` disables only automatic selection; manual switching remains available.
+
 > **iOS Safari:** tap the Share button → **Add to Home Screen** for true full-screen mode.
 
 Long-press with one finger to select text or drag. The PC acknowledges the press and owns its release; touch cancellation ends the drag, and a missing heartbeat expires after two seconds. A release rejected by Windows remains pending and blocks new remote input until it succeeds. UIPI/secure-desktop rejection can delay graceful exit; force-killing the process cannot guarantee release.

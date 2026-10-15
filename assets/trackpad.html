@@ -43,6 +43,7 @@
   #sendBtn:active{background:#2a6;}
   #inputToggle{position:fixed;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);right:58px;background:#3a7;color:#fff;border:1px solid #2a6;border-radius:50%;width:44px;height:44px;font:20px system-ui;z-index:20;display:flex;align-items:center;justify-content:center;cursor:pointer;}
   #winListToggle{position:fixed;top:calc(env(safe-area-inset-top,0px) + 8px);right:10px;background:#356;border:1px solid #2a5;border-radius:50%;width:44px;height:44px;font:20px system-ui;color:#fff;z-index:20;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+  #splitViewToggle{position:fixed;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);right:8px;background:#356;border:1px solid #2a5;border-radius:50%;width:44px;height:44px;font:12px system-ui;color:#fff;z-index:20;cursor:pointer;}
 
   @media (orientation:landscape){
     #inputBar{padding:4px 8px calc(env(safe-area-inset-bottom,0px) + 4px);gap:4px;}
@@ -50,7 +51,7 @@
     #sendBtn{height:30px;padding:0 10px;font-size:12px;}
     #collapseBtn{width:28px;height:30px;font-size:14px;}
     #charCount{right:8px;bottom:5px;font-size:10px;}
-    #inputToggle{width:38px;height:38px;font-size:17px;right:8px;}
+    #inputToggle{width:38px;height:38px;font-size:17px;right:58px;}
   }
 
   @media (orientation:portrait){
@@ -90,6 +91,7 @@
 <div id="banner"><span class="dot"></span><span id="bannerText">连接已断开，正在重连…</span></div>
 <button id="inputToggle" title="打开输入框">⌨</button>
 <button id="winListToggle" title="窗口列表" aria-label="窗口列表">&#x229E;</button>
+<button id="splitViewToggle" title="窗口与触控板同屏" aria-label="窗口与触控板同屏">同屏</button>
 <div id="inputBar" class="hidden">
   <div class="tf-wrap"><textarea id="textField" placeholder="输入文字…" rows="1"></textarea><span id="charCount">0</span></div>
   <button id="sendBtn">发送</button>
@@ -122,6 +124,9 @@
   var MIN_GESTURE_FINGERS = isAndroid ? 4 : 3;
   var params = new URLSearchParams(location.search);
   var token = params.get('t') || '';
+  var splitUrl = new URL('/pad.html', location.href);
+  splitUrl.search = location.search;
+  splitUrl.searchParams.delete('mode');
 
   var ws = null, authed = false, backoff = 500;
   var pad = document.getElementById('pad');
@@ -131,6 +136,7 @@
   var banner = document.getElementById('banner');
   var bannerText = document.getElementById('bannerText');
   var winListToggle = document.getElementById('winListToggle');
+  var splitViewToggle = document.getElementById('splitViewToggle');
 
   // Fire-and-forget device-side diagnostic: report the WebSocket close details
   // back to the server so it lands in ws_debug.log (useful for iOS Safari 1006).
@@ -185,6 +191,12 @@ var isConnecting = false;
       var m; try { m = JSON.parse(e.data); } catch(_) { return; }
       drag.onServerMessage(m);
       if(m.t === 'status'){
+        // Choose on the receiving device, not on the PC displaying its QR code.
+        if(!authed && m.large_screen_split && params.get('mode') !== 'trackpad' &&
+            window.matchMedia('(min-width:600px) and (min-height:600px)').matches){
+          location.replace(splitUrl.href);
+          return;
+        }
         authed = true; stopReconnect = false; backoff = 500; statusEl.textContent = '已连接'; hideBanner();
         // Apply touch config from server if provided
         if(m.touch){
@@ -555,12 +567,14 @@ var isConnecting = false;
     inputMode = false;
     inputBar.classList.add('hidden');
     inputToggle.style.display = '';
+    splitViewToggle.style.display = '';
   }
 
   inputToggle.addEventListener('click', function(){
     inputMode = !inputMode;
     inputBar.classList.toggle('hidden', !inputMode);
     inputToggle.style.display = inputMode ? 'none' : '';
+    splitViewToggle.style.display = inputMode ? 'none' : '';
     if(inputMode){
       textField.focus();
       updateCharCount();
@@ -569,7 +583,12 @@ var isConnecting = false;
 
   // Open standalone window list page
   winListToggle.addEventListener('click', function(){
-    window.location.href = '/winlist.html?t=' + encodeURIComponent(token);
+    var url = new URL('/winlist.html', location.href);
+    url.search = location.search;
+    window.location.href = url.href;
+  });
+  splitViewToggle.addEventListener('click', function(){
+    window.location.href = splitUrl.href;
   });
 
   collapseBtn.addEventListener('click', closeInputBar);
@@ -623,7 +642,7 @@ var isConnecting = false;
   // Register Service Worker for offline caching
   if('serviceWorker' in navigator){
     // Secure-context offline shell includes the shared drag controller.
-    navigator.serviceWorker.register('/sw.js?v=3').catch(function(){});
+    navigator.serviceWorker.register('/sw.js?v=4').catch(function(){});
   }
 
 

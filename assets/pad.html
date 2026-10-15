@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0a0a0a">
 <link rel="manifest" href="/manifest.json">
-<title>妙控板</title>
+<title>妙控板 · 窗口与触控板同屏</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
 html,body{height:100%;width:100%;overflow:hidden;background:#0a0a0a;}
@@ -25,7 +25,7 @@ html,body{height:100%;width:100%;overflow:hidden;background:#0a0a0a;}
 .desk-tab{padding:4px 10px;border:1px solid #333;border-radius:14px;background:#1a1a1a;color:#777;font:11px system-ui;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:all .12s;}
 .desk-tab:active{background:#2a2a2a;}
 .desk-tab.current{border-color:#3a7;color:#3a7;background:#0f1f15;}
-#win-grid{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:8px 10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:7px;align-content:start;}
+#win-grid{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:8px 10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:7px;align-content:start;}
 .wc{border:1.5px solid #2a2a2a;border-radius:7px;overflow:hidden;background:#1a1a1a;cursor:pointer;transition:border-color .12s,transform .08s;}
 .wc:active{transform:scale(0.96);filter:brightness(1.2);}
 .wc.current{border-color:#3a7;}
@@ -35,7 +35,7 @@ html,body{height:100%;width:100%;overflow:hidden;background:#0a0a0a;}
 .wc .wi{padding:3px 5px 4px;}
 .wc .wt2{color:#bbb;font:10px/1.2 system-ui;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
 .wc .wp{color:#666;font:9px system-ui;margin-top:1px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
-#pad-wrap{flex:1;position:relative;min-width:0;}
+#pad-wrap{flex:1;position:relative;min-width:0;min-height:0;}
 #pad{position:absolute;inset:0;touch-action:none;background:radial-gradient(circle at 50% 38%,#1b1b1b,#0a0a0a);}
 #hud{position:absolute;top:env(safe-area-inset-top,6px);left:8px;right:8px;display:flex;justify-content:space-between;align-items:center;color:#8a8a8a;font:12px/1.2 system-ui;pointer-events:none;padding:5px 8px;}
 #status{letter-spacing:.3px;}
@@ -68,15 +68,15 @@ html,body{height:100%;width:100%;overflow:hidden;background:#0a0a0a;}
 </head>
 <body>
 <div id="split">
-<div id="wins">
+<div id="wins" role="region" aria-label="窗口区">
 <div class="split-header">
-<button class="back-btn" id="backBtn">&larr; 切换模式</button>
+<button class="back-btn" id="backBtn">仅触控板</button>
 <span class="title">窗口列表</span>
 </div>
 <div class="desk-bar" id="deskBar" role="tablist"></div>
 <div id="win-grid"></div>
 </div>
-<div id="pad-wrap">
+<div id="pad-wrap" role="region" aria-label="触控板">
 <div id="pad"></div>
 <div id="hud">
 <span id="status">连接中&hellip;</span>
@@ -406,7 +406,10 @@ if(pendingSwitchTimer){clearTimeout(pendingSwitchTimer);pendingSwitchTimer=null;
 pendingSwitchHwnd=null;
 }
 document.getElementById("backBtn").addEventListener("click",function(){
-window.location.href="/?t="+encodeURIComponent(token);
+var url=new URL("/",location.href);
+url.search=location.search;
+url.searchParams.set("mode","trackpad");
+window.location.href=url.href;
 });
 var pointers=new Map();
 var moveSpeedEma=0;
@@ -655,7 +658,7 @@ window.addEventListener("pagehide",drag.onVisibilityHidden);
 document.addEventListener("visibilitychange",function(){if(document.hidden)drag.onVisibilityHidden();});
 updateHud(0,"\u5F85\u673A");
 connect();
-if("serviceWorker"in navigator){navigator.serviceWorker.register("/sw.js?v=3").catch(function(){});}
+if("serviceWorker"in navigator){navigator.serviceWorker.register("/sw.js?v=4").catch(function(){});}
 
 
 })();
