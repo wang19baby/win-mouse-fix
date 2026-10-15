@@ -249,22 +249,43 @@ static DRAG_EFFECT: RwLock<Option<DragState>> = RwLock::new(None);
 /// Currently active profile key (foreground exe basename), or `None` for base.
 /// Lets the foreground-poll timer skip a reload when the app hasn't changed.
 static CURRENT_PROFILE_KEY: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+/// Config equality does not imply that installation succeeded.
+static RUNTIME_READY: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn runtime_ready() -> bool {
+    RUNTIME_READY.load(Ordering::Acquire)
+}
+
+fn hook_restart_needed(current: &Config, next: &Config, ready: bool) -> bool {
+    !ready || !hook_settings_equal(current, next)
+}
 fn hook_settings_equal(left: &Config, right: &Config) -> bool {
-    left.scroll == right.scroll && left.buttons == right.buttons && left.drag == right.drag
+    left.scroll == right.scroll
+        && left.buttons == right.buttons
+        && left.drag == right.drag
+        && left.snap == right.snap
+        && left.general.focus_center == right.general.focus_center
 }
 
 fn reconcile_active_config(next: Config) -> Result<(), String> {
-    let needs_hook_restart = {
+    let (needs_hook_restart, accel_changed) = {
         let current = CONFIG.read();
-        if *current == next {
+        if *current == next && runtime_ready() {
             return Ok(());
         }
-        !hook_settings_equal(&current, &next)
+        (
+            hook_restart_needed(&current, &next, runtime_ready()),
+            current.accel != next.accel,
+        )
     };
     if needs_hook_restart {
         apply_config(next)
     } else {
+        let accel = accel_changed.then(|| next.accel.clone());
         *CONFIG.write() = next;
+        if let Some(cfg) = accel {
+            crate::accel::configure(&cfg);
+        }
         Ok(())
     }
 }
@@ -272,6 +293,8 @@ fn reconcile_active_config(next: Config) -> Result<(), String> {
 /// swap in the new config, then bring hooks back up. Safe to call repeatedly
 /// (at startup, and on each tray-menu toggle).
 pub fn apply_config(cfg: Config) -> Result<(), String> {
+    // Fail before tearing down a working configuration if the worker is unavailable.
+    crate::win::focus_center::init_worker()?;
     uninstall();
     stop_scroll();
     *REMAP_TABLE.write() = None;
@@ -330,7 +353,6 @@ pub fn apply_config(cfg: Config) -> Result<(), String> {
     SNAP_ENABLED.store(cfg.snap.enabled, Ordering::Relaxed);
     SNAP_THRESHOLD.store(cfg.snap.threshold, Ordering::Relaxed);
     WINDOW_SWITCHER_ENABLED.store(cfg.buttons.window_switcher, Ordering::Relaxed);
-    crate::win::focus_center::init_worker()?;
     // Focus-center: move cursor to the center of the newly focused window.
     crate::win::focus_center::set_enabled(cfg.general.focus_center);
     if cfg.general.focus_center {
@@ -356,9 +378,11 @@ pub fn apply_config(cfg: Config) -> Result<(), String> {
         stop_scroll();
         return Err(e);
     }
+    crate::accel::configure(&CONFIG.read().accel);
 
     // Start the ClickCycle timer if button remapping is enabled.
     start_click_timer();
+    RUNTIME_READY.store(true, Ordering::Release);
     Ok(())
 }
 
@@ -386,22 +410,15 @@ pub fn poll_foreground_profile() {
     }
 
     let exe = crate::win::window::foreground_exe();
-    let mut cur = CURRENT_PROFILE_KEY.lock();
-    if *cur == exe {
+    if *CURRENT_PROFILE_KEY.lock() == exe && runtime_ready() {
         return;
     }
-    *cur = exe.clone();
-    drop(cur);
 
     let base = Config::load_or_default();
     let active = base.resolve_for_exe(exe.as_deref());
-    if *CONFIG.read() != active {
-        crate::log::write(&format!(
-            "foreground window changed → {exe:?}; applying profile"
-        ));
-        if let Err(e) = reconcile_active_config(active) {
-            crate::log::write(&format!("profile switch failed to install hooks: {e}"));
-        }
+    match reconcile_active_config(active) {
+        Ok(()) => *CURRENT_PROFILE_KEY.lock() = exe,
+        Err(e) => crate::log::write(&format!("profile switch failed to install hooks: {e}")),
     }
 }
 
@@ -532,16 +549,7 @@ pub fn send_remote_text(text: &str) {
 ///   "snap_up"     -> Win+Up       (maximize)
 ///   "snap_down"   -> Win+Down     (restore/minimize)
 pub fn send_remote_gesture(g: &str) {
-    // Long-press drag: simulate left button hold for window dragging
     match g {
-        "longpress_drag" => {
-            send_fake_drag_button_down(MouseButton::Left);
-            return;
-        }
-        "longpress_end" => {
-            send_fake_drag_button_up(MouseButton::Left);
-            return;
-        }
         // 4-finger diagonal corner snaps = two sequential Win+Arrow chords
         "snap_up_l" => {
             send_remote_gesture("snap_l");
@@ -772,6 +780,7 @@ pub fn install() -> Result<(), String> {
 
 #[allow(static_mut_refs)]
 pub fn uninstall() {
+    RUNTIME_READY.store(false, Ordering::Release);
     unsafe {
         if MOUSE_HOOK != 0 {
             UnhookWindowsHookEx(MOUSE_HOOK);
@@ -783,6 +792,7 @@ pub fn uninstall() {
         }
     }
     FOCUS_CENTER_HOTKEY_OWNS_X1.store(false, Ordering::Relaxed);
+    crate::accel::stop();
     crate::win::focus_center::stop();
     stop_click_timer();
 }
@@ -888,8 +898,10 @@ unsafe fn process_wheel(delta: i32, horizontal: bool, cfg: &Config) -> Option<Wh
     //     notch moves the cursor a small, controllable number of pixels.
     if precision_mode {
         let (dx, dy) = precision_cursor_delta(delta, horizontal);
-        crate::scroll::injector::send_mouse_move(dx, dy);
-        return Some(WheelInput { delta, horizontal }); // swallowed: cursor moved, no scroll
+        if crate::scroll::injector::send_mouse_move(dx, dy) {
+            return Some(WheelInput { delta, horizontal });
+        }
+        return None;
     }
 
     // 4. If smooth mode is enabled, enqueue without blocking the hook. Only
@@ -908,11 +920,13 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
     if code >= 0 {
         let ev = wparam as u32;
         let ms = &*(lparam as *const MSLLHOOKSTRUCT);
-        // Only bypass events Windows marks as injected or events carrying our
-        // marker. Unmarked events are indistinguishable from physical input;
-        // classifying them by button type would disable legitimate remaps and
-        // drag gestures for that button.
-        if is_our_injected_event(ms.flags, ms.dwExtraInfo) {
+        let injected = is_our_injected_event(ms.flags, ms.dwExtraInfo);
+        if ev == WM_MOUSEMOVE {
+            crate::accel::observe_move(ms.pt.x, ms.pt.y, injected);
+        }
+        // Do not process synthesized input again; observe_move above reseeds
+        // the chronological endpoint, including moves injected by other apps.
+        if injected {
             return CallNextHookEx(0, code, wparam, lparam);
         }
         // Bypass unmarked LMB DOWN injected by external tools (e.g. WeChat screenshot).
@@ -964,142 +978,139 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             }
         }
         // ── Mousemove ────────────────────────────────────────────────────────────
-        if ev == WM_MOUSEMOVE {
-            if DRAG_ENABLED.load(Ordering::Relaxed) {
-                match DRAG_MODE.load(Ordering::Relaxed) {
-                    0u8 => {
-                        let move_target = {
-                            let drag = DRAG.read();
-                            drag.as_ref().and_then(|ctrl| {
-                                if ctrl.is_active() {
-                                    ctrl.target_pos(ms.pt.x, ms.pt.y)
-                                        .map(|(x, y)| (ctrl.hwnd(), x, y))
-                                } else {
-                                    None
-                                }
-                            })
-                        };
+        if ev == WM_MOUSEMOVE && DRAG_ENABLED.load(Ordering::Relaxed) {
+            match DRAG_MODE.load(Ordering::Relaxed) {
+                0u8 => {
+                    let move_target = {
+                        let drag = DRAG.read();
+                        drag.as_ref().and_then(|ctrl| {
+                            if ctrl.is_active() {
+                                ctrl.target_pos(ms.pt.x, ms.pt.y)
+                                    .map(|(x, y)| (ctrl.hwnd(), x, y))
+                            } else {
+                                None
+                            }
+                        })
+                    };
 
-                        if let Some((hwnd, x, y)) = move_target {
-                            // Never hold DRAG while calling Win32 or snap code:
-                            // SetWindowPos can synchronously re-enter this hook.
-                            if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
-                                let w = rect.right - rect.left;
-                                let h = rect.bottom - rect.top;
-                                let window_rect = windows_sys::Win32::Foundation::RECT {
-                                    left: x,
-                                    top: y,
-                                    right: x + w,
-                                    bottom: y + h,
-                                };
+                    if let Some((hwnd, x, y)) = move_target {
+                        // Never hold DRAG while calling Win32 or snap code:
+                        // SetWindowPos can synchronously re-enter this hook.
+                        if let Some(rect) = crate::win::window::get_window_rect(hwnd) {
+                            let w = rect.right - rect.left;
+                            let h = rect.bottom - rect.top;
+                            let window_rect = windows_sys::Win32::Foundation::RECT {
+                                left: x,
+                                top: y,
+                                right: x + w,
+                                bottom: y + h,
+                            };
 
-                                if let Some(zones) = get_cached_zones(hwnd) {
-                                    if let Some(snap) =
-                                        crate::snap::compute_snap(&window_rect, &zones)
-                                    {
-                                        crate::snap::show_preview(&snap);
-                                        *SNAP_DRAG.write() = Some(SnapDragState {
-                                            hwnd,
-                                            original_rect: rect,
-                                            snapped_rect: snap.target,
-                                        });
-                                    } else {
-                                        crate::snap::hide_preview();
-                                        *SNAP_DRAG.write() = None;
-                                        crate::win::window::move_window(hwnd, x, y);
-                                    }
+                            if let Some(zones) = get_cached_zones(hwnd) {
+                                if let Some(snap) = crate::snap::compute_snap(&window_rect, &zones)
+                                {
+                                    crate::snap::show_preview(&snap);
+                                    *SNAP_DRAG.write() = Some(SnapDragState {
+                                        hwnd,
+                                        original_rect: rect,
+                                        snapped_rect: snap.target,
+                                    });
                                 } else {
+                                    crate::snap::hide_preview();
+                                    *SNAP_DRAG.write() = None;
                                     crate::win::window::move_window(hwnd, x, y);
                                 }
+                            } else {
+                                crate::win::window::move_window(hwnd, x, y);
                             }
                         }
                     }
-                    1u8 => {
-                        // DragOutput::Scroll
-                        let mut drag = DRAG.write();
-                        if let Some(ctrl) = drag.as_mut() {
-                            let (dx, dy) = ctrl.consume_delta(ms.pt.x, ms.pt.y);
-                            if let Some(tx) = SCROLL_TX.lock().as_ref() {
-                                let refine = drag_scroll_refine(
-                                    crate::modifiers::shift_held(),
-                                    (crate::modifiers::state() & crate::modifiers::CTRL) != 0,
-                                );
-                                let scale = if refine.precision { 0.5_f64 } else { 1.0 };
-                                if refine.horizontal_only {
-                                    let h = (-(dx as f64 + dy as f64) * scale).round() as i32;
-                                    if h != 0 {
-                                        let _ = tx.try_send(WheelInput {
-                                            delta: h,
-                                            horizontal: true,
-                                        });
-                                    }
-                                } else {
-                                    let v = (-(dy as f64) * scale).round() as i32;
-                                    let h = (-(dx as f64) * scale).round() as i32;
-                                    if v != 0 {
-                                        let _ = tx.try_send(WheelInput {
-                                            delta: v,
-                                            horizontal: false,
-                                        });
-                                    }
-                                    if h != 0 {
-                                        let _ = tx.try_send(WheelInput {
-                                            delta: h,
-                                            horizontal: true,
-                                        });
-                                    }
+                }
+                1u8 => {
+                    // DragOutput::Scroll
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        let (dx, dy) = ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        if let Some(tx) = SCROLL_TX.lock().as_ref() {
+                            let refine = drag_scroll_refine(
+                                crate::modifiers::shift_held(),
+                                (crate::modifiers::state() & crate::modifiers::CTRL) != 0,
+                            );
+                            let scale = if refine.precision { 0.5_f64 } else { 1.0 };
+                            if refine.horizontal_only {
+                                let h = (-(dx as f64 + dy as f64) * scale).round() as i32;
+                                if h != 0 {
+                                    let _ = tx.try_send(WheelInput {
+                                        delta: h,
+                                        horizontal: true,
+                                    });
+                                }
+                            } else {
+                                let v = (-(dy as f64) * scale).round() as i32;
+                                let h = (-(dx as f64) * scale).round() as i32;
+                                if v != 0 {
+                                    let _ = tx.try_send(WheelInput {
+                                        delta: v,
+                                        horizontal: false,
+                                    });
+                                }
+                                if h != 0 {
+                                    let _ = tx.try_send(WheelInput {
+                                        delta: h,
+                                        horizontal: true,
+                                    });
                                 }
                             }
                         }
                     }
-                    2u8 => {
-                        // DragOutput::Navigate
-                        let mut drag = DRAG.write();
-                        if let Some(ctrl) = drag.as_mut() {
-                            ctrl.consume_delta(ms.pt.x, ms.pt.y);
-                            let (dx, dy) = ctrl.total_delta();
-                            const NAV_THRESH: i32 = 60;
-                            if dx.abs() > dy.abs() && dx.abs() > NAV_THRESH {
-                                let direction = if dx > 0 {
-                                    crate::remap::SwipeDirection::Forward
-                                } else {
-                                    crate::remap::SwipeDirection::Back
-                                };
-                                crate::remap::execute_effect(
-                                    &crate::remap::Effect::NavigationSwipe { direction },
-                                );
-                                ctrl.reset_accum();
-                            }
-                        }
-                    }
-                    3u8 => {
-                        // DragOutput::TaskView
-                        let mut drag = DRAG.write();
-                        if let Some(ctrl) = drag.as_mut() {
-                            ctrl.consume_delta(ms.pt.x, ms.pt.y);
-                            let (_dx, dy) = ctrl.total_delta();
-                            const TASKVIEW_THRESH: i32 = 80;
-                            if dy < -TASKVIEW_THRESH {
-                                crate::remap::execute_effect(&crate::remap::Effect::TaskView);
-                                ctrl.reset_accum();
-                            }
-                        }
-                    }
-                    4u8 => {
-                        // DragOutput::ShowDesktop
-                        let mut drag = DRAG.write();
-                        if let Some(ctrl) = drag.as_mut() {
-                            ctrl.consume_delta(ms.pt.x, ms.pt.y);
-                            let (_dx, dy) = ctrl.total_delta();
-                            const SHOWDESKTOP_THRESH: i32 = 80;
-                            if dy > SHOWDESKTOP_THRESH {
-                                crate::remap::execute_effect(&crate::remap::Effect::ShowDesktop);
-                                ctrl.reset_accum();
-                            }
-                        }
-                    }
-                    _ => {}
                 }
+                2u8 => {
+                    // DragOutput::Navigate
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        let (dx, dy) = ctrl.total_delta();
+                        const NAV_THRESH: i32 = 60;
+                        if dx.abs() > dy.abs() && dx.abs() > NAV_THRESH {
+                            let direction = if dx > 0 {
+                                crate::remap::SwipeDirection::Forward
+                            } else {
+                                crate::remap::SwipeDirection::Back
+                            };
+                            crate::remap::execute_effect(&crate::remap::Effect::NavigationSwipe {
+                                direction,
+                            });
+                            ctrl.reset_accum();
+                        }
+                    }
+                }
+                3u8 => {
+                    // DragOutput::TaskView
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        let (_dx, dy) = ctrl.total_delta();
+                        const TASKVIEW_THRESH: i32 = 80;
+                        if dy < -TASKVIEW_THRESH {
+                            crate::remap::execute_effect(&crate::remap::Effect::TaskView);
+                            ctrl.reset_accum();
+                        }
+                    }
+                }
+                4u8 => {
+                    // DragOutput::ShowDesktop
+                    let mut drag = DRAG.write();
+                    if let Some(ctrl) = drag.as_mut() {
+                        ctrl.consume_delta(ms.pt.x, ms.pt.y);
+                        let (_dx, dy) = ctrl.total_delta();
+                        const SHOWDESKTOP_THRESH: i32 = 80;
+                        if dy > SHOWDESKTOP_THRESH {
+                            crate::remap::execute_effect(&crate::remap::Effect::ShowDesktop);
+                            ctrl.reset_accum();
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         if let Some((btn, down)) = button_event(ev, ms) {
@@ -1219,8 +1230,13 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
                         true
                     }
                     Some(ctrl) => {
-                        eprintln!("DRAG: did_end=false btn={} down={} is_active={} matches={}", 
-                            btn as u8, down, ctrl.is_active(), ctrl.matches_release(btn));
+                        eprintln!(
+                            "DRAG: did_end=false btn={} down={} is_active={} matches={}",
+                            btn as u8,
+                            down,
+                            ctrl.is_active(),
+                            ctrl.matches_release(btn)
+                        );
                         false
                     }
                     _ => {
@@ -1247,7 +1263,10 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: usize, lparam: isize) ->
             }
 
             // Button remapping with ClickCycle support.
-            eprintln!("DRAG: remap btn={} down={} buttons_on={}", btn as u8, down, buttons_on);
+            eprintln!(
+                "DRAG: remap btn={} down={} buttons_on={}",
+                btn as u8, down, buttons_on
+            );
             if buttons_on {
                 let kb_state = crate::modifiers::state();
                 let held_btns = get_tracker().read().held_modifier_buttons();
@@ -1456,7 +1475,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize)
                     return 1;
                 }
                 // Win+1..9 → snap to layout grid cell (layout_index=key-1, cell_index=key-1)
-                if win_held && vk >= b'1' && vk <= b'9' {
+                if win_held && (b'1'..=b'9').contains(&vk) {
                     if let Some(hwnd) = crate::win::window::foreground_hwnd() {
                         let layout_index = (vk - b'1') as usize;
                         let cell_index = (vk - b'1') as usize;
@@ -1572,8 +1591,17 @@ fn send_fake_drag_move(btn: MouseButton, dx: i32, dy: i32) {
     }
 }
 
+/// Checked primitive for the remote input worker's owned left-button state.
+pub(crate) fn send_remote_drag_button(down: bool) -> bool {
+    if down {
+        send_fake_drag_button_down(MouseButton::Left)
+    } else {
+        send_fake_drag_button_up(MouseButton::Left)
+    }
+}
+
 /// Send a button-up event to conclude a FakeDrag.
-fn send_fake_drag_button_up(btn: MouseButton) {
+fn send_fake_drag_button_up(btn: MouseButton) -> bool {
     let (flags, data) = match btn {
         MouseButton::Left => (MOUSEEVENTF_LEFTUP, 0u32),
         MouseButton::Right => (MOUSEEVENTF_RIGHTUP, 0u32),
@@ -1594,12 +1622,12 @@ fn send_fake_drag_button_up(btn: MouseButton) {
             time: 0,
             dwExtraInfo: OUR_MARKER,
         };
-        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) == 1
     }
 }
 
 /// Send a button-down event to start a FakeDrag (so the system sees a complete click).
-fn send_fake_drag_button_down(btn: MouseButton) {
+fn send_fake_drag_button_down(btn: MouseButton) -> bool {
     let (flags, data) = match btn {
         MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, 0u32),
         MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, 0u32),
@@ -1620,7 +1648,7 @@ fn send_fake_drag_button_down(btn: MouseButton) {
             time: 0,
             dwExtraInfo: OUR_MARKER,
         };
-        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) == 1
     }
 }
 
@@ -1659,16 +1687,20 @@ mod tests {
     }
 
     #[test]
-    fn hook_restart_filter_ignores_remote_only_changes() {
+    fn failed_installation_retries_even_for_equal_config() {
         let base = Config::default();
+        assert!(hook_restart_needed(&base, &base, false));
+        assert!(!hook_restart_needed(&base, &base, true));
+
         let mut remote_change = base.clone();
         remote_change.remote.enabled = !remote_change.remote.enabled;
         remote_change.touch.gain += 1.0;
-        assert!(hook_settings_equal(&base, &remote_change));
+        assert!(!hook_restart_needed(&base, &remote_change, true));
+        assert!(hook_restart_needed(&base, &remote_change, false));
 
         let mut scroll_change = base.clone();
         scroll_change.scroll.speed += 0.5;
-        assert!(!hook_settings_equal(&base, &scroll_change));
+        assert!(hook_restart_needed(&base, &scroll_change, true));
     }
 
     #[test]
@@ -1720,5 +1752,4 @@ mod tests {
             FocusCenterHotkeyAction::Ignore
         );
     }
-
 }

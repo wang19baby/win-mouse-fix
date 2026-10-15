@@ -9,6 +9,7 @@ mod log;
 mod modifiers;
 mod remap;
 mod remote;
+mod remote_input;
 mod scroll;
 mod snap;
 #[cfg(test)]
@@ -135,6 +136,8 @@ fn main() {
     }
     win::hooks::uninstall();
     win::hooks::stop_scroll();
+    // SendInput can wait for our low-level hooks. Join only after uninstalling.
+    remote_input::finish_shutdown();
     snap::destroy();
     log::write("Win Mouse Fix exited.");
 }

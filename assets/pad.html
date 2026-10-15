@@ -6,6 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0a0a0a">
+<link rel="manifest" href="/manifest.json">
 <title>妙控板</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
@@ -91,6 +92,7 @@ html,body{height:100%;width:100%;overflow:hidden;background:#0a0a0a;}
 </div>
 </div>
 </div>
+<script src="/drag.js"></script>
 <script>
 (function(){
 "use strict";
@@ -115,15 +117,18 @@ if(ws&&(ws.readyState===0||ws.readyState===1))return;
 if(isConnecting)return;
 isConnecting=true;
 var proto=location.protocol==="https:"?"wss":"ws";
-ws=new WebSocket(proto+"://"+location.host+"/ws");
-ws.onopen=function(){
+var socket=new WebSocket(proto+"://"+location.host+"/ws");
+ws=socket;
+socket.onopen=function(){
+if(ws!==socket)return;
 statusEl.textContent="认证中&hellip;";
 showBanner("握手成功&middot;认证中&hellip;");
-setTimeout(hideBanner,1200);
-ws.send(JSON.stringify({t:"auth",token:token}));
+socket.send(JSON.stringify({t:"auth",token:token}));
 };
-ws.onmessage=function(e){
+socket.onmessage=function(e){
+if(ws!==socket)return;
 var m;try{m=JSON.parse(e.data);}catch(_){return;}
+drag.onServerMessage(m);
 if(m.t==="status"){
 authed=true;stopReconnect=false;backoff=500;
 statusEl.textContent="已连接";hideBanner();
@@ -148,9 +153,10 @@ if(m.pc_battery)updateBatteryDisplay("pc",m.pc_battery);
 reportPhoneBattery();
 send({t:"get_windows"});
 }else if(m.t==="reject"){
+authed=false;drag.onWsReject();
 statusEl.textContent="认证失败";
 showBanner("认证失败"+(m.reason?" ("+m.reason+")":"")+" &middot; 请重新扫码");
-stopReconnect=true;try{ws.close();}catch(_){}
+stopReconnect=true;try{socket.close();}catch(_){}
 }else if(m.t==="window_list"){
 handleWindowList(m);
 }else if(m.t==="thumb_update"){
@@ -161,8 +167,11 @@ handleWinEvent(m);
 handleSwitchResult(m);
 }
 };
-ws.onclose=function(e){
-authed=false;statusEl.textContent="断开，重连&hellip;";isConnecting=false;
+socket.onclose=function(e){
+if(ws!==socket)return;
+authed=false;isConnecting=false;drag.onWsClose();
+if(stopReconnect)return;
+statusEl.textContent="断开，重连…";
 var code=e&&e.code?e.code:"?";
 var reason=e&&e.reason?e.reason:"";
 var clean=e&&e.wasClean;
@@ -174,12 +183,17 @@ showBanner("连接已断开，正在重连&hellip; [code="+code+" "+reason+"]");
 if(!stopReconnect)setTimeout(connect,backoff);
 backoff=Math.min(backoff*2,8000);
 };
-ws.onerror=function(e){
+socket.onerror=function(e){
+if(ws!==socket)return;
+drag.onWsError();
 showBanner("WS错误 [code="+(e&&e.code?e.code:"?")+"]");
-try{ws.close();}catch(_){}
+try{socket.close();}catch(_){}
 };
 }
-function send(obj){if(ws&&ws.readyState===1)ws.send(JSON.stringify(obj));}
+function send(obj){
+if(!ws||ws.readyState!==1)return false;
+try{ws.send(JSON.stringify(obj));return true;}catch(_){return false;}
+}
 var pcBattery=null,phoneBattery=null;
 function updateBatteryDisplay(who,info){
 if(who==="pc")pcBattery=info;
@@ -396,7 +410,7 @@ window.location.href="/?t="+encodeURIComponent(token);
 });
 var pointers=new Map();
 var moveSpeedEma=0;
-var pendingDx=0,pendingDy=0,rafPending=false;
+var pendingDx=0,pendingDy=0,rafPending=false,moveEpoch=0;
 var scrollSmoothX=0,scrollSmoothY=0;
 var zoomAccum=0;
 var g=null;
@@ -410,7 +424,7 @@ if(fingersEl)fingersEl.textContent=n+"\u6307 &middot; "+label;
 }
 function newGesture(list){
 var c=centroid(list);
-moveSpeedEma=0;pendingDx=0;pendingDy=0;
+resetMoves();
 scrollSmoothX=0;scrollSmoothY=0;zoomAccum=0;
 g={startT:performance.now(),settleUntil:performance.now()+SETTLE_MS,settleMove:0,maxCount:list.length,committed:false,committedCount:list.length,startC:c,lastC:c,pinch0:pinchMetric(list),anyMoved:false,swipeFired:false,lastGesture:"",scrollAccum:0,pinchAccum:0,twoDecided:null,longpressTimer:null,longpressFired:false};
 updateHud(list.length,"\u2026");
@@ -426,7 +440,7 @@ updateHud(g.committedCount,labelFor(g.committedCount));
 function emitMove(dx,dy){
 if(!authed)return;
 pendingDx+=dx;pendingDy+=dy;
-if(!rafPending){rafPending=true;requestAnimationFrame(flushMove);}
+if(!rafPending){rafPending=true;var epoch=moveEpoch;requestAnimationFrame(function(){if(epoch===moveEpoch)flushMove();});}
 }
 function flushMove(){
 rafPending=false;
@@ -437,8 +451,10 @@ moveSpeedEma=moveSpeedEma*MOVE_EMA+mag*(1-MOVE_EMA);
 var factor=moveSpeedEma<=ACCEL_REF?1:1+(moveSpeedEma-ACCEL_REF)/ACCEL_SLOPE;
 if(factor>ACCEL_MAX_MULT)factor=ACCEL_MAX_MULT;
 var gain=SENS*factor;
-send({t:"move",dx:Math.round(dx*gain),dy:Math.round(dy*gain)});
+if(drag.isDragging())drag.moveDrag(Math.round(dx*gain),Math.round(dy*gain));
+else if(!drag.isBlocked())send({t:"move",dx:Math.round(dx*gain),dy:Math.round(dy*gain)});
 }
+function resetMoves(){moveEpoch++;pendingDx=0;pendingDy=0;rafPending=false;moveSpeedEma=0;}
 function ripple(x,y){
 var r=document.createElement("div");r.className="ripple";
 r.style.left=x+"px";r.style.top=y+"px";
@@ -458,13 +474,13 @@ if(p.x>maxx)maxx=p.x;if(p.y>maxy)maxy=p.y;
 return Math.hypot(maxx-minx,maxy-miny);
 }
 function startLongpressTimer(){
-if(!g||g.longpressTimer)return;
+if(!g||g.longpressTimer||g.longpressFired)return;
 g.longpressTimer=setTimeout(function(){
 if(g&&g.committedCount===1&&!g.anyMoved&&!g.longpressFired){
-g.longpressFired=true;
-if(authed)send({t:"gesture",g:"longpress_drag"});
-updateHud(1,"\u7A97\u53E3\u62D6\u62FD");
-ripple(g.startC.x,g.startC.y);
+cancelLongpressTimer();resetMoves();
+g.longpressFired=drag.startDrag();
+if(g.longpressFired)ripple(g.startC.x,g.startC.y);
+else{g.anyMoved=true;updateHud(0,"拖选未开始");}
 }
 },LONGPRESS_MS);
 }
@@ -473,6 +489,8 @@ if(g&&g.longpressTimer){clearTimeout(g.longpressTimer);g.longpressTimer=null;}
 }
 var pad=document.getElementById("pad");
 pad.addEventListener("pointerdown",function(e){
+if(drag.isBlocked()){e.preventDefault();return;}
+if(pointers.size>0&&drag.isDragging()){drag.onSecondPointer();e.preventDefault();return;}
 pad.setPointerCapture(e.pointerId);
 pointers.set(e.pointerId,{x:e.clientX,y:e.clientY,startX:e.clientX,startY:e.clientY,startT:performance.now(),moved:false});
 var list=activePointers();
@@ -562,27 +580,25 @@ e.preventDefault();
 pad.addEventListener("pointerup",function(e){
 var p=pointers.get(e.pointerId);if(!p)return;
 pointers.delete(e.pointerId);
-var list=activePointers();
-if(g){
+var list=activePointers(),gesture=g;
+if(gesture){
 cancelLongpressTimer();
-if(g.longpressFired&&authed)send({t:"gesture",g:"longpress_end"});
-var count=g.committed?g.committedCount:g.maxCount;
-var quick=(performance.now()-g.startT)<TAP_MS;
-if(!g.swipeFired&&!g.anyMoved&&quick&&list.length===0){
+if(gesture.longpressFired){flushMove();drag.endDrag();resetMoves();}
+var count=gesture.committed?gesture.committedCount:gesture.maxCount;
+var quick=(performance.now()-gesture.startT)<TAP_MS;
+if(!gesture.longpressFired&&!gesture.swipeFired&&!gesture.anyMoved&&quick&&list.length===0){
 if(count===1&&authed){send({t:"tap",b:"left"});ripple(p.startX,p.startY);}
 else if(count===2&&authed){send({t:"tap",b:"right"});ripple(p.startX,p.startY);}
-else if(count===MIN_GESTURE_FINGERS&&authed){send({t:"gesture",g:"taskview"});}
-else if(count>=MIN_GESTURE_FINGERS+1&&authed){send({t:"gesture",g:"showdesktop"});}
+else if(count===MIN_GESTURE_FINGERS&&authed)send({t:"gesture",g:"taskview"});
+else if(count>=MIN_GESTURE_FINGERS+1&&authed)send({t:"gesture",g:"showdesktop"});
 }
-if(g.committedCount===2&&list.length>0){g.lastC=centroid(list);scrollSmoothX=0;scrollSmoothY=0;zoomAccum=0;}
-if(list.length===0){g=null;updateHud(0,"\u5F85\u673A");}
+if(g===gesture&&gesture.committedCount===2&&list.length>0){gesture.lastC=centroid(list);scrollSmoothX=0;scrollSmoothY=0;zoomAccum=0;}
+if(list.length===0){g=null;if(!gesture.longpressFired)updateHud(0,"待机");}
 }
 e.preventDefault();
 },{passive:false});
-pad.addEventListener("pointercancel",function(e){
-pointers.delete(e.pointerId);
-if(activePointers().length===0){g=null;updateHud(0,"\u5F85\u673A");}
-});
+pad.addEventListener("pointercancel",function(){drag.onLostCapture();});
+pad.addEventListener("lostpointercapture",function(e){if(pointers.has(e.pointerId))drag.onLostCapture();});
 ["gesturestart","gesturechange","gestureend"].forEach(function(ev){
 document.addEventListener(ev,function(e){e.preventDefault();},{passive:false});
 });
@@ -623,9 +639,25 @@ window.addEventListener("online",function(){if(!ws||ws.readyState===3)connect();
 document.addEventListener("visibilitychange",function(){
 if(!document.hidden&&(!ws||ws.readyState===3))connect();
 });
+function cancelGesture(){
+cancelLongpressTimer();
+var captured=Array.from(pointers.keys());
+pointers.clear();g=null;resetMoves();
+captured.forEach(function(id){if(pad.hasPointerCapture(id))pad.releasePointerCapture(id);});
+updateHud(0,"待机");
+}
+var drag=makeDragFactory({
+getSend:function(){return send;},isAuthed:function(){return authed;},
+updateHud:updateHud,onCancel:cancelGesture
+});
+window.addEventListener("blur",drag.onBlur);
+window.addEventListener("pagehide",drag.onVisibilityHidden);
+document.addEventListener("visibilitychange",function(){if(document.hidden)drag.onVisibilityHidden();});
 updateHud(0,"\u5F85\u673A");
 connect();
 if("serviceWorker"in navigator){navigator.serviceWorker.register("/sw.js?v=3").catch(function(){});}
+
+
 })();
 </script>
 </body>

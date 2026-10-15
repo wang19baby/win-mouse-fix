@@ -186,7 +186,7 @@ fn save_and_close(hwnd: HWND) {
         let mut cfg = crate::CONFIG.write();
         cfg.snap.layouts = layouts;
     }
-    if let Err(e) = crate::config::Config::save(&*crate::CONFIG.read()) {
+    if let Err(e) = crate::config::Config::save(&crate::CONFIG.read()) {
         crate::log::write(&format!("layout editor save error: {e}"));
     }
     crate::snap::refresh_layouts(&crate::CONFIG.read().snap.layouts);
@@ -224,7 +224,7 @@ unsafe extern "system" fn window_proc(
         WM_CREATE => create_window(hwnd),
 
         WM_COMMAND => {
-            let id = (wparam & 0xFFFF) as usize;
+            let id = wparam & 0xFFFF;
             let code = ((wparam >> 16) & 0xFFFF) as u32;
 
             match id {
@@ -273,7 +273,7 @@ unsafe extern "system" fn window_proc(
                     0
                 }
 
-                IDC_LIST if code == LBN_SELCHANGE as u32 => {
+                IDC_LIST if code == LBN_SELCHANGE => {
                     if let Some(idx) = selected_index(hwnd) {
                         show_layout(hwnd, idx);
                     }

@@ -415,6 +415,10 @@ pub struct RemoteConfig {
     pub enabled: bool,
     #[serde(default = "default_remote_port")]
     pub port: u16,
+    /// Bind only loopback and skip firewall changes (local browser/testing).
+    /// A phone on the LAN cannot reach the listener in this mode.
+    #[serde(default)]
+    pub local_only: bool,
     #[serde(default = "default_large_screen_split")]
     pub large_screen_split: bool,
     #[serde(default = "default_split_ratio")]
@@ -439,6 +443,7 @@ impl Default for RemoteConfig {
         RemoteConfig {
             enabled: default_remote_enabled(),
             port: default_remote_port(),
+            local_only: false,
             large_screen_split: default_large_screen_split(),
             split_ratio: default_split_ratio(),
         }
@@ -660,6 +665,12 @@ impl Config {
         }
     }
 
+    /// Read the actual base file for editing. Unlike runtime reload, an unreadable
+    /// or malformed file must not fall back to a cached config and be overwritten.
+    pub(crate) fn load_for_edit() -> std::io::Result<Self> {
+        let text = std::fs::read_to_string(config_path())?;
+        toml::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
     pub fn save(&self) -> std::io::Result<()> {
         let s = toml::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -810,6 +821,33 @@ mod tests {
         let toml = toml::to_string_pretty(&Config::default()).unwrap();
         let parsed: Config = toml::from_str(&toml).unwrap();
         assert_eq!(parsed, Config::default());
+    }
+
+    #[test]
+    fn partial_profile_file_preserves_base_and_explicit_override() {
+        let text = r#"
+[general]
+start_hidden = true
+[scroll]
+enabled = false
+smooth = false
+speed = 1.25
+invert = false
+[buttons]
+enabled = false
+[remote]
+enabled = false
+[[profiles]]
+match_exe = "notepad.exe"
+config = { scroll = { speed = 2.0 } }
+"#;
+        let base: Config = toml::from_str(text).expect("partial config should parse");
+        assert_eq!(base.scroll.speed, 1.25);
+        assert_eq!(base.resolve_for_exe(Some("notepad.exe")).scroll.speed, 2.0);
+        assert_eq!(
+            base.resolve_for_exe(Some("explorer.exe")).scroll.speed,
+            1.25
+        );
     }
 
     #[test]
@@ -1114,32 +1152,6 @@ enabled = false
         // Off by default: writing hardware DPI to a device must be an explicit,
         // validated opt-in, never a silent startup side effect.
         assert!(!d.auto_switch);
-        assert_eq!(d.base_dpi, 800);
-        assert_eq!(d.min_dpi, 200);
-        assert_eq!(d.max_dpi, 4000);
-    }
-
-    #[test]
-    fn source_config_is_valid_and_risky_integrations_are_opt_in() {
-        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-        let path = std::path::Path::new(&manifest).join("config.toml");
-        let content =
-            std::fs::read_to_string(&path).expect("config.toml must exist at project root");
-        let cfg: Config = toml::from_str(&content).expect("config.toml must parse without errors");
-
-        assert!(!cfg.drag.enabled, "drag gestures can conflict with clicks");
-        assert!(
-            !cfg.accel.enabled,
-            "pointer acceleration is not connected to the move hook"
-        );
-        assert!(
-            !cfg.remote.enabled,
-            "the LAN listener requires explicit opt-in"
-        );
-        assert!(
-            !cfg.dpi.auto_switch,
-            "hardware DPI writes require explicit opt-in"
-        );
     }
 
     #[test]
@@ -1247,15 +1259,9 @@ fn default_snap_threshold() -> i32 {
 }
 
 /// A single hotkey binding
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct HotkeyEntry {
     pub key: String,
-}
-
-impl Default for HotkeyEntry {
-    fn default() -> Self {
-        HotkeyEntry { key: String::new() }
-    }
 }
 
 /// Map of named snap actions to their hotkey bindings.

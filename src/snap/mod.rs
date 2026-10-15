@@ -105,8 +105,8 @@ fn refresh_displays() -> DisplayState {
             }
             seen.push(hmon);
 
-            let mut info: MONITORINFOEX = unsafe { std::mem::zeroed() };
-            info.monitor_info.cbSize = std::mem::size_of::<MONITORINFOEX>() as u32;
+            let mut info: MonitorInfoEx = unsafe { std::mem::zeroed() };
+            info.monitor_info.cbSize = std::mem::size_of::<MonitorInfoEx>() as u32;
             let ok = unsafe { GetMonitorInfoW(hmon, &mut info as *mut _ as *mut _) };
             if ok == 0 {
                 continue;
@@ -117,7 +117,7 @@ fn refresh_displays() -> DisplayState {
                 while len < 32 && info.sz_device[len] != 0 {
                     len += 1;
                 }
-                let slice = std::slice::from_raw_parts(info.sz_device.as_ptr(), len as usize);
+                let slice = std::slice::from_raw_parts(info.sz_device.as_ptr(), len);
                 String::from_utf16_lossy(slice)
             };
 
@@ -144,8 +144,8 @@ pub fn work_area_of(hwnd: isize) -> Option<RECT> {
     if hmon == NULL_HMONITOR {
         return None;
     }
-    let mut info: MONITORINFOEX = unsafe { std::mem::zeroed() };
-    info.monitor_info.cbSize = std::mem::size_of::<MONITORINFOEX>() as u32;
+    let mut info: MonitorInfoEx = unsafe { std::mem::zeroed() };
+    info.monitor_info.cbSize = std::mem::size_of::<MonitorInfoEx>() as u32;
     let ok = unsafe { GetMonitorInfoW(hmon, &mut info as *mut _ as *mut _) };
     if ok == 0 {
         return None;
@@ -383,7 +383,7 @@ pub fn build_zones(work: RECT, threshold: i32) -> Vec<Zone> {
     ]
 }
 
-/// ─── Core snap algorithm ──────────────────────────────────────────────────────
+// ─── Core snap algorithm ──────────────────────────────────────────────────────
 
 /// Returns the most-specific [`SnapResult`] for a window being dragged to `window_rect`,
 /// given all zones on the current monitor. `None` if no zone matches.
@@ -398,13 +398,12 @@ pub fn compute_snap(window_rect: &RECT, zones: &[Zone]) -> Option<SnapResult> {
                 | ZoneAnchor::TopRight
                 | ZoneAnchor::BottomLeft
                 | ZoneAnchor::BottomRight
-        ) {
-            if rect_intersects(window_rect, &zone.trigger) {
-                return Some(SnapResult {
-                    anchor: zone.anchor,
-                    target: zone.target,
-                });
-            }
+        ) && rect_intersects(window_rect, &zone.trigger)
+        {
+            return Some(SnapResult {
+                anchor: zone.anchor,
+                target: zone.target,
+            });
         }
     }
     // Second pass: edges (Monitor zone excluded from auto-snap).
@@ -412,13 +411,12 @@ pub fn compute_snap(window_rect: &RECT, zones: &[Zone]) -> Option<SnapResult> {
         if matches!(
             zone.anchor,
             ZoneAnchor::Top | ZoneAnchor::Bottom | ZoneAnchor::Left | ZoneAnchor::Right
-        ) {
-            if rect_intersects(window_rect, &zone.trigger) {
-                return Some(SnapResult {
-                    anchor: zone.anchor,
-                    target: zone.target,
-                });
-            }
+        ) && rect_intersects(window_rect, &zone.trigger)
+        {
+            return Some(SnapResult {
+                anchor: zone.anchor,
+                target: zone.target,
+            });
         }
     }
     None
@@ -445,13 +443,12 @@ pub fn compute_resize_zone(
                 ZoneAnchor::BottomLeft,
                 ZoneAnchor::BottomRight,
             ],
-        ) {
-            if pt_in_rect(cursor, &zone.trigger) {
-                return Some(SnapResult {
-                    anchor: zone.anchor,
-                    target: zone.target,
-                });
-            }
+        ) && pt_in_rect(cursor, &zone.trigger)
+        {
+            return Some(SnapResult {
+                anchor: zone.anchor,
+                target: zone.target,
+            });
         }
     }
     // Second pass: edges only (Monitor excluded — it's not a resize direction).
@@ -459,13 +456,12 @@ pub fn compute_resize_zone(
         if matches!(
             zone.anchor,
             ZoneAnchor::Top | ZoneAnchor::Bottom | ZoneAnchor::Left | ZoneAnchor::Right
-        ) {
-            if pt_in_rect(cursor, &zone.trigger) {
-                return Some(SnapResult {
-                    anchor: zone.anchor,
-                    target: zone.target,
-                });
-            }
+        ) && pt_in_rect(cursor, &zone.trigger)
+        {
+            return Some(SnapResult {
+                anchor: zone.anchor,
+                target: zone.target,
+            });
         }
     }
     None
@@ -473,7 +469,7 @@ pub fn compute_resize_zone(
 
 #[allow(dead_code)]
 fn matches_zone_anchor(zone: &Zone, candidates: &[ZoneAnchor]) -> bool {
-    candidates.iter().any(|&a| zone.anchor == a)
+    candidates.contains(&zone.anchor)
 }
 /// Find the best snap when a window edge crosses a trigger boundary.
 /// `x` and `y` are the cursor coordinates; `horizontal` selects which axis to use:
@@ -637,7 +633,7 @@ pub fn clamp_to_bounds(rect: &RECT, bounds: &RECT) -> RECT {
 // ─── Win32 FFI ────────────────────────────────────────────────────────────────
 
 #[repr(C)]
-struct MONITORINFOEX {
+struct MonitorInfoEx {
     monitor_info: MONITORINFO,
     sz_device: [u16; 32],
 }

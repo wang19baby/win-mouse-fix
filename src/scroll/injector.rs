@@ -435,8 +435,8 @@ unsafe fn send_wheel(delta: i32, horizontal: bool) {
     SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
 }
 
-/// Synthesize a relative mouse move via `SendInput` (used by pointer accel).
-pub fn send_mouse_move(dx: i32, dy: i32) {
+/// Synthesize a marked relative movement; returns false if Windows rejects it.
+pub fn send_mouse_move(dx: i32, dy: i32) -> bool {
     unsafe {
         let mut input = INPUT {
             r#type: INPUT_MOUSE,
@@ -450,7 +450,7 @@ pub fn send_mouse_move(dx: i32, dy: i32) {
             time: 0,
             dwExtraInfo: crate::win::hooks::OUR_MARKER,
         };
-        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) == 1
     }
 }
 

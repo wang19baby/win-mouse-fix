@@ -1,3 +1,4 @@
+pub mod focus_center;
 pub mod hooks;
 pub mod layout_editor;
 pub mod message_loop;
@@ -6,4 +7,3 @@ pub mod virtual_desktop;
 pub mod window;
 pub mod window_list;
 pub mod window_switcher;
-pub mod focus_center;

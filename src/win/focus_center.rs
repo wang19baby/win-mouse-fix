@@ -250,7 +250,6 @@ mod tests {
         assert_eq!(normalize_absolute_coordinate(0, 0, 0), None);
         assert_eq!(normalize_absolute_coordinate(0, 0, 1), None);
     }
-
     #[test]
     fn system_class_filter_uses_exact_names() {
         let taskbar: Vec<u16> = "Shell_TrayWnd".encode_utf16().collect();
@@ -258,7 +257,6 @@ mod tests {
         assert!(is_skipped_window_class(&taskbar));
         assert!(!is_skipped_window_class(&app_with_prefix));
     }
-
     #[test]
     fn window_center_rejects_empty_rectangles() {
         assert_eq!(
